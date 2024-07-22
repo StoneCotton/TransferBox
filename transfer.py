@@ -8,6 +8,21 @@ import logging
 import sys
 import shutil
 import re
+import RPi.GPIO as GPIO
+from threading import Thread, Event
+
+LED1_PIN = 17  # Activity LED
+LED2_PIN = 27  # Error LED
+LED3_PIN = 22  # All Good LED
+
+GPIO.setmode(GPIO.BCM)
+GPIO.setup(LED1_PIN, GPIO.OUT)
+GPIO.setup(LED2_PIN, GPIO.OUT)
+GPIO.setup(LED3_PIN, GPIO.OUT)
+
+GPIO.output(LED1_PIN, GPIO.LOW)
+GPIO.output(LED2_PIN, GPIO.LOW)
+GPIO.output(LED3_PIN, GPIO.LOW)
 
 def setup_logging():
     logger = logging.getLogger()
@@ -152,8 +167,8 @@ def copy_file_with_retry(src_path, dst_path, retries=3, delay=5):
             logger.warning(f"Attempt {attempt} failed with error: {stderr}")
             time.sleep(delay)
         else:
-            src_checksum = calculate_checksum(src_path)
-            dst_checksum = calculate_checksum(dst_path)
+            src_checksum = calculate_checksum_with_led(src_path, 0.05)
+            dst_checksum = calculate_checksum_with_led(dst_path, 0.05)
             if src_checksum and dst_checksum and src_checksum == dst_checksum:
                 logger.info(f"Successfully copied {src_path} to {dst_path} with matching checksums.")
                 return True
@@ -175,7 +190,7 @@ def copy_sd_to_dump(sd_mountpoint, dump_drive_mountpoint, log_file):
 
     if not has_enough_space(dump_drive_mountpoint, total_size):
         logger.error(f"Not enough space on {dump_drive_mountpoint}. Required: {total_size} bytes")
-        return
+        return False
 
     with open(log_file, 'a') as log:
         for root, _, files in os.walk(sd_mountpoint):
@@ -196,8 +211,8 @@ def copy_sd_to_dump(sd_mountpoint, dump_drive_mountpoint, log_file):
                     failures.append(src_path)
                     log.write(f"Failed to copy {src_path} to {dst_path} after multiple attempts\n")
                 else:
-                    src_checksum = calculate_checksum(src_path)
-                    dst_checksum = calculate_checksum(dst_path)
+                    src_checksum = calculate_checksum_with_led(src_path, 0.05)
+                    dst_checksum = calculate_checksum_with_led(dst_path, 0.05)
                     log.write(f"Source: {src_path}, Checksum: {src_checksum}\n")
                     log.write(f"Destination: {dst_path}, Checksum: {dst_checksum}\n")
                     log.flush()  # Ensure immediate write to file
@@ -206,8 +221,11 @@ def copy_sd_to_dump(sd_mountpoint, dump_drive_mountpoint, log_file):
         logger.error("The following files failed to copy:")
         for failure in failures:
             logger.error(failure)
+        GPIO.output(LED2_PIN, GPIO.HIGH)  # Turn on Error LED if there were failures
+        return False
     else:
         logger.info("All files copied successfully.")
+        return True
 
 def unmount_drive(drive_mountpoint):
     """Unmount the drive specified by its mount point."""
@@ -221,6 +239,7 @@ def unmount_drive(drive_mountpoint):
         logger.info(f"Unmounted {drive_mountpoint}")
     except subprocess.CalledProcessError as e:
         logger.error(f"Error unmounting {drive_mountpoint}: {e}")
+        GPIO.output(LED2_PIN, GPIO.HIGH)  # Turn on Error LED if unmounting fails
 
 def wait_for_drive_removal(mountpoint):
     """Wait until the drive is removed."""
@@ -228,12 +247,37 @@ def wait_for_drive_removal(mountpoint):
         logger.debug(f"Waiting for {mountpoint} to be removed...")
         time.sleep(2)
 
+def blink_led(led_pin, stop_event, blink_speed=0.3):
+    """Blink an LED until the stop_event is set."""
+    while not stop_event.is_set():
+        GPIO.output(led_pin, GPIO.HIGH)
+        time.sleep(blink_speed)
+        GPIO.output(led_pin, GPIO.LOW)
+        time.sleep(blink_speed)
+
+def calculate_checksum_with_led(filepath, blink_speed):
+    """Calculate checksum while blinking LED at specified speed."""
+    hash_obj = xxhash.xxh64()
+    stop_event = Event()
+    blink_thread = Thread(target=blink_led, args=(LED1_PIN, stop_event, blink_speed))
+    blink_thread.start()
+    try:
+        with open(filepath, 'rb') as f:
+            for chunk in iter(lambda: f.read(4096), b''):
+                hash_obj.update(chunk)
+        return hash_obj.hexdigest()
+    finally:
+        stop_event.set()
+        blink_thread.join()
+
 def main():
     """Main function to monitor and copy files from new storage devices."""
     dump_drive_mountpoint = DUMP_DRIVE_MOUNTPOINT
     if not os.path.ismount(dump_drive_mountpoint):
         logger.error(f"{DUMP_DRIVE_MOUNTPOINT} not found.")
         return
+
+    GPIO.output(LED3_PIN, GPIO.LOW)  # Ensure LED3 is off initially
 
     while True:
         initial_drives = get_mounted_drives_lsblk()
@@ -245,14 +289,34 @@ def main():
             logger.info(f"SD card detected at {sd_mountpoint}.")
             logger.debug(f"Updated state of drives: {get_mounted_drives_lsblk()}")
 
+            GPIO.output(LED3_PIN, GPIO.LOW)  # Turn off All Good LED when a new transfer starts
+            GPIO.output(LED2_PIN, GPIO.LOW)  # Turn off Error LED when a new transfer starts
+
             timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
             target_dir = create_timestamped_dir(dump_drive_mountpoint, timestamp)
             log_file = os.path.join(target_dir, f"transfer_log_{timestamp}.log")
-            copy_sd_to_dump(sd_mountpoint, dump_drive_mountpoint, log_file)
+
+            stop_event = Event()
+            blink_thread = Thread(target=blink_led, args=(LED1_PIN, stop_event))
+            blink_thread.start()
+
+            try:
+                success = copy_sd_to_dump(sd_mountpoint, dump_drive_mountpoint, log_file)
+                if success:
+                    GPIO.output(LED3_PIN, GPIO.HIGH)  # Turn on All Good LED after successful transfer
+            finally:
+                stop_event.set()
+                blink_thread.join()
 
             unmount_drive(sd_mountpoint)
             wait_for_drive_removal(sd_mountpoint)
             logger.info("Monitoring for new storage devices...")
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as e:
+        logger.error(f"An unexpected error occurred: {e}")
+        GPIO.output(LED2_PIN, GPIO.HIGH)  # Turn on Error LED in case of any unexpected error
+    finally:
+        GPIO.cleanup()
