@@ -5,19 +5,17 @@ import xxhash
 from datetime import datetime
 import platform
 import logging
-import sys
 import shutil
 import re
+import sys
 import RPi.GPIO as GPIO
 from threading import Thread, Event
 from LCD1602 import CharLCD1602
-import board
-import busio
 
 # Setup for LCD
 lcd1602 = CharLCD1602()
-lcd1602.init_lcd(addr=0x3f, bl=1)  # Initialize the LCD with the correct address
-lcd1602.set_backlight(True)  # Ensure the backlight is on
+lcd1602.init_lcd(addr=0x3f, bl=1)
+lcd1602.set_backlight(True)
 
 # Setup for LED Bar Graph
 LED_BAR_PINS = [5, 6, 13, 19, 26, 20, 21, 16, 12, 18]
@@ -30,13 +28,9 @@ LED1_PIN = 17  # Activity LED
 LED2_PIN = 27  # Error LED
 LED3_PIN = 22  # All Good LED
 
-GPIO.setup(LED1_PIN, GPIO.OUT)
-GPIO.setup(LED2_PIN, GPIO.OUT)
-GPIO.setup(LED3_PIN, GPIO.OUT)
-
-GPIO.output(LED1_PIN, GPIO.LOW)
-GPIO.output(LED2_PIN, GPIO.LOW)
-GPIO.output(LED3_PIN, GPIO.LOW)
+for pin in [LED1_PIN, LED2_PIN, LED3_PIN]:
+    GPIO.setup(pin, GPIO.OUT)
+    GPIO.output(pin, GPIO.LOW)
 
 def setup_logging():
     logger = logging.getLogger()
@@ -58,22 +52,24 @@ def setup_logging():
 
 logger = setup_logging()
 
-username = os.getenv("USER")
-if platform.system() == 'Linux':
-    DUMP_DRIVE_MOUNTPOINT = f'/media/{username}/DUMP_DRIVE'
-elif platform.system() == 'Darwin':  # macOS
-    DUMP_DRIVE_MOUNTPOINT = '/Volumes/DUMP_DRIVE'
-elif platform.system() == 'Windows':
-    DUMP_DRIVE_MOUNTPOINT = 'D:\\DUMP_DRIVE'
-else:
-    raise NotImplementedError("This script only supports Linux, macOS, and Windows.")
+def get_dump_drive_mountpoint():
+    username = os.getenv("USER")
+    if platform.system() == 'Linux':
+        return f'/media/{username}/DUMP_DRIVE'
+    elif platform.system() == 'Darwin':  # macOS
+        return '/Volumes/DUMP_DRIVE'
+    elif platform.system() == 'Windows':
+        return 'D:\\DUMP_DRIVE'
+    else:
+        raise NotImplementedError("This script only supports Linux, macOS, and Windows.")
+
+DUMP_DRIVE_MOUNTPOINT = get_dump_drive_mountpoint()
 
 def get_mounted_drives_lsblk():
     """Get a list of currently mounted drives using lsblk command."""
     try:
         result = subprocess.run(['lsblk', '-o', 'MOUNTPOINT', '-nr'], stdout=subprocess.PIPE, text=True, check=True)
-        mounted_drives = result.stdout.strip().split('\n')
-        return [drive for drive in mounted_drives if drive]
+        return [drive for drive in result.stdout.strip().split('\n') if drive]
     except subprocess.CalledProcessError as e:
         logger.error(f"Error running lsblk: {e}")
         return []
@@ -81,37 +77,20 @@ def get_mounted_drives_lsblk():
 def detect_new_drive(initial_drives):
     """Detect any new drive by comparing initial drives with the current state."""
     while True:
-        time.sleep(2)  # Check every 2 seconds
+        time.sleep(2)
         current_drives = get_mounted_drives_lsblk()
         logger.debug(f"Current mounted drives: {current_drives}")
         new_drives = set(current_drives) - set(initial_drives)
-        if new_drives:
-            for drive in new_drives:
-                if f"/media/{username}" in drive or "/mnt" in drive:
-                    logger.info(f"New drive detected: {drive}")
-                    return drive
+        for drive in new_drives:
+            if f"/media/{os.getenv('USER')}" in drive or "/mnt" in drive:
+                logger.info(f"New drive detected: {drive}")
+                return drive
 
 def create_timestamped_dir(dump_drive_mountpoint, timestamp):
     """Create a directory with a timestamp in the dump drive mount point."""
     target_dir = os.path.join(dump_drive_mountpoint, timestamp)
-    if not os.path.exists(target_dir):
-        os.makedirs(target_dir, exist_ok=True)  # Create the directory if it doesn't exist
+    os.makedirs(target_dir, exist_ok=True)
     return target_dir
-
-def calculate_checksum(filepath):
-    """Calculate and return the checksum of the file."""
-    hash_obj = xxhash.xxh64()
-    try:
-        with open(filepath, 'rb') as f:
-            for chunk in iter(lambda: f.read(4096), b''):
-                hash_obj.update(chunk)
-        return hash_obj.hexdigest()
-    except FileNotFoundError:
-        logger.error(f"File not found: {filepath}")
-        return None
-    except PermissionError:
-        logger.error(f"Permission denied: {filepath}")
-        return None
 
 def rsync_dry_run(source, destination):
     """Perform a dry run of rsync to get file count and total size."""
@@ -124,31 +103,34 @@ def rsync_dry_run(source, destination):
             check=True
         )
         output = process.stdout
-        file_count = 0
-        total_size = 0
-        file_count_pattern = re.compile(r'Number of files: (\d+)')
-        total_size_pattern = re.compile(r'Total file size: ([\d,]+)')
+        file_count_pattern = re.compile(r'Number of regular files transferred: (\d+)')
+        total_size_pattern = re.compile(r'Total transferred file size: ([\d,]+)')
 
-        for line in output.split('\n'):
-            file_count_match = file_count_pattern.search(line)
-            total_size_match = total_size_pattern.search(line)
-
-            if file_count_match:
-                file_count = int(file_count_match.group(1))
-            if total_size_match:
-                total_size = int(total_size_match.group(1).replace(',', ''))
-        
+        file_count = int(file_count_pattern.search(output).group(1))
+        total_size = int(total_size_pattern.search(output).group(1).replace(',', ''))
         return file_count, total_size
-    except subprocess.CalledProcessError as e:
+    except (subprocess.CalledProcessError, AttributeError) as e:
         logger.error(f"Error during rsync dry run: {e}")
         return 0, 0
 
 def has_enough_space(dump_drive_mountpoint, required_size):
     """Check if there is enough space on the dump drive."""
-    total, used, free = shutil.disk_usage(dump_drive_mountpoint)
+    _, _, free = shutil.disk_usage(dump_drive_mountpoint)
     return free >= required_size
 
-def rsync_copy(source, destination):
+def calculate_checksum_during_transfer(src_path):
+    """Calculate checksum of the source file during transfer."""
+    hash_obj = xxhash.xxh64()
+    try:
+        with open(src_path, 'rb') as f:
+            while chunk := f.read(4096):
+                hash_obj.update(chunk)
+    except (FileNotFoundError, PermissionError) as e:
+        logger.error(f"Error calculating checksum for {src_path}: {e}")
+        return None
+    return hash_obj.hexdigest()
+
+def rsync_copy(source, destination, file_size, file_number, file_count):
     """Copy files using rsync with progress reporting."""
     try:
         process = subprocess.Popen(
@@ -157,6 +139,9 @@ def rsync_copy(source, destination):
             stderr=subprocess.PIPE,
             text=True
         )
+        transferred = 0
+        last_percent = 0
+        overall_progress = 0
         while True:
             output = process.stdout.readline()
             if output == '' and process.poll() is not None:
@@ -164,6 +149,18 @@ def rsync_copy(source, destination):
             if output:
                 sys.stdout.write(output)
                 sys.stdout.flush()
+                match = re.search(r'(\d+)%', output)
+                if match:
+                    percent = int(match.group(1))
+                    if percent - last_percent >= 10:
+                        update_lcd_progress(file_number, file_count, percent)
+                        last_percent = percent
+                match = re.search(r'(\d+) bytes/sec', output)
+                if match:
+                    bytes_transferred = int(match.group(1))
+                    transferred += bytes_transferred
+                    overall_progress = int((transferred / file_size) * 100)
+                    set_led_bar_graph(overall_progress)
         stderr_output = process.stderr.read()
         if stderr_output:
             logger.error(stderr_output.strip())
@@ -172,24 +169,42 @@ def rsync_copy(source, destination):
         logger.error(f"Error during rsync: {e}")
         return False, str(e)
 
-def copy_file_with_retry(src_path, dst_path, retries=3, delay=5):
+def update_lcd_progress(file_number, file_count, progress):
+    """Update the LCD display with the file queue counter and progress bar."""
+    lcd_progress = int(progress / 10)
+    progress_bar = '#' * lcd_progress + ' ' * (10 - lcd_progress)
+    lcd1602.write(0, 1, f"{file_number}/{file_count} {progress_bar}")
+
+def copy_file_with_retry(src_path, dst_path, file_number, file_count, retries=3, delay=5):
     """Copy a file with retry logic."""
     for attempt in range(1, retries + 1):
         logger.info(f"Attempt {attempt} to copy {src_path} to {dst_path}")
-        success, stderr = rsync_copy(src_path, dst_path)
-        if not success:
-            logger.warning(f"Attempt {attempt} failed with error: {stderr}")
+        src_checksum = calculate_checksum_during_transfer(src_path)
+        if not src_checksum:
+            logger.warning(f"Checksum calculation failed for {src_path} on attempt {attempt}")
             time.sleep(delay)
-        else:
-            src_checksum = calculate_checksum_with_led(src_path, 0.05)
+            continue
+
+        file_size = os.path.getsize(src_path)
+        success, stderr = rsync_copy(src_path, dst_path, file_size, file_number, file_count)
+        if success:
             dst_checksum = calculate_checksum_with_led(dst_path, 0.05)
-            if src_checksum and dst_checksum and src_checksum == dst_checksum:
+            if dst_checksum and src_checksum == dst_checksum:
                 logger.info(f"Successfully copied {src_path} to {dst_path} with matching checksums.")
                 return True
             else:
                 logger.warning(f"Checksum mismatch for {src_path} on attempt {attempt}")
-                time.sleep(delay)
+        else:
+            logger.warning(f"Attempt {attempt} failed with error: {stderr}")
+        time.sleep(delay)
+    
+    # If all attempts fail
+    logger.error(f"Failed to copy {src_path} to {dst_path} after {retries} attempts")
+    lcd1602.clear()
+    lcd1602.write(0, 0, "ERROR IN TRANSIT")
+    lcd1602.write(0, 1, f"{file_number}/{file_count}")
     return False
+
 
 def shorten_filename(filename, max_length=16):
     """Shorten the filename to fit within the max length for the LCD display."""
@@ -214,6 +229,7 @@ def copy_sd_to_dump(sd_mountpoint, dump_drive_mountpoint, log_file):
         return False
 
     file_number = 1
+    overall_progress = 0
 
     with open(log_file, 'a') as log:
         for root, _, files in os.walk(sd_mountpoint):
@@ -222,42 +238,42 @@ def copy_sd_to_dump(sd_mountpoint, dump_drive_mountpoint, log_file):
                 rel_path = os.path.relpath(src_path, sd_mountpoint)
                 dst_path = os.path.join(target_dir, rel_path)
 
-                os.makedirs(os.path.dirname(dst_path), exist_ok=True)  # Create destination directory if it doesn't exist
+                os.makedirs(os.path.dirname(dst_path), exist_ok=True)
 
                 if not os.path.exists(src_path):
                     logger.warning(f"Source file {src_path} not found. Skipping...")
                     failures.append(src_path)
                     continue
 
-                # Update LCD with shortened file name and position in queue
                 short_file = shorten_filename(file, 16)
                 lcd1602.clear()
                 lcd1602.write(0, 0, short_file)
                 lcd1602.write(0, 1, f"{file_number}/{file_count}")
-                lcd1602.set_backlight(True)  # Ensure the backlight is on
 
-                # Update LED Bar Graph with progress
                 progress = (file_number / file_count) * 100
-                set_led_bar_graph(progress)
+                set_led_bar_graph(overall_progress)  # Set overall progress on LED
+                update_lcd_progress(file_number, file_count, 0)  # Initialize progress bar
 
                 logger.info(f"Copying {src_path} to {dst_path}")
-                if not copy_file_with_retry(src_path, dst_path):
+                if not copy_file_with_retry(src_path, dst_path, file_number, file_count):
                     failures.append(src_path)
                     log.write(f"Failed to copy {src_path} to {dst_path} after multiple attempts\n")
                 else:
-                    src_checksum = calculate_checksum_with_led(src_path, 0.05)
+                    src_checksum = calculate_checksum_during_transfer(src_path)
                     dst_checksum = calculate_checksum_with_led(dst_path, 0.05)
                     log.write(f"Source: {src_path}, Checksum: {src_checksum}\n")
                     log.write(f"Destination: {dst_path}, Checksum: {dst_checksum}\n")
-                    log.flush()  # Ensure immediate write to file
+                    log.flush()
 
                 file_number += 1
+                overall_progress = (file_number / file_count) * 100
+                set_led_bar_graph(overall_progress)  # Update overall progress on LED
 
     if failures:
         logger.error("The following files failed to copy:")
         for failure in failures:
             logger.error(failure)
-        GPIO.output(LED2_PIN, GPIO.HIGH)  # Turn on Error LED if there were failures
+        GPIO.output(LED2_PIN, GPIO.HIGH)
         return False
     else:
         logger.info("All files copied successfully.")
@@ -275,7 +291,7 @@ def unmount_drive(drive_mountpoint):
         logger.info(f"Unmounted {drive_mountpoint}")
     except subprocess.CalledProcessError as e:
         logger.error(f"Error unmounting {drive_mountpoint}: {e}")
-        GPIO.output(LED2_PIN, GPIO.HIGH)  # Turn on Error LED if unmounting fails
+        GPIO.output(LED2_PIN, GPIO.HIGH)
 
 def wait_for_drive_removal(mountpoint):
     """Wait until the drive is removed."""
@@ -307,26 +323,24 @@ def calculate_checksum_with_led(filepath, blink_speed):
         blink_thread.join()
 
 def set_led_bar_graph(progress):
-    """
-    Set the LED bar graph based on the progress value.
-    :param progress: A value between 0 and 100 indicating the percentage of progress.
-    """
+    """Set the LED bar graph based on the overall progress value."""
     num_leds_on = int((progress / 100.0) * len(LED_BAR_PINS))
-    
-    for i in range(len(LED_BAR_PINS)):
-        if i < num_leds_on:
-            GPIO.output(LED_BAR_PINS[i], GPIO.HIGH)
-        else:
-            GPIO.output(LED_BAR_PINS[i], GPIO.LOW)
+    for i, pin in enumerate(LED_BAR_PINS):
+        GPIO.output(pin, GPIO.HIGH if i < num_leds_on else GPIO.LOW)
 
 def main():
     """Main function to monitor and copy files from new storage devices."""
-    dump_drive_mountpoint = DUMP_DRIVE_MOUNTPOINT
-    if not os.path.ismount(dump_drive_mountpoint):
-        logger.error(f"{DUMP_DRIVE_MOUNTPOINT} not found.")
-        return
+    lcd1602.clear()
+    lcd1602.write(0, 0, "Storage Missing")
 
-    GPIO.output(LED3_PIN, GPIO.LOW)  # Ensure LED3 is off initially
+    while not os.path.ismount(DUMP_DRIVE_MOUNTPOINT):
+        time.sleep(2)
+
+    lcd1602.clear()
+    lcd1602.write(0, 0, "Storage Detected")
+    lcd1602.write(0, 1, "Load Media")
+
+    GPIO.output(LED3_PIN, GPIO.LOW)
 
     while True:
         initial_drives = get_mounted_drives_lsblk()
@@ -338,11 +352,11 @@ def main():
             logger.info(f"SD card detected at {sd_mountpoint}.")
             logger.debug(f"Updated state of drives: {get_mounted_drives_lsblk()}")
 
-            GPIO.output(LED3_PIN, GPIO.LOW)  # Turn off All Good LED when a new transfer starts
-            GPIO.output(LED2_PIN, GPIO.LOW)  # Turn off Error LED when a new transfer starts
+            GPIO.output(LED3_PIN, GPIO.LOW)
+            GPIO.output(LED2_PIN, GPIO.LOW)
 
             timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-            target_dir = create_timestamped_dir(dump_drive_mountpoint, timestamp)
+            target_dir = create_timestamped_dir(DUMP_DRIVE_MOUNTPOINT, timestamp)
             log_file = os.path.join(target_dir, f"transfer_log_{timestamp}.log")
 
             stop_event = Event()
@@ -350,9 +364,12 @@ def main():
             blink_thread.start()
 
             try:
-                success = copy_sd_to_dump(sd_mountpoint, dump_drive_mountpoint, log_file)
+                success = copy_sd_to_dump(sd_mountpoint, DUMP_DRIVE_MOUNTPOINT, log_file)
                 if success:
-                    GPIO.output(LED3_PIN, GPIO.HIGH)  # Turn on All Good LED after successful transfer
+                    GPIO.output(LED3_PIN, GPIO.HIGH)
+                    lcd1602.clear()
+                    lcd1602.write(0, 0, "Transfer Done")
+                    lcd1602.write(0, 1, "Load New Media")
             finally:
                 stop_event.set()
                 blink_thread.join()
@@ -366,8 +383,8 @@ if __name__ == "__main__":
         main()
     except Exception as e:
         logger.error(f"An unexpected error occurred: {e}")
-        GPIO.output(LED2_PIN, GPIO.HIGH)  # Turn on Error LED in case of any unexpected error
+        GPIO.output(LED2_PIN, GPIO.HIGH)
     finally:
         GPIO.cleanup()
         lcd1602.clear()
-        lcd1602.set_backlight(False)  # Turn off backlight
+        lcd1602.set_backlight(False)
