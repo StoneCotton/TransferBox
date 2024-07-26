@@ -10,12 +10,26 @@ import shutil
 import re
 import RPi.GPIO as GPIO
 from threading import Thread, Event
+from LCD1602 import CharLCD1602
+import board
+import busio
+
+# Setup for LCD
+lcd1602 = CharLCD1602()
+lcd1602.init_lcd(addr=0x3f, bl=1)  # Initialize the LCD with the correct address
+lcd1602.set_backlight(True)  # Ensure the backlight is on
+
+# Setup for LED Bar Graph
+LED_BAR_PINS = [5, 6, 13, 19, 26, 20, 21, 16, 12, 18]
+GPIO.setmode(GPIO.BCM)
+for pin in LED_BAR_PINS:
+    GPIO.setup(pin, GPIO.OUT)
+    GPIO.output(pin, GPIO.LOW)
 
 LED1_PIN = 17  # Activity LED
 LED2_PIN = 27  # Error LED
 LED3_PIN = 22  # All Good LED
 
-GPIO.setmode(GPIO.BCM)
 GPIO.setup(LED1_PIN, GPIO.OUT)
 GPIO.setup(LED2_PIN, GPIO.OUT)
 GPIO.setup(LED3_PIN, GPIO.OUT)
@@ -177,6 +191,13 @@ def copy_file_with_retry(src_path, dst_path, retries=3, delay=5):
                 time.sleep(delay)
     return False
 
+def shorten_filename(filename, max_length=16):
+    """Shorten the filename to fit within the max length for the LCD display."""
+    if len(filename) <= max_length:
+        return filename
+    part_length = (max_length - 3) // 2
+    return filename[:part_length] + "..." + filename[-part_length:]
+
 def copy_sd_to_dump(sd_mountpoint, dump_drive_mountpoint, log_file):
     """Copy files from the SD card to the dump drive, logging transfer details."""
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -192,6 +213,8 @@ def copy_sd_to_dump(sd_mountpoint, dump_drive_mountpoint, log_file):
         logger.error(f"Not enough space on {dump_drive_mountpoint}. Required: {total_size} bytes")
         return False
 
+    file_number = 1
+
     with open(log_file, 'a') as log:
         for root, _, files in os.walk(sd_mountpoint):
             for file in files:
@@ -206,6 +229,17 @@ def copy_sd_to_dump(sd_mountpoint, dump_drive_mountpoint, log_file):
                     failures.append(src_path)
                     continue
 
+                # Update LCD with shortened file name and position in queue
+                short_file = shorten_filename(file, 16)
+                lcd1602.clear()
+                lcd1602.write(0, 0, short_file)
+                lcd1602.write(0, 1, f"{file_number}/{file_count}")
+                lcd1602.set_backlight(True)  # Ensure the backlight is on
+
+                # Update LED Bar Graph with progress
+                progress = (file_number / file_count) * 100
+                set_led_bar_graph(progress)
+
                 logger.info(f"Copying {src_path} to {dst_path}")
                 if not copy_file_with_retry(src_path, dst_path):
                     failures.append(src_path)
@@ -216,6 +250,8 @@ def copy_sd_to_dump(sd_mountpoint, dump_drive_mountpoint, log_file):
                     log.write(f"Source: {src_path}, Checksum: {src_checksum}\n")
                     log.write(f"Destination: {dst_path}, Checksum: {dst_checksum}\n")
                     log.flush()  # Ensure immediate write to file
+
+                file_number += 1
 
     if failures:
         logger.error("The following files failed to copy:")
@@ -270,6 +306,19 @@ def calculate_checksum_with_led(filepath, blink_speed):
         stop_event.set()
         blink_thread.join()
 
+def set_led_bar_graph(progress):
+    """
+    Set the LED bar graph based on the progress value.
+    :param progress: A value between 0 and 100 indicating the percentage of progress.
+    """
+    num_leds_on = int((progress / 100.0) * len(LED_BAR_PINS))
+    
+    for i in range(len(LED_BAR_PINS)):
+        if i < num_leds_on:
+            GPIO.output(LED_BAR_PINS[i], GPIO.HIGH)
+        else:
+            GPIO.output(LED_BAR_PINS[i], GPIO.LOW)
+
 def main():
     """Main function to monitor and copy files from new storage devices."""
     dump_drive_mountpoint = DUMP_DRIVE_MOUNTPOINT
@@ -320,3 +369,5 @@ if __name__ == "__main__":
         GPIO.output(LED2_PIN, GPIO.HIGH)  # Turn on Error LED in case of any unexpected error
     finally:
         GPIO.cleanup()
+        lcd1602.clear()
+        lcd1602.set_backlight(False)  # Turn off backlight
