@@ -27,8 +27,9 @@ for pin in LED_BAR_PINS:
 LED1_PIN = 17  # Activity LED
 LED2_PIN = 27  # Error LED
 LED3_PIN = 22  # All Good LED
+CHECKSUM_LED_PIN = 23  # New Checksum LED
 
-for pin in [LED1_PIN, LED2_PIN, LED3_PIN]:
+for pin in [LED1_PIN, LED2_PIN, LED3_PIN, CHECKSUM_LED_PIN]:
     GPIO.setup(pin, GPIO.OUT)
     GPIO.output(pin, GPIO.LOW)
 
@@ -78,7 +79,7 @@ def get_mounted_drives_lsblk():
 def detect_new_drive(initial_drives):
     """Detect any new drive by comparing initial drives with the current state."""
     while True:
-        time.sleep(5)  # Increased interval to 5 seconds
+        time.sleep(2)  # Increased interval to 2 seconds
         current_drives = get_mounted_drives_lsblk()
         logger.debug(f"Current mounted drives: {current_drives}")
         new_drives = set(current_drives) - set(initial_drives)
@@ -122,9 +123,13 @@ def has_enough_space(dump_drive_mountpoint, required_size):
     _, _, free = shutil.disk_usage(dump_drive_mountpoint)
     return free >= required_size
 
-def calculate_checksum(file_path):
+def calculate_checksum(file_path, led_pin, blink_speed):
+    """Calculate checksum with LED blinking as notification."""
     print("Running calculate_checksum function for", file_path)
     hash_obj = xxhash.xxh64()
+    blink_event = Event()
+    blink_thread = Thread(target=blink_led, args=(led_pin, blink_event, blink_speed))
+    blink_thread.start()
     try:
         with open(file_path, 'rb') as f:
             while chunk := f.read(32 * 1024 * 1024):  # Increase chunk size to 32MB
@@ -132,6 +137,9 @@ def calculate_checksum(file_path):
     except (FileNotFoundError, PermissionError) as e:
         logger.error(f"Error calculating checksum for {file_path}: {e}")
         return None
+    finally:
+        blink_event.set()
+        blink_thread.join()
     return hash_obj.hexdigest()
 
 def rsync_copy(source, destination, file_size, file_number, file_count):
@@ -191,10 +199,14 @@ def copy_file_with_checksum_verification(src_path, dst_path, file_number, file_c
         success, stderr = rsync_copy(src_path, dst_path, file_size, file_number, file_count)
         
         if success:
-            print("running calculate_checksum in copy_file_with_checksum_verification for src", src_path)
-            src_checksum = calculate_checksum(src_path)
-            print("running calculate_checksum in copy_file_with_checksum_verification for dst", dst_path)
-            dst_checksum = calculate_checksum(dst_path)
+            logger.info("Running calculate_checksum for source")
+            GPIO.output(LED1_PIN, GPIO.LOW)
+            src_checksum = calculate_checksum(src_path, CHECKSUM_LED_PIN, blink_speed=0.1)
+            GPIO.output(LED1_PIN, GPIO.HIGH)
+            logger.info("Running calculate_checksum for destination")
+            GPIO.output(LED1_PIN, GPIO.LOW)
+            dst_checksum = calculate_checksum(dst_path, CHECKSUM_LED_PIN, blink_speed=0.05)
+            GPIO.output(LED1_PIN, GPIO.HIGH)
             if src_checksum == dst_checksum:
                 logger.info(f"Successfully copied {src_path} to {dst_path} with matching checksums.")
                 return True
@@ -265,10 +277,8 @@ def copy_sd_to_dump(sd_mountpoint, dump_drive_mountpoint, log_file):
                     failures.append(src_path)
                     log.write(f"Failed to copy {src_path} to {dst_path} after multiple attempts\n")
                 else:
-                    src_checksum = calculate_checksum(src_path)
-                    dst_checksum = calculate_checksum(dst_path)
-                    log.write(f"Source: {src_path}, Checksum: {src_checksum}\n")
-                    log.write(f"Destination: {dst_path}, Checksum: {dst_checksum}\n")
+                    # Log only successful copies without checksum values
+                    log.write(f"Source: {src_path} copied successfully to Destination: {dst_path}\n")
                     log.flush()
 
                 file_number += 1
@@ -284,6 +294,7 @@ def copy_sd_to_dump(sd_mountpoint, dump_drive_mountpoint, log_file):
     else:
         logger.info("All files copied successfully.")
         return True
+
 
 def unmount_drive(drive_mountpoint):
     """Unmount the drive specified by its mount point."""
