@@ -134,7 +134,6 @@ def calculate_checksum(file_path):
         return None
     return hash_obj.hexdigest()
 
-
 def rsync_copy(source, destination, file_size, file_number, file_count):
     """Copy files using rsync with progress reporting."""
     try:
@@ -266,14 +265,9 @@ def copy_sd_to_dump(sd_mountpoint, dump_drive_mountpoint, log_file):
                     failures.append(src_path)
                     log.write(f"Failed to copy {src_path} to {dst_path} after multiple attempts\n")
                 else:
-                    # No need to calculate checksum again here, remove these lines
-                    # print("running calculate_checksum in copy_sd_to_dump for src", src_path)
-                    # src_checksum = calculate_checksum(src_path)
-                    # print("running calculate_checksum in copy_sd_to_dump for dst", dst_path)
-                    # dst_checksum = calculate_checksum(dst_path)
                     src_checksum = calculate_checksum(src_path)
-                    log.write(f"Source: {src_path}, Checksum: {src_checksum}\n")
                     dst_checksum = calculate_checksum(dst_path)
+                    log.write(f"Source: {src_path}, Checksum: {src_checksum}\n")
                     log.write(f"Destination: {dst_path}, Checksum: {dst_checksum}\n")
                     log.flush()
 
