@@ -123,17 +123,17 @@ def has_enough_space(dump_drive_mountpoint, required_size):
     return free >= required_size
 
 def calculate_checksum(file_path):
-    """Calculate the checksum of a file."""
-    print("running calculate_checksum function for ", file_path)
+    print("Running calculate_checksum function for", file_path)
     hash_obj = xxhash.xxh64()
     try:
         with open(file_path, 'rb') as f:
-            while chunk := f.read(4096):
+            while chunk := f.read(32 * 1024 * 1024):  # Increase chunk size to 32MB
                 hash_obj.update(chunk)
     except (FileNotFoundError, PermissionError) as e:
         logger.error(f"Error calculating checksum for {file_path}: {e}")
         return None
     return hash_obj.hexdigest()
+
 
 def rsync_copy(source, destination, file_size, file_number, file_count):
     """Copy files using rsync with progress reporting."""
