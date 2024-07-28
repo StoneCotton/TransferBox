@@ -41,7 +41,7 @@ def setup_logging():
     file_handler.setLevel(logging.DEBUG)
 
     console_handler = logging.StreamHandler()
-    console_handler.setLevel(logging.DEBUG)  # Set console handler to INFO level
+    console_handler.setLevel(logging.INFO)  # Set console handler to INFO level
 
     formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
     file_handler.setFormatter(formatter)
@@ -395,47 +395,47 @@ def main():
 
     GPIO.output(LED3_PIN, GPIO.LOW)
 
-    while True:
-        initial_drives = get_mounted_drives_lsblk()
-        logger.debug(f"Initial mounted drives: {initial_drives}")
-
-        logger.info("Waiting for SD card to be plugged in...")
-        sd_mountpoint = detect_new_drive(initial_drives)
-        if sd_mountpoint:
-            logger.info(f"SD card detected at {sd_mountpoint}.")
-            logger.debug(f"Updated state of drives: {get_mounted_drives_lsblk()}")
-
-            GPIO.output(LED3_PIN, GPIO.LOW)
-            GPIO.output(LED2_PIN, GPIO.LOW)
-
-            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-            target_dir = create_timestamped_dir(DUMP_DRIVE_MOUNTPOINT, timestamp)
-            log_file = os.path.join(target_dir, f"transfer_log_{timestamp}.log")
-
-            stop_event = Event()
-            blink_thread = Thread(target=blink_led, args=(LED1_PIN, stop_event))
-            blink_thread.start()
-
-            try:
-                success = copy_sd_to_dump(sd_mountpoint, DUMP_DRIVE_MOUNTPOINT, log_file, stop_event, blink_thread)
-                if success:
-                    GPIO.output(LED3_PIN, GPIO.HIGH)
-                    GPIO.output(LED1_PIN, GPIO.LOW)
-                    GPIO.output(CHECKSUM_LED_PIN, GPIO.LOW)
-                    lcd1602.clear()
-                    lcd1602.write(0, 0, "Transfer Done")
-                    lcd1602.write(0, 1, "Load New Media")
-            finally:
-                stop_event.set()
-                blink_thread.join()
-
-            unmount_drive(sd_mountpoint)
-            wait_for_drive_removal(sd_mountpoint)
-            logger.info("Monitoring for new storage devices...")
-
-if __name__ == "__main__":
     try:
-        main()
+        while True:
+            initial_drives = get_mounted_drives_lsblk()
+            logger.debug(f"Initial mounted drives: {initial_drives}")
+
+            logger.info("Waiting for SD card to be plugged in...")
+            sd_mountpoint = detect_new_drive(initial_drives)
+            if sd_mountpoint:
+                logger.info(f"SD card detected at {sd_mountpoint}.")
+                logger.debug(f"Updated state of drives: {get_mounted_drives_lsblk()}")
+
+                GPIO.output(LED3_PIN, GPIO.LOW)
+                GPIO.output(LED2_PIN, GPIO.LOW)
+
+                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                target_dir = create_timestamped_dir(DUMP_DRIVE_MOUNTPOINT, timestamp)
+                log_file = os.path.join(target_dir, f"transfer_log_{timestamp}.log")
+
+                stop_event = Event()
+                blink_thread = Thread(target=blink_led, args=(LED1_PIN, stop_event))
+                blink_thread.start()
+
+                try:
+                    success = copy_sd_to_dump(sd_mountpoint, DUMP_DRIVE_MOUNTPOINT, log_file, stop_event, blink_thread)
+                    if success:
+                        GPIO.output(LED3_PIN, GPIO.HIGH)
+                        GPIO.output(LED1_PIN, GPIO.LOW)
+                        GPIO.output(CHECKSUM_LED_PIN, GPIO.LOW)
+                        lcd1602.clear()
+                        lcd1602.write(0, 0, "Transfer Done")
+                        lcd1602.write(0, 1, "Load New Media")
+                finally:
+                    stop_event.set()
+                    blink_thread.join()
+
+                unmount_drive(sd_mountpoint)
+                wait_for_drive_removal(sd_mountpoint)
+                logger.info("Monitoring for new storage devices...")
+    except KeyboardInterrupt:
+        logger.info("KeyboardInterrupt received. Cleaning up and exiting.")
+        GPIO.output(LED2_PIN, GPIO.LOW)
     except Exception as e:
         logger.error(f"An unexpected error occurred: {e}")
         GPIO.output(LED2_PIN, GPIO.HIGH)
@@ -446,3 +446,6 @@ if __name__ == "__main__":
         # Check if the lcd1602 object has a cleanup method before calling it
         if hasattr(lcd1602, 'cleanup'):
             lcd1602.cleanup()
+
+if __name__ == "__main__":
+    main()
