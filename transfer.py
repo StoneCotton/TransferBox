@@ -41,7 +41,7 @@ def setup_logging():
     file_handler.setLevel(logging.DEBUG)
 
     console_handler = logging.StreamHandler()
-    console_handler.setLevel(logging.INFO)  # Set console handler to INFO level
+    console_handler.setLevel(logging.DEBUG)  # Set console handler to INFO level
 
     formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
     file_handler.setFormatter(formatter)
@@ -123,63 +123,76 @@ def has_enough_space(dump_drive_mountpoint, required_size):
     _, _, free = shutil.disk_usage(dump_drive_mountpoint)
     return free >= required_size
 
-def calculate_checksum(file_path, led_pin, blink_speed):
-    """Calculate checksum with LED blinking as notification."""
-    print("Running calculate_checksum function for", file_path)
-    hash_obj = xxhash.xxh64()
-    blink_event = Event()
-    blink_thread = Thread(target=blink_led, args=(led_pin, blink_event, blink_speed))
-    blink_thread.start()
-    try:
-        with open(file_path, 'rb') as f:
-            while chunk := f.read(32 * 1024 * 1024):  # Increase chunk size to 32MB
-                hash_obj.update(chunk)
-    except (FileNotFoundError, PermissionError) as e:
-        logger.error(f"Error calculating checksum for {file_path}: {e}")
-        return None
-    finally:
-        blink_event.set()
-        blink_thread.join()
-    return hash_obj.hexdigest()
+def calculate_checksum(file_path, led_pin, blink_speed, retries=3, delay=5):
+    """Calculate checksum with LED blinking as notification and retry logic."""
+    for attempt in range(1, retries + 1):
+        try:
+            print(f"Running calculate_checksum function for {file_path} (Attempt {attempt})")
+            hash_obj = xxhash.xxh64()
+            blink_event = Event()
+            blink_thread = Thread(target=blink_led, args=(led_pin, blink_event, blink_speed))
+            blink_thread.start()
+            try:
+                with open(file_path, 'rb') as f:
+                    while chunk := f.read(32 * 1024 * 1024):  # Increase chunk size to 32MB
+                        hash_obj.update(chunk)
+            except (FileNotFoundError, PermissionError) as e:
+                logger.error(f"Error calculating checksum for {file_path}: {e}")
+                blink_event.set()
+                blink_thread.join()
+                time.sleep(delay)
+                continue
+            finally:
+                blink_event.set()
+                blink_thread.join()
+            return hash_obj.hexdigest()
+        except Exception as e:
+            logger.error(f"Unexpected error calculating checksum for {file_path} on attempt {attempt}: {e}")
+            time.sleep(delay)
+    return None
 
-def rsync_copy(source, destination, file_size, file_number, file_count):
-    """Copy files using rsync with progress reporting."""
-    try:
-        print("Running rsync copy...")
-        process = subprocess.Popen(
-            ['rsync', '-a', '--info=progress2', source, destination],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True
-        )
-        transferred = 0
-        last_percent = 0
-        overall_progress = 0
-        while True:
-            output = process.stdout.readline()
-            if output == '' and process.poll() is not None:
-                break
-            if output:
-                sys.stdout.write(output)
-                sys.stdout.flush()
-                match = re.search(r'(\d+)%', output)
-                if match:
-                    percent = int(match.group(1))
-                    if percent - last_percent >= 10:
-                        last_percent = update_lcd_progress(file_number, file_count, percent, last_percent)
-                match = re.search(r'(\d+) bytes/sec', output)
-                if match:
-                    bytes_transferred = int(match.group(1))
-                    transferred += bytes_transferred
-                    overall_progress = int((transferred / file_size) * 100)
-                    set_led_bar_graph(overall_progress)
-        stderr_output = process.stderr.read()
-        if stderr_output:
-            logger.error(stderr_output.strip())
-        return process.returncode == 0, stderr_output
-    except subprocess.CalledProcessError as e:
-        logger.error(f"Error during rsync: {e}")
-        return False, str(e)
+def rsync_copy(source, destination, file_size, file_number, file_count, retries=3, delay=5):
+    """Copy files using rsync with progress reporting and retry logic."""
+    for attempt in range(1, retries + 1):
+        try:
+            print(f"Running rsync copy (Attempt {attempt})...")
+            process = subprocess.Popen(
+                ['rsync', '-a', '--info=progress2', source, destination],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True
+            )
+            transferred = 0
+            last_percent = 0
+            overall_progress = 0
+            while True:
+                output = process.stdout.readline()
+                if output == '' and process.poll() is not None:
+                    break
+                if output:
+                    sys.stdout.write(output)
+                    sys.stdout.flush()
+                    match = re.search(r'(\d+)%', output)
+                    if match:
+                        percent = int(match.group(1))
+                        if percent - last_percent >= 10:
+                            last_percent = update_lcd_progress(file_number, file_count, percent, last_percent)
+                    match = re.search(r'(\d+) bytes/sec', output)
+                    if match:
+                        bytes_transferred = int(match.group(1))
+                        transferred += bytes_transferred
+                        overall_progress = int((transferred / file_size) * 100)
+                        set_led_bar_graph(overall_progress)
+            stderr_output = process.stderr.read()
+            if stderr_output:
+                logger.error(stderr_output.strip())
+            if process.returncode == 0:
+                return True, stderr_output
+        except subprocess.CalledProcessError as e:
+            logger.error(f"Error during rsync: {e}")
+        logger.warning(f"Attempt {attempt} failed, retrying after {delay} seconds...")
+        time.sleep(delay)
+    return False, stderr_output
 
 def update_lcd_progress(file_number, file_count, progress, last_progress=0):
     """Update the LCD display with the file queue counter and progress bar."""
@@ -196,22 +209,33 @@ def copy_file_with_checksum_verification(src_path, dst_path, file_number, file_c
     for attempt in range(1, retries + 1):
         logger.info(f"Attempt {attempt} to copy {src_path} to {dst_path}")
         file_size = os.path.getsize(src_path)
-        success, stderr = rsync_copy(src_path, dst_path, file_size, file_number, file_count)
+        success, stderr = rsync_copy(src_path, dst_path, file_size, file_number, file_count, retries, delay)
         
         if success:
-            logger.info("Running calculate_checksum for source")
-            GPIO.output(LED1_PIN, GPIO.LOW)
-            src_checksum = calculate_checksum(src_path, CHECKSUM_LED_PIN, blink_speed=0.1)
-            GPIO.output(LED1_PIN, GPIO.HIGH)
-            logger.info("Running calculate_checksum for destination")
-            GPIO.output(LED1_PIN, GPIO.LOW)
-            dst_checksum = calculate_checksum(dst_path, CHECKSUM_LED_PIN, blink_speed=0.05)
-            GPIO.output(LED1_PIN, GPIO.HIGH)
-            if src_checksum == dst_checksum:
-                logger.info(f"Successfully copied {src_path} to {dst_path} with matching checksums.")
-                return True
-            else:
-                logger.warning(f"Checksum mismatch for {src_path} on attempt {attempt}")
+            for checksum_attempt in range(1, retries + 1):
+                logger.info(f"Running calculate_checksum for source (Attempt {checksum_attempt})")
+                GPIO.output(LED1_PIN, GPIO.LOW)
+                src_checksum = calculate_checksum(src_path, CHECKSUM_LED_PIN, blink_speed=0.1)
+                if not src_checksum:
+                    logger.warning(f"Checksum calculation failed for source {src_path} on attempt {checksum_attempt}")
+                    time.sleep(delay)
+                    continue
+                
+                logger.info(f"Running calculate_checksum for destination (Attempt {checksum_attempt})")
+                GPIO.output(LED1_PIN, GPIO.LOW)
+                dst_checksum = calculate_checksum(dst_path, CHECKSUM_LED_PIN, blink_speed=0.05)
+                if not dst_checksum:
+                    logger.warning(f"Checksum calculation failed for destination {dst_path} on attempt {checksum_attempt}")
+                    time.sleep(delay)
+                    continue
+                
+                GPIO.output(LED1_PIN, GPIO.HIGH)
+                if src_checksum == dst_checksum:
+                    logger.info(f"Successfully copied {src_path} to {dst_path} with matching checksums.")
+                    return True
+                else:
+                    logger.warning(f"Checksum mismatch for {src_path} on attempt {checksum_attempt}")
+                    time.sleep(delay)
         else:
             logger.warning(f"Attempt {attempt} failed with error: {stderr}")
         
@@ -230,7 +254,8 @@ def shorten_filename(filename, max_length=16):
     part_length = (max_length - 3) // 2
     return filename[:part_length] + "..." + filename[-part_length:]
 
-def copy_sd_to_dump(sd_mountpoint, dump_drive_mountpoint, log_file):
+
+def copy_sd_to_dump(sd_mountpoint, dump_drive_mountpoint, log_file, stop_event, blink_thread):
     """Copy files from the SD card to the dump drive, logging transfer details."""
     print("Running copy_sd_to_dump")
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -244,7 +269,34 @@ def copy_sd_to_dump(sd_mountpoint, dump_drive_mountpoint, log_file):
 
     if not has_enough_space(dump_drive_mountpoint, total_size):
         logger.error(f"Not enough space on {dump_drive_mountpoint}. Required: {total_size} bytes")
-        return False
+        
+        # Stop LED1 blinking
+        stop_event.set()
+        blink_thread.join()
+
+        # Blink LED2 and update LCD display
+        lcd1602.clear()
+        lcd1602.write(0, 0, "ERROR: No Space")
+        lcd1602.write(0, 1, "Remove Drives")
+        
+        blink_event = Event()
+        blink_thread_error = Thread(target=blink_led, args=(LED2_PIN, blink_event, 0.5))
+        blink_thread_error.start()
+
+        # Unmount the drive
+        unmount_drive(dump_drive_mountpoint)
+        unmount_drive(sd_mountpoint)
+
+        # Wait for drive removal
+        wait_for_drive_removal(dump_drive_mountpoint)
+        
+        # # Stop the blinking LED2 and keep the error state
+        # blink_event.set()
+        # blink_thread_error.join()
+        
+        # Keep the system in this state until restarted
+        while True:
+            time.sleep(1)
 
     file_number = 1
     overall_progress = 0
@@ -277,7 +329,6 @@ def copy_sd_to_dump(sd_mountpoint, dump_drive_mountpoint, log_file):
                     failures.append(src_path)
                     log.write(f"Failed to copy {src_path} to {dst_path} after multiple attempts\n")
                 else:
-                    # Log only successful copies without checksum values
                     log.write(f"Source: {src_path} copied successfully to Destination: {dst_path}\n")
                     log.flush()
 
@@ -294,8 +345,7 @@ def copy_sd_to_dump(sd_mountpoint, dump_drive_mountpoint, log_file):
     else:
         logger.info("All files copied successfully.")
         return True
-
-
+    
 def unmount_drive(drive_mountpoint):
     """Unmount the drive specified by its mount point."""
     try:
@@ -367,9 +417,11 @@ def main():
             blink_thread.start()
 
             try:
-                success = copy_sd_to_dump(sd_mountpoint, DUMP_DRIVE_MOUNTPOINT, log_file)
+                success = copy_sd_to_dump(sd_mountpoint, DUMP_DRIVE_MOUNTPOINT, log_file, stop_event, blink_thread)
                 if success:
                     GPIO.output(LED3_PIN, GPIO.HIGH)
+                    GPIO.output(LED1_PIN, GPIO.LOW)
+                    GPIO.output(CHECKSUM_LED_PIN, GPIO.LOW)
                     lcd1602.clear()
                     lcd1602.write(0, 0, "Transfer Done")
                     lcd1602.write(0, 1, "Load New Media")
@@ -391,4 +443,6 @@ if __name__ == "__main__":
         GPIO.cleanup()
         lcd1602.clear()
         lcd1602.set_backlight(False)
-        lcd1602.cleanup()
+        # Check if the lcd1602 object has a cleanup method before calling it
+        if hasattr(lcd1602, 'cleanup'):
+            lcd1602.cleanup()
