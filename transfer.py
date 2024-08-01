@@ -8,14 +8,70 @@ import logging
 import shutil
 import re
 import sys
-import RPi.GPIO as GPIO
 from threading import Thread, Event
-from LCD1602 import CharLCD1602
+
+# Detect platform
+os_name = platform.system()
+is_raspberry_pi = os_name == 'Linux' and platform.machine().startswith('arm')
+
+# Conditional imports
+if is_raspberry_pi:
+    import RPi.GPIO as GPIO
+    from LCD1602 import CharLCD1602
+else:
+    # Mock GPIO and LCD classes for non-Raspberry Pi environments
+    class MockGPIO:
+        BCM = 'BCM'
+        OUT = 'OUT'
+        IN = 'IN'
+        LOW = 0
+        HIGH = 1
+        
+        @staticmethod
+        def setmode(mode):
+            print(f"Setting mode to {mode}")
+
+        @staticmethod
+        def setup(pin, mode):
+            print(f"Setting up pin {pin} as {mode}")
+
+        @staticmethod
+        def output(pin, state):
+            print(f"Setting pin {pin} to {'HIGH' if state else 'LOW'}")
+
+        @staticmethod
+        def input(pin):
+            print(f"Reading pin {pin}")
+            return MockGPIO.LOW
+
+        @staticmethod
+        def cleanup():
+            print("Cleaning up GPIO")
+
+    GPIO = MockGPIO()
+
+    class MockLCD:
+        def init_lcd(self, addr, bl):
+            print(f"Initializing LCD at addr {addr} with backlight {bl}")
+
+        def set_backlight(self, state):
+            print(f"Setting LCD backlight to {state}")
+
+        def clear(self):
+            print("Clearing LCD display")
+
+        def write(self, row, col, message):
+            print(f"Writing to LCD at ({row}, {col}): {message}")
+
+    lcd1602 = MockLCD()
+    lcd1602.init_lcd(addr=0x3f, bl=1)
+    lcd1602.set_backlight(True)
 
 # Setup for LCD
-lcd1602 = CharLCD1602()
-lcd1602.init_lcd(addr=0x3f, bl=1)
-lcd1602.set_backlight(True)
+if is_raspberry_pi:
+    lcd1602 = CharLCD1602()
+    lcd1602.init_lcd(addr=0x3f, bl=1)
+    lcd1602.set_backlight(True)
 
 # Setup for LED Bar Graph
 LED_BAR_PINS = [5, 6, 13, 19, 26, 20, 21, 16, 12, 18]
@@ -55,12 +111,12 @@ logger = setup_logging()
 
 def get_dump_drive_mountpoint():
     username = os.getenv("USER")
-    if platform.system() == 'Linux':
+    if os_name == 'Linux':
         print("Running Linux mountpoint.")
         return f'/media/{username}/DUMP_DRIVE'
-    elif platform.system() == 'Darwin':  # macOS
+    elif os_name == 'Darwin':  # macOS
         return '/Volumes/DUMP_DRIVE'
-    elif platform.system() == 'Windows':
+    elif os_name == 'Windows':
         return 'D:\\DUMP_DRIVE'
     else:
         raise NotImplementedError("This script only supports Linux, macOS, and Windows.")
@@ -254,7 +310,6 @@ def shorten_filename(filename, max_length=16):
     part_length = (max_length - 3) // 2
     return filename[:part_length] + "..." + filename[-part_length:]
 
-
 def copy_sd_to_dump(sd_mountpoint, dump_drive_mountpoint, log_file, stop_event, blink_thread):
     """Copy files from the SD card to the dump drive, logging transfer details."""
     print("Running copy_sd_to_dump")
@@ -289,10 +344,6 @@ def copy_sd_to_dump(sd_mountpoint, dump_drive_mountpoint, log_file, stop_event, 
 
         # Wait for drive removal
         wait_for_drive_removal(dump_drive_mountpoint)
-        
-        # # Stop the blinking LED2 and keep the error state
-        # blink_event.set()
-        # blink_thread_error.join()
         
         # Keep the system in this state until restarted
         while True:
@@ -350,11 +401,11 @@ def unmount_drive(drive_mountpoint):
     """Unmount the drive specified by its mount point."""
     try:
         print("Unmounting drive...")
-        if platform.system() == 'Linux':
+        if os_name == 'Linux':
             subprocess.run(['umount', drive_mountpoint], check=True)
-        elif platform.system() == 'Darwin':  # macOS
+        elif os_name == 'Darwin':  # macOS
             subprocess.run(['diskutil', 'unmount', drive_mountpoint], check=True)
-        elif platform.system() == 'Windows':
+        elif os_name == 'Windows':
             subprocess.run(['mountvol', drive_mountpoint, '/d'], check=True)
         logger.info(f"Unmounted {drive_mountpoint}")
     except subprocess.CalledProcessError as e:
