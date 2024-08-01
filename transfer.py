@@ -5,6 +5,7 @@ import xxhash
 from datetime import datetime
 import platform
 import logging
+from logging.handlers import RotatingFileHandler
 import shutil
 import re
 import sys
@@ -14,7 +15,8 @@ def setup_logging():
     logger = logging.getLogger()
     logger.setLevel(logging.DEBUG)
 
-    file_handler = logging.FileHandler('script_log.log')
+    # Use RotatingFileHandler instead of FileHandler
+    file_handler = RotatingFileHandler('script_log.log', maxBytes=50 * 1024 * 1024, backupCount=1)
     file_handler.setLevel(logging.DEBUG)
 
     console_handler = logging.StreamHandler()
