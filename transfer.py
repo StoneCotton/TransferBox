@@ -5,94 +5,17 @@ import xxhash
 from datetime import datetime
 import platform
 import logging
-from logging.handlers import RotatingFileHandler
 import shutil
 import re
 import sys
+import RPi.GPIO as GPIO
 from threading import Thread, Event
-
-def setup_logging():
-    logger = logging.getLogger()
-    logger.setLevel(logging.DEBUG)
-
-    # Use RotatingFileHandler instead of FileHandler
-    file_handler = RotatingFileHandler('script_log.log', maxBytes=50 * 1024 * 1024, backupCount=1)
-    file_handler.setLevel(logging.DEBUG)
-
-    console_handler = logging.StreamHandler()
-    console_handler.setLevel(logging.INFO)
-
-    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-    file_handler.setFormatter(formatter)
-    console_handler.setFormatter(formatter)
-
-    logger.addHandler(file_handler)
-    logger.addHandler(console_handler)
-    return logger
-
-logger = setup_logging()
-# Detect platform
-os_name = platform.system()
-is_raspberry_pi = os_name == 'Linux' and platform.machine().startswith('arm')
-
-# Conditional imports
-if is_raspberry_pi:
-    import RPi.GPIO as GPIO
-    from LCD1602 import CharLCD1602
-else:
-    # Mock GPIO and LCD classes for non-Raspberry Pi environments
-    class MockGPIO:
-        BCM = 'BCM'
-        OUT = 'OUT'
-        IN = 'IN'
-        LOW = 0
-        HIGH = 1
-
-        @staticmethod
-        def setmode(mode):
-            logger.debug(f"Setting mode to {mode}")
-
-        @staticmethod
-        def setup(pin, mode):
-            logger.debug(f"Setting up pin {pin} as {mode}")
-
-        @staticmethod
-        def output(pin, state):
-            logger.debug(f"Setting pin {pin} to {'HIGH' if state else 'LOW'}")
-
-        @staticmethod
-        def input(pin):
-            logger.debug(f"Reading pin {pin}")
-            return MockGPIO.LOW
-
-        @staticmethod
-        def cleanup():
-            logger.debug("Cleaning up GPIO")
-
-    GPIO = MockGPIO()
-
-    class MockLCD:
-        def init_lcd(self, addr, bl):
-            logger.debug(f"Initializing LCD at addr {addr} with backlight {bl}")
-
-        def set_backlight(self, state):
-            logger.debug(f"Setting LCD backlight to {state}")
-
-        def clear(self):
-            logger.debug("Clearing LCD display")
-
-        def write(self, row, col, message):
-            logger.debug(f"Writing to LCD at ({row}, {col}): {message}")
-
-    lcd1602 = MockLCD()
-    lcd1602.init_lcd(addr=0x3f, bl=1)
-    lcd1602.set_backlight(True)
+from LCD1602 import CharLCD1602
 
 # Setup for LCD
-if is_raspberry_pi:
-    lcd1602 = CharLCD1602()
-    lcd1602.init_lcd(addr=0x3f, bl=1)
-    lcd1602.set_backlight(True)
+lcd1602 = CharLCD1602()
+lcd1602.init_lcd(addr=0x3f, bl=1)
+lcd1602.set_backlight(True)
 
 # Setup for LED Bar Graph
 LED_BAR_PINS = [5, 6, 13, 19, 26, 20, 21, 16, 12, 18]
@@ -110,53 +33,58 @@ for pin in [LED1_PIN, LED2_PIN, LED3_PIN, CHECKSUM_LED_PIN]:
     GPIO.setup(pin, GPIO.OUT)
     GPIO.output(pin, GPIO.LOW)
 
+def setup_logging():
+    logger = logging.getLogger()
+    logger.setLevel(logging.DEBUG)
+
+    file_handler = logging.FileHandler('script_log.log')
+    file_handler.setLevel(logging.DEBUG)
+
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.INFO)  # Set console handler to INFO level
+
+    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+    file_handler.setFormatter(formatter)
+    console_handler.setFormatter(formatter)
+
+    logger.addHandler(file_handler)
+    logger.addHandler(console_handler)
+    return logger
+
+logger = setup_logging()
+
 def get_dump_drive_mountpoint():
     username = os.getenv("USER")
-    if os_name == 'Linux':
+    if platform.system() == 'Linux':
         print("Running Linux mountpoint.")
         return f'/media/{username}/DUMP_DRIVE'
-    elif os_name == 'Darwin':  # macOS
+    elif platform.system() == 'Darwin':  # macOS
         return '/Volumes/DUMP_DRIVE'
+    elif platform.system() == 'Windows':
+        return 'D:\\DUMP_DRIVE'
     else:
-        raise NotImplementedError("This script only supports Linux and macOS.")
+        raise NotImplementedError("This script only supports Linux, macOS, and Windows.")
 
 DUMP_DRIVE_MOUNTPOINT = get_dump_drive_mountpoint()
 
-def get_mounted_drives():
-    """Get a list of currently mounted drives using platform-specific commands."""
+def get_mounted_drives_lsblk():
+    """Get a list of currently mounted drives using lsblk command."""
     try:
-        if os_name == 'Linux':
-            result = subprocess.run(['lsblk', '-o', 'MOUNTPOINT', '-nr'], stdout=subprocess.PIPE, text=True, check=True)
-            drives = [drive for drive in result.stdout.strip().split('\n') if drive]
-        elif os_name == 'Darwin':  # macOS
-            result = subprocess.run(['mount'], stdout=subprocess.PIPE, text=True, check=True)
-            drives = []
-            for line in result.stdout.splitlines():
-                if 'on /Volumes/' in line:
-                    parts = line.split()
-                    if len(parts) > 2:
-                        mount_point = parts[2]
-                        if mount_point.startswith('/Volumes/'):
-                            drives.append(mount_point)
-        else:
-            raise NotImplementedError("This script only supports Linux and macOS.")
-        
-        return drives
-
+        result = subprocess.run(['lsblk', '-o', 'MOUNTPOINT', '-nr'], stdout=subprocess.PIPE, text=True, check=True)
+        return [drive for drive in result.stdout.strip().split('\n') if drive]
     except subprocess.CalledProcessError as e:
-        logging.error(f"Error running platform-specific drive command: {e}")
+        logger.error(f"Error running lsblk: {e}")
         return []
 
 def detect_new_drive(initial_drives):
     """Detect any new drive by comparing initial drives with the current state."""
     while True:
         time.sleep(2)  # Increased interval to 2 seconds
-        current_drives = get_mounted_drives()
+        current_drives = get_mounted_drives_lsblk()
         logger.debug(f"Current mounted drives: {current_drives}")
         new_drives = set(current_drives) - set(initial_drives)
         for drive in new_drives:
-            if (os_name == 'Linux' and f"/media/{os.getenv('USER')}" in drive) or \
-               (os_name == 'Darwin' and drive.startswith('/Volumes/')):
+            if f"/media/{os.getenv('USER')}" in drive or "/mnt" in drive:
                 logger.info(f"New drive detected: {drive}")
                 return drive
 
@@ -172,28 +100,21 @@ def rsync_dry_run(source, destination):
     try:
         print("Running rsync dry run...")
         process = subprocess.run(
-            ['rsync', '-a', '--dry-run', '--stats', f"{source}/", f"{destination}/"],
+            ['rsync', '-a', '--dry-run', '--stats', source, destination],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True
+            text=True,
+            check=True
         )
         output = process.stdout
-        logger.debug(f"rsync dry run output: {output}")
+        file_count_pattern = re.compile(r'Number of regular files transferred: (\d+)')
+        total_size_pattern = re.compile(r'Total transferred file size: ([\d,]+)')
 
-        # Adjust regex to match the actual output
-        file_count_match = re.search(r'Number of files: (\d+)', output)
-        total_size_match = re.search(r'Total file size: ([\d,]+) bytes', output)
-
-        if file_count_match and total_size_match:
-            file_count = int(file_count_match.group(1))
-            total_size = int(total_size_match.group(1).replace(',', ''))
-            return file_count, total_size
-        else:
-            logger.error("Unable to parse rsync output correctly.")
-            return 0, 0
-    except subprocess.CalledProcessError as e:
+        file_count = int(file_count_pattern.search(output).group(1))
+        total_size = int(total_size_pattern.search(output).group(1).replace(',', ''))
+        return file_count, total_size
+    except (subprocess.CalledProcessError, AttributeError) as e:
         logger.error(f"Error during rsync dry run: {e}")
-        logger.error(f"Stderr: {process.stderr}")
         return 0, 0
 
 def has_enough_space(dump_drive_mountpoint, required_size):
@@ -235,9 +156,8 @@ def rsync_copy(source, destination, file_size, file_number, file_count, retries=
     for attempt in range(1, retries + 1):
         try:
             print(f"Running rsync copy (Attempt {attempt})...")
-            # We ensure the correct handling of file paths by using rsync appropriately
             process = subprocess.Popen(
-                ['rsync', '-a', '--info=progress2', source, destination],  # No trailing slashes on files
+                ['rsync', '-a', '--info=progress2', source, destination],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True
@@ -274,10 +194,9 @@ def rsync_copy(source, destination, file_size, file_number, file_count, retries=
         time.sleep(delay)
     return False, stderr_output
 
-
 def update_lcd_progress(file_number, file_count, progress, last_progress=0):
     """Update the LCD display with the file queue counter and progress bar."""
-    if file_count > 0 and abs(progress - last_progress) >= 10:  # Update only if progress changes by 10% or more
+    if abs(progress - last_progress) >= 10:  # Update only if progress changes by 10% or more
         logger.debug("Updating LCD progress...")
         lcd_progress = int(progress / 10)
         progress_bar = '#' * lcd_progress + ' ' * (10 - lcd_progress)
@@ -291,25 +210,25 @@ def copy_file_with_checksum_verification(src_path, dst_path, file_number, file_c
         logger.info(f"Attempt {attempt} to copy {src_path} to {dst_path}")
         file_size = os.path.getsize(src_path)
         success, stderr = rsync_copy(src_path, dst_path, file_size, file_number, file_count, retries, delay)
-
+        
         if success:
             for checksum_attempt in range(1, retries + 1):
-                logger.debug(f"Running calculate_checksum for source (Attempt {checksum_attempt})")
+                logger.info(f"Running calculate_checksum for source (Attempt {checksum_attempt})")
                 GPIO.output(LED1_PIN, GPIO.LOW)
                 src_checksum = calculate_checksum(src_path, CHECKSUM_LED_PIN, blink_speed=0.1)
                 if not src_checksum:
                     logger.warning(f"Checksum calculation failed for source {src_path} on attempt {checksum_attempt}")
                     time.sleep(delay)
                     continue
-
-                logger.debug(f"Running calculate_checksum for destination (Attempt {checksum_attempt})")
+                
+                logger.info(f"Running calculate_checksum for destination (Attempt {checksum_attempt})")
                 GPIO.output(LED1_PIN, GPIO.LOW)
                 dst_checksum = calculate_checksum(dst_path, CHECKSUM_LED_PIN, blink_speed=0.05)
                 if not dst_checksum:
                     logger.warning(f"Checksum calculation failed for destination {dst_path} on attempt {checksum_attempt}")
                     time.sleep(delay)
                     continue
-
+                
                 GPIO.output(LED1_PIN, GPIO.HIGH)
                 if src_checksum == dst_checksum:
                     logger.info(f"Successfully copied {src_path} to {dst_path} with matching checksums.")
@@ -319,9 +238,9 @@ def copy_file_with_checksum_verification(src_path, dst_path, file_number, file_c
                     time.sleep(delay)
         else:
             logger.warning(f"Attempt {attempt} failed with error: {stderr}")
-
+        
         time.sleep(delay)
-
+    
     logger.error(f"Failed to copy {src_path} to {dst_path} after {retries} attempts")
     lcd1602.clear()
     lcd1602.write(0, 0, "ERROR IN TRANSIT")
@@ -335,6 +254,7 @@ def shorten_filename(filename, max_length=16):
     part_length = (max_length - 3) // 2
     return filename[:part_length] + "..." + filename[-part_length:]
 
+
 def copy_sd_to_dump(sd_mountpoint, dump_drive_mountpoint, log_file, stop_event, blink_thread):
     """Copy files from the SD card to the dump drive, logging transfer details."""
     print("Running copy_sd_to_dump")
@@ -346,15 +266,6 @@ def copy_sd_to_dump(sd_mountpoint, dump_drive_mountpoint, log_file, stop_event, 
 
     file_count, total_size = rsync_dry_run(sd_mountpoint, target_dir)
     logger.info(f"Number of files to transfer: {file_count}, Total size: {total_size} bytes")
-
-    if file_count == 0:
-        logger.error("No files to transfer.")
-        # Update LCD and GPIO to reflect no files error state
-        lcd1602.clear()
-        lcd1602.write(0, 0, "ERROR: No Files")
-        lcd1602.write(0, 1, "Check Media")
-        GPIO.output(LED2_PIN, GPIO.HIGH)
-        return False
 
     if not has_enough_space(dump_drive_mountpoint, total_size):
         logger.error(f"Not enough space on {dump_drive_mountpoint}. Required: {total_size} bytes")
@@ -378,7 +289,11 @@ def copy_sd_to_dump(sd_mountpoint, dump_drive_mountpoint, log_file, stop_event, 
 
         # Wait for drive removal
         wait_for_drive_removal(dump_drive_mountpoint)
-
+        
+        # # Stop the blinking LED2 and keep the error state
+        # blink_event.set()
+        # blink_thread_error.join()
+        
         # Keep the system in this state until restarted
         while True:
             time.sleep(1)
@@ -405,7 +320,7 @@ def copy_sd_to_dump(sd_mountpoint, dump_drive_mountpoint, log_file, stop_event, 
                 lcd1602.write(0, 0, short_file)
                 lcd1602.write(0, 1, f"{file_number}/{file_count}")
 
-                progress = (file_number / file_count) * 100 if file_count > 0 else 0
+                progress = (file_number / file_count) * 100
                 set_led_bar_graph(overall_progress)  # Set overall progress on LED
                 overall_progress = update_lcd_progress(file_number, file_count, 0)  # Initialize progress bar
 
@@ -418,7 +333,7 @@ def copy_sd_to_dump(sd_mountpoint, dump_drive_mountpoint, log_file, stop_event, 
                     log.flush()
 
                 file_number += 1
-                overall_progress = (file_number / file_count) * 100 if file_count > 0 else 0
+                overall_progress = (file_number / file_count) * 100
                 set_led_bar_graph(overall_progress)  # Update overall progress on LED
 
     if failures:
@@ -430,17 +345,16 @@ def copy_sd_to_dump(sd_mountpoint, dump_drive_mountpoint, log_file, stop_event, 
     else:
         logger.info("All files copied successfully.")
         return True
-
-
+    
 def unmount_drive(drive_mountpoint):
     """Unmount the drive specified by its mount point."""
     try:
         print("Unmounting drive...")
-        if os_name == 'Linux':
+        if platform.system() == 'Linux':
             subprocess.run(['umount', drive_mountpoint], check=True)
-        elif os_name == 'Darwin':  # macOS
+        elif platform.system() == 'Darwin':  # macOS
             subprocess.run(['diskutil', 'unmount', drive_mountpoint], check=True)
-        elif os_name == 'Windows':
+        elif platform.system() == 'Windows':
             subprocess.run(['mountvol', drive_mountpoint, '/d'], check=True)
         logger.info(f"Unmounted {drive_mountpoint}")
     except subprocess.CalledProcessError as e:
@@ -483,14 +397,14 @@ def main():
 
     try:
         while True:
-            initial_drives = get_mounted_drives()
+            initial_drives = get_mounted_drives_lsblk()
             logger.debug(f"Initial mounted drives: {initial_drives}")
 
             logger.info("Waiting for SD card to be plugged in...")
             sd_mountpoint = detect_new_drive(initial_drives)
             if sd_mountpoint:
                 logger.info(f"SD card detected at {sd_mountpoint}.")
-                logger.debug(f"Updated state of drives: {get_mounted_drives()}")
+                logger.debug(f"Updated state of drives: {get_mounted_drives_lsblk()}")
 
                 GPIO.output(LED3_PIN, GPIO.LOW)
                 GPIO.output(LED2_PIN, GPIO.LOW)
