@@ -206,46 +206,70 @@ def update_lcd_progress(file_number, file_count, progress, last_progress=0):
 
 def copy_file_with_checksum_verification(src_path, dst_path, file_number, file_count, retries=3, delay=5):
     """Copy a file with retry logic and checksum verification."""
-    for attempt in range(1, retries + 1):
-        logger.info(f"Attempt {attempt} to copy {src_path} to {dst_path}")
-        file_size = os.path.getsize(src_path)
-        success, stderr = rsync_copy(src_path, dst_path, file_size, file_number, file_count, retries, delay)
-        
-        if success:
-            for checksum_attempt in range(1, retries + 1):
-                logger.info(f"Running calculate_checksum for source (Attempt {checksum_attempt})")
-                GPIO.output(LED1_PIN, GPIO.LOW)
-                src_checksum = calculate_checksum(src_path, CHECKSUM_LED_PIN, blink_speed=0.1)
-                if not src_checksum:
-                    logger.warning(f"Checksum calculation failed for source {src_path} on attempt {checksum_attempt}")
-                    time.sleep(delay)
-                    continue
-                
-                logger.info(f"Running calculate_checksum for destination (Attempt {checksum_attempt})")
-                GPIO.output(LED1_PIN, GPIO.LOW)
-                dst_checksum = calculate_checksum(dst_path, CHECKSUM_LED_PIN, blink_speed=0.05)
-                if not dst_checksum:
-                    logger.warning(f"Checksum calculation failed for destination {dst_path} on attempt {checksum_attempt}")
-                    time.sleep(delay)
-                    continue
-                
-                GPIO.output(LED1_PIN, GPIO.HIGH)
-                if src_checksum == dst_checksum:
-                    logger.info(f"Successfully copied {src_path} to {dst_path} with matching checksums.")
-                    return True
-                else:
-                    logger.warning(f"Checksum mismatch for {src_path} on attempt {checksum_attempt}")
-                    time.sleep(delay)
-        else:
-            logger.warning(f"Attempt {attempt} failed with error: {stderr}")
-        
-        time.sleep(delay)
-    
-    logger.error(f"Failed to copy {src_path} to {dst_path} after {retries} attempts")
-    lcd1602.clear()
-    lcd1602.write(0, 0, "ERROR IN TRANSIT")
-    lcd1602.write(0, 1, f"{file_number}/{file_count}")
-    return False
+    try:
+        for attempt in range(1, retries + 1):
+            logger.info(f"Attempt {attempt} to copy {src_path} to {dst_path}")
+            try:
+                file_size = os.path.getsize(src_path)
+            except FileNotFoundError:
+                logger.error(f"Source file {src_path} not found.")
+                break
+            except Exception as e:
+                logger.error(f"Unexpected error getting file size: {e}")
+                break
+
+            success, stderr = rsync_copy(src_path, dst_path, file_size, file_number, file_count, retries, delay)
+
+            if success:
+                for checksum_attempt in range(1, retries + 1):
+                    try:
+                        logger.info(f"Running calculate_checksum for source (Attempt {checksum_attempt})")
+                        GPIO.output(LED1_PIN, GPIO.LOW)
+                        src_checksum = calculate_checksum(src_path, CHECKSUM_LED_PIN, blink_speed=0.1)
+                        if not src_checksum:
+                            logger.warning(f"Checksum calculation failed for source {src_path} on attempt {checksum_attempt}")
+                            time.sleep(delay)
+                            continue
+
+                        logger.info(f"Running calculate_checksum for destination (Attempt {checksum_attempt})")
+                        GPIO.output(LED1_PIN, GPIO.LOW)
+                        dst_checksum = calculate_checksum(dst_path, CHECKSUM_LED_PIN, blink_speed=0.05)
+                        if not dst_checksum:
+                            logger.warning(f"Checksum calculation failed for destination {dst_path} on attempt {checksum_attempt}")
+                            time.sleep(delay)
+                            continue
+
+                        GPIO.output(LED1_PIN, GPIO.HIGH)
+                        if src_checksum == dst_checksum:
+                            logger.info(f"Successfully copied {src_path} to {dst_path} with matching checksums.")
+                            return True
+                        else:
+                            logger.warning(f"Checksum mismatch for {src_path} on attempt {checksum_attempt}")
+                            time.sleep(delay)
+                    except Exception as e:
+                        logger.error(f"Unexpected error during checksum calculation: {e}")
+                        break
+            else:
+                logger.warning(f"Attempt {attempt} failed with error: {stderr}")
+
+            time.sleep(delay)
+
+        # After retries are exhausted, activate error LED
+        logger.error(f"Failed to copy {src_path} to {dst_path} after {retries} attempts")
+        GPIO.output(LED2_PIN, GPIO.HIGH)  # Make sure to activate the correct error LED pin
+        lcd1602.clear()
+        lcd1602.write(0, 0, "ERROR IN TRANSIT")
+        lcd1602.write(0, 1, f"{file_number}/{file_count}")
+        return False
+
+    except Exception as e:
+        # General exception handling to catch anything unexpected
+        logger.error(f"An unexpected error occurred in copy_file_with_checksum_verification: {e}")
+        GPIO.output(LED2_PIN, GPIO.HIGH)
+        lcd1602.clear()
+        lcd1602.write(0, 0, "CRITICAL ERROR")
+        lcd1602.write(0, 1, "Check Log")
+        return False
 
 def shorten_filename(filename, max_length=16):
     """Shorten the filename to fit within the max length for the LCD display."""
