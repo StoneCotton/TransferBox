@@ -11,6 +11,8 @@ import sys
 import RPi.GPIO as GPIO
 from threading import Thread, Event
 from LCD1602 import CharLCD1602
+import xml.etree.ElementTree as ET
+import socket
 
 # Setup for LCD
 lcd1602 = CharLCD1602()
@@ -75,6 +77,61 @@ def get_mounted_drives_lsblk():
     except subprocess.CalledProcessError as e:
         logger.error(f"Error running lsblk: {e}")
         return []
+
+def initialize_mhl_file(directory_name, target_dir):
+    mhl_filename = os.path.join(target_dir, f"{directory_name}.mhl")
+    root = ET.Element("hashlist", version="2.0", xmlns="urn:ASC:MHL:v2.0")
+
+    # Creator Info
+    creator_info = ET.SubElement(root, "creatorinfo")
+    creation_date = ET.SubElement(creator_info, "creationdate")
+    creation_date.text = datetime.now().isoformat()
+    hostname = ET.SubElement(creator_info, "hostname")
+    hostname.text = socket.gethostname()
+    tool = ET.SubElement(creator_info, "TransferBox", version="0.1.0")
+    tool.text = "TransferBox"
+
+    # Process Info
+    process_info = ET.SubElement(root, "processinfo")
+    process = ET.SubElement(process_info, "process")
+    process.text = "in-place"
+    roothash = ET.SubElement(process_info, "roothash")
+    content = ET.SubElement(roothash, "content")
+    structure = ET.SubElement(roothash, "structure")
+    
+    # Add initial ignore patterns
+    ignore = ET.SubElement(process_info, "ignore")
+    for pattern in [".DS_Store", "ascmhl", "ascmhl/"]:
+        ignore_pattern = ET.SubElement(ignore, "pattern")
+        ignore_pattern.text = pattern
+
+    # Create the hashes element
+    hashes = ET.SubElement(root, "hashes")
+
+    # Write the initial MHL file
+    tree = ET.ElementTree(root)
+    tree.write(mhl_filename, encoding='utf-8', xml_declaration=True)
+    
+    return mhl_filename, tree, hashes
+
+
+def add_file_to_mhl(mhl_filename, tree, hashes, file_path, checksum, file_size):
+    hash_element = ET.SubElement(hashes, "hash")
+    
+    # File path, size, and last modification date
+    path = ET.SubElement(hash_element, "path", size=str(file_size))
+    path.text = os.path.relpath(file_path)
+    last_modification_date = ET.SubElement(path, "lastmodificationdate")
+    last_modification_date.text = datetime.fromtimestamp(os.path.getmtime(file_path)).isoformat()
+    
+    # File checksum
+    xxh64 = ET.SubElement(hash_element, "xxh64", action="original")
+    xxh64.text = checksum
+    xxh64.set("hashdate", datetime.now().isoformat())
+    
+    # Write the updated MHL file
+    tree.write(mhl_filename, encoding='utf-8', xml_declaration=True)
+
 
 def detect_new_drive(initial_drives):
     """Detect any new drive by comparing initial drives with the current state."""
@@ -288,6 +345,9 @@ def copy_sd_to_dump(sd_mountpoint, dump_drive_mountpoint, log_file, stop_event, 
 
     logger.info(f"Starting to copy files from {sd_mountpoint} to {dump_drive_mountpoint}")
 
+    # Initialize the MHL file
+    mhl_filename, tree, hashes = initialize_mhl_file(timestamp, target_dir)
+
     file_count, total_size = rsync_dry_run(sd_mountpoint, target_dir)
     logger.info(f"Number of files to transfer: {file_count}, Total size: {total_size} bytes")
 
@@ -355,6 +415,11 @@ def copy_sd_to_dump(sd_mountpoint, dump_drive_mountpoint, log_file, stop_event, 
                 else:
                     log.write(f"Source: {src_path} copied successfully to Destination: {dst_path}\n")
                     log.flush()
+
+                    # Add file to MHL
+                    src_checksum = calculate_checksum(src_path, CHECKSUM_LED_PIN, blink_speed=0.1)
+                    if src_checksum:
+                        add_file_to_mhl(mhl_filename, tree, hashes, dst_path, src_checksum, os.path.getsize(src_path))
 
                 file_number += 1
                 overall_progress = (file_number / file_count) * 100
