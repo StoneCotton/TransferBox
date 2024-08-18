@@ -3,7 +3,7 @@ from src.drive_detection import get_mounted_drives_lsblk, detect_new_drive, wait
 from src.mhl_handler import initialize_mhl_file, add_file_to_mhl
 from src.file_transfer import copy_sd_to_dump, create_timestamped_dir, rsync_dry_run, rsync_copy, copy_file_with_checksum_verification
 from src.lcd_display import setup_lcd, update_lcd_progress, shorten_filename, lcd1602
-from src.led_control import setup_leds, blink_led, GPIO, LED1_PIN, LED2_PIN, LED3_PIN, CHECKSUM_LED_PIN, set_led_bar_graph
+from src.led_control import setup_leds, blink_led, LED1_PIN, LED2_PIN, LED3_PIN, CHECKSUM_LED_PIN, set_led_bar_graph
 from src.system_utils import get_dump_drive_mountpoint, unmount_drive
 import os
 import time
@@ -26,7 +26,7 @@ def main():
     lcd1602.write(0, 0, "Storage Detected")
     lcd1602.write(0, 1, "Load Media")
 
-    GPIO.output(LED3_PIN, GPIO.LOW)
+    LED3_PIN.off()  # Equivalent to GPIO.LOW
 
     try:
         while True:
@@ -39,8 +39,8 @@ def main():
                 logger.info(f"SD card detected at {sd_mountpoint}.")
                 logger.debug(f"Updated state of drives: {get_mounted_drives_lsblk()}")
 
-                GPIO.output(LED3_PIN, GPIO.LOW)
-                GPIO.output(LED2_PIN, GPIO.LOW)
+                LED3_PIN.off()
+                LED2_PIN.off()
 
                 timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
                 target_dir = create_timestamped_dir(DUMP_DRIVE_MOUNTPOINT, timestamp)
@@ -53,9 +53,9 @@ def main():
                 try:
                     success = copy_sd_to_dump(sd_mountpoint, DUMP_DRIVE_MOUNTPOINT, log_file, stop_event, blink_thread)
                     if success:
-                        GPIO.output(LED3_PIN, GPIO.HIGH)
-                        GPIO.output(LED1_PIN, GPIO.LOW)
-                        GPIO.output(CHECKSUM_LED_PIN, GPIO.LOW)
+                        LED3_PIN.on()  # Equivalent to GPIO.HIGH
+                        LED1_PIN.off()
+                        CHECKSUM_LED_PIN.off()
                         lcd1602.clear()
                         lcd1602.write(0, 0, "Transfer Done")
                         lcd1602.write(0, 1, "Load New Media")
@@ -68,12 +68,12 @@ def main():
                 logger.info("Monitoring for new storage devices...")
     except KeyboardInterrupt:
         logger.info("KeyboardInterrupt received. Cleaning up and exiting.")
-        GPIO.output(LED2_PIN, GPIO.LOW)
+        LED2_PIN.off()
     except Exception as e:
         logger.error(f"An unexpected error occurred: {e}")
-        GPIO.output(LED2_PIN, GPIO.HIGH)
+        LED2_PIN.on()  # Equivalent to GPIO.HIGH
     finally:
-        GPIO.cleanup()
+        # No need to call GPIO.cleanup() as gpiozero handles this internally
         lcd1602.clear()
         lcd1602.set_backlight(False)
         if hasattr(lcd1602, 'cleanup'):

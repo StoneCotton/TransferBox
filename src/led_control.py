@@ -1,31 +1,35 @@
-import RPi.GPIO as GPIO
-import time
+from gpiozero import LED, LEDBoard
+from time import sleep
 from threading import Event
 
-LED_BAR_PINS = [5, 6, 13, 19, 26, 20, 21, 16, 12, 18]
-LED1_PIN = 17
-LED2_PIN = 27
-LED3_PIN = 22
-CHECKSUM_LED_PIN = 23
+# Original variable names
+LED1_PIN = LED(17)
+LED2_PIN = LED(27)
+LED3_PIN = LED(22)
+CHECKSUM_LED_PIN = LED(23)
+
+# Create an LEDBoard object for the LED bar graph
+LED_BAR_PINS = LEDBoard(*[5, 6, 13, 19, 26, 20, 21, 16, 12, 18], pwm=True)
 
 def setup_leds():
-    GPIO.setmode(GPIO.BCM)
-    for pin in LED_BAR_PINS:
-        GPIO.setup(pin, GPIO.OUT)
-        GPIO.output(pin, GPIO.LOW)
-
-    for pin in [LED1_PIN, LED2_PIN, LED3_PIN, CHECKSUM_LED_PIN]:
-        GPIO.setup(pin, GPIO.OUT)
-        GPIO.output(pin, GPIO.LOW)
+    # No need for manual setup; `gpiozero` handles this
+    LED1_PIN.off()
+    LED2_PIN.off()
+    LED3_PIN.off()
+    CHECKSUM_LED_PIN.off()
+    LED_BAR_PINS.off()
 
 def blink_led(led_pin, stop_event, blink_speed=0.3):
     while not stop_event.is_set():
-        GPIO.output(led_pin, GPIO.HIGH)
-        time.sleep(blink_speed)
-        GPIO.output(led_pin, GPIO.LOW)
-        time.sleep(blink_speed)
+        led_pin.on()
+        sleep(blink_speed)
+        led_pin.off()
+        sleep(blink_speed)
 
 def set_led_bar_graph(progress):
     num_leds_on = int((progress / 100.0) * len(LED_BAR_PINS))
-    for i, pin in enumerate(LED_BAR_PINS):
-        GPIO.output(pin, GPIO.HIGH if i < num_leds_on else GPIO.LOW)
+    for i in range(len(LED_BAR_PINS)):
+        if i < num_leds_on:
+            LED_BAR_PINS[i].on()
+        else:
+            LED_BAR_PINS[i].off()

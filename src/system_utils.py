@@ -3,7 +3,7 @@ import platform
 import subprocess
 import logging
 import shutil
-from src.led_control import setup_leds, blink_led, GPIO
+from src.led_control import setup_leds, blink_led, LED2_PIN
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +29,7 @@ def unmount_drive(drive_mountpoint):
         logger.info(f"Unmounted {drive_mountpoint}")
     except subprocess.CalledProcessError as e:
         logger.error(f"Error unmounting {drive_mountpoint}: {e}")
-        GPIO.output(setup_leds.LED2_PIN, GPIO.HIGH)
+        LED2_PIN.on()  # Turn on the error LED if unmounting fails
 
 def has_enough_space(dump_drive_mountpoint, required_size):
     """Check if there is enough space on the dump drive."""
