@@ -27,6 +27,9 @@ up_button = Button(UP_BUTTON_PIN)
 down_button = Button(DOWN_BUTTON_PIN)
 ok_button = Button(OK_BUTTON_PIN)
 
+# Event to signal threads to stop
+stop_event = Event()
+
 def assign_menu_handlers():
     """Assign the correct handlers for when the menu is active."""
     logger.debug("Assigning menu handlers from main.py.")
@@ -54,7 +57,7 @@ current_mode = "transfer"  # Either 'transfer' or 'utility'
 def button_listener():
     global last_ok_time, ok_press_count, menu_active, current_mode
 
-    while True:
+    while not stop_event.is_set():  # Use the stop_event to control thread termination
         if back_button.is_pressed:
             logger.debug("Back button is held down.")
 
@@ -117,19 +120,19 @@ def main():
     lcd1602.clear()
     lcd1602.write(0, 0, "Storage Missing")
 
-    button_thread = Thread(target=button_listener, daemon=True)
-    button_thread.start()
-
-    while not os.path.ismount(DUMP_DRIVE_MOUNTPOINT):
-        time.sleep(2)
-
-    lcd1602.clear()
-    lcd1602.write(0, 0, "Storage Detected")
-    lcd1602.write(0, 1, "Load Media")
-
-    LED3_PIN.off()
+    button_thread = Thread(target=button_listener)
+    button_thread.start()  # Start the button listener thread (non-daemon)
 
     try:
+        while not os.path.ismount(DUMP_DRIVE_MOUNTPOINT):
+            time.sleep(2)
+
+        lcd1602.clear()
+        lcd1602.write(0, 0, "Storage Detected")
+        lcd1602.write(0, 1, "Load Media")
+
+        LED3_PIN.off()
+
         while True:
             if not transfer_in_progress and current_mode == "transfer":
                 # Ensure no menu handlers are active
@@ -153,7 +156,7 @@ def main():
                     target_dir = create_timestamped_dir(DUMP_DRIVE_MOUNTPOINT, timestamp)
                     log_file = os.path.join(target_dir, f"transfer_log_{timestamp}.log")
 
-                    stop_event = Event()
+                    stop_event.clear()
                     blink_thread = Thread(target=blink_led, args=(LED1_PIN, stop_event))
                     blink_thread.start()
 
@@ -177,7 +180,8 @@ def main():
                     logger.debug("Transfer in progress set to False after transfer.")
     except KeyboardInterrupt:
         logger.info("KeyboardInterrupt received. Cleaning up and exiting.")
-        LED2_PIN.off()
+        stop_event.set()  # Signal threads to stop
+        button_thread.join()  # Wait for the button thread to finish
     except Exception as e:
         logger.error(f"An unexpected error occurred: {e}")
         logger.debug(f"Transfer in progress at error: {transfer_in_progress}")
