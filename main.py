@@ -5,8 +5,7 @@ from src.file_transfer import copy_sd_to_dump, create_timestamped_dir, rsync_dry
 from src.lcd_display import setup_lcd, update_lcd_progress, shorten_filename, lcd1602
 from src.led_control import setup_leds, blink_led, LED1_PIN, LED2_PIN, LED3_PIN, CHECKSUM_LED_PIN, set_led_bar_graph
 from src.system_utils import get_dump_drive_mountpoint, unmount_drive
-from src.menu_setup import navigate_up, navigate_down, select_option, menu_active, display_menu, exit_menu
-
+from src.menu_setup import navigate_up, navigate_down, select_option, display_menu, handle_option_completion
 import os
 import time
 from datetime import datetime
@@ -28,14 +27,32 @@ up_button = Button(UP_BUTTON_PIN)
 down_button = Button(DOWN_BUTTON_PIN)
 ok_button = Button(OK_BUTTON_PIN)
 
+def assign_menu_handlers():
+    """Assign the correct handlers for when the menu is active."""
+    logger.debug("Assigning menu handlers from main.py.")
+    clear_button_handlers()  # Ensure previous handlers are cleared
+    up_button.when_pressed = navigate_up
+    down_button.when_pressed = navigate_down
+    ok_button.when_pressed = lambda: select_option(ok_button, back_button, up_button, down_button, assign_menu_handlers)
+    back_button.when_pressed = exit_menu_to_transfer_mode
+
+def clear_button_handlers():
+    """Clear button event handlers to avoid unintended behavior."""
+    logger.debug("Clearing button handlers to prevent unintended actions from main.py.")
+    up_button.when_pressed = None
+    down_button.when_pressed = None
+    ok_button.when_pressed = None
+    back_button.when_pressed = None
+
 # State variables
 last_ok_time = 0
 ok_press_count = 0
 transfer_in_progress = False
 menu_active = False
+current_mode = "transfer"  # Either 'transfer' or 'utility'
 
 def button_listener():
-    global last_ok_time, ok_press_count, menu_active
+    global last_ok_time, ok_press_count, menu_active, current_mode
 
     while True:
         if back_button.is_pressed:
@@ -57,8 +74,9 @@ def button_listener():
                 if ok_press_count >= 2:
                     logger.info("Menu activated.")
                     menu_active = True
+                    current_mode = "utility"
                     display_menu()
-                    assign_menu_handlers()
+                    assign_menu_handlers()  # No arguments are needed here now
                     ok_press_count = 0  # Reset count after activation
             else:
                 logger.debug("OK button is not pressed after back button.")
@@ -69,20 +87,27 @@ def button_listener():
 
         time.sleep(0.1)  # Small delay to avoid overwhelming the logs
 
-def assign_menu_handlers():
-    """Assign the correct handlers for when the menu is active."""
-    logger.debug("Assigning menu handlers.")
-    up_button.when_pressed = navigate_up
-    down_button.when_pressed = navigate_down
-    ok_button.when_pressed = select_option
-    back_button.when_pressed = exit_menu
+def exit_menu_to_transfer_mode():
+    """Exit the utility menu and return to transfer mode."""
+    global menu_active, current_mode
+    logger.info("Exiting utility menu, returning to transfer mode from main.py.")
+    menu_active = False
+    current_mode = "transfer"
+    lcd1602.clear()
+    lcd1602.write(0, 0, "Returning to")
+    lcd1602.write(0, 1, "Transfer Mode")
+    time.sleep(1)
+    clear_button_handlers()
+    display_transfer_mode_screen()
 
-def clear_button_handlers():
-    """Clear button event handlers to avoid unintended behavior."""
-    up_button.when_pressed = None
-    down_button.when_pressed = None
-    ok_button.when_pressed = None
-    back_button.when_pressed = None
+def display_transfer_mode_screen():
+    """Display the default transfer mode screen."""
+    lcd1602.clear()
+    if not os.path.ismount(DUMP_DRIVE_MOUNTPOINT):
+        lcd1602.write(0, 0, "Storage Missing")
+    else:
+        lcd1602.write(0, 0, "Storage Detected")
+        lcd1602.write(0, 1, "Load Media")
 
 def main():
     global transfer_in_progress, menu_active
@@ -106,7 +131,7 @@ def main():
 
     try:
         while True:
-            if not transfer_in_progress and not menu_active:
+            if not transfer_in_progress and current_mode == "transfer":
                 # Ensure no menu handlers are active
                 clear_button_handlers()
 
