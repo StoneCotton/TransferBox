@@ -5,6 +5,8 @@ from src.system_utils import unmount_drive
 from src.led_control import setup_leds, LED_BAR_PINS, LED1_PIN, LED2_PIN, LED3_PIN, CHECKSUM_LED_PIN
 import logging
 from threading import Lock
+import os
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -17,7 +19,7 @@ current_menu_index = 0
 processing_option = False  # Flag to prevent double handling
 
 # Menu options
-menu_options = ["List Drives", "Format Drive", "Test LEDs"]
+menu_options = ["List Drives", "Format Drive", "Unmount Drives", "Test LEDs", "Test Screen", "Shutdown", "Reboot", "Availble Space", "Version Info", "Update Firmware", "Reset to Factory"]
 
 def display_menu():
     global processing_option
@@ -96,12 +98,13 @@ def handle_option_completion(on_complete):
 
 def list_drives(ok_button, back_button, up_button, down_button):
     drives = get_mounted_drives_lsblk()
-    lcd1602.clear()
-    lcd1602.write(0, 0, "Mounted Drives:")
     for drive in drives:
+        # Get the last part of the path
+        drive_name = os.path.basename(drive)
         lcd1602.clear()
-        lcd1602.write(0, 1, drive)
-        sleep(2)  # Show each drive for 2 seconds
+        lcd1602.write(0, 0, "Mounted Drives:")
+        lcd1602.write(0, 1, drive_name)
+        time.sleep(2)  # Pause to display each drive for 2 seconds
     handle_option_completion(lambda: select_option(ok_button, back_button, up_button, down_button, handle_option_completion))
 
 def format_drive(ok_button, back_button, up_button, down_button):
