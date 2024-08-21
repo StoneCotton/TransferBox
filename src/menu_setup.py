@@ -70,6 +70,8 @@ def select_option(ok_button, back_button, up_button, down_button, on_complete):
             format_drive(ok_button, back_button, up_button, down_button)
         elif selected_option == "Test LEDs":
             test_leds(ok_button, back_button, up_button, down_button)
+        elif selected_option == "Test Screen":
+            test_screen(ok_button, back_button, up_button, down_button)
 
         # Ensure the OK button is not still pressed after completing an action
         while ok_button.is_pressed:
@@ -138,3 +140,69 @@ def test_leds(ok_button, back_button, up_button, down_button):
     lcd1602.write(0, 0, "LED Test Done")
     sleep(2)
     handle_option_completion(lambda: select_option(ok_button, back_button, up_button, down_button, handle_option_completion))
+
+def test_screen(ok_button, back_button, up_button, down_button):
+    lcd1602.write(0, 0, "Testing Screen")
+    sleep(2)
+    lcd1602.clear()
+    sleep(2)
+
+    # Test upper case alphabet on both lines
+    for i in range(1, 27):  # 26 letters in the alphabet
+        lcd1602.clear()
+        if i <= 16:
+            lcd1602.write(0, 0, "ABCDEFGHIJKLMNOPQRSTUVWXYZ"[:i])
+        else:
+            lcd1602.write(0, 0, "ABCDEFGHIJKLMNOPQRSTUVWXYZ"[:16])
+            lcd1602.write(0, 1, "ABCDEFGHIJKLMNOPQRSTUVWXYZ"[16:i])
+        sleep(0.1)  # Adding a small delay to see the changes
+
+    sleep(2)
+    lcd1602.clear()
+    sleep(2)
+
+    # Test lower case alphabet on both lines
+    for i in range(1, 27):  # 26 letters in the alphabet
+        lcd1602.clear()
+        if i <= 16:
+            lcd1602.write(0, 0, "abcdefghijklmnopqrstuvwxyz"[:i])
+        else:
+            lcd1602.write(0, 0, "abcdefghijklmnopqrstuvwxyz"[:16])
+            lcd1602.write(0, 1, "abcdefghijklmnopqrstuvwxyz"[16:i])
+        sleep(0.1)  # Adding a small delay to see the changes
+
+    sleep(2)
+    lcd1602.clear()
+    sleep(2)
+
+    # Test digits and special characters on both lines
+    for i in range(1, 21):  # 10 digits plus 10 special characters
+        lcd1602.clear()
+        if i <= 10:
+            lcd1602.write(0, 0, "0123456789"[:i])
+        else:
+            lcd1602.write(0, 0, "0123456789")
+            lcd1602.write(0, 1, ".,:;!?/()@#$%^&*"[0:i-10])
+        sleep(0.1)  # Adding a small delay to see the changes
+
+    sleep(2)
+    lcd1602.clear()
+    sleep(2)
+
+    # Test special character pattern on both lines
+    for i in range(1, 33):  # 32 `#` characters
+        lcd1602.clear()
+        if i <= 16:
+            lcd1602.write(0, 0, "################################"[:i])
+        else:
+            lcd1602.write(0, 0, "################################"[:16])
+            lcd1602.write(0, 1, "################################"[16:i])
+        sleep(0.1)  # Adding a small delay to see the changes
+
+    sleep(2)
+    lcd1602.clear()
+
+    lcd1602.write(0, 0, "Screen Test Done")
+    sleep(2)
+    handle_option_completion(lambda: select_option(ok_button, back_button, up_button, down_button, handle_option_completion))
+
