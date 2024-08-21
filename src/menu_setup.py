@@ -75,6 +75,8 @@ def select_option(ok_button, back_button, up_button, down_button, on_complete, c
             shutdown_system(ok_button, back_button, up_button, down_button, clear_handlers, assign_handlers)
         elif selected_option == "Reboot":
             reboot_system(ok_button, back_button, up_button, down_button, clear_handlers, assign_handlers)
+        elif selected_option == "Version Info":
+            version_number(ok_button, back_button, up_button, down_button, clear_handlers, assign_handlers)
         while ok_button.is_pressed:
             logger.debug("Waiting for OK button to be released after action")
             sleep(0.1)
@@ -222,3 +224,11 @@ def reboot_system(ok_button, back_button, up_button, down_button, clear_handlers
     sleep(5)
     lcd1602.set_backlight(False)
     os.system('sudo reboot now')
+
+def version_number(ok_button, back_button, up_button, down_button, clear_handlers, assign_handlers):
+    logger.info("Version Number: v0.0.1")
+    lcd1602.clear()
+    lcd1602.write(0, 0, "Version Number:")
+    lcd1602.write(0, 1, "v0.0.1 240820")
+    sleep(5)
+    handle_option_completion(lambda: select_option(ok_button, back_button, up_button, down_button, handle_option_completion, clear_handlers, assign_handlers))
