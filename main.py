@@ -36,7 +36,7 @@ def assign_menu_handlers():
     clear_button_handlers()  # Ensure previous handlers are cleared
     up_button.when_pressed = navigate_up
     down_button.when_pressed = navigate_down
-    ok_button.when_pressed = lambda: select_option(ok_button, back_button, up_button, down_button, assign_menu_handlers)
+    ok_button.when_pressed = lambda: select_option(ok_button, back_button, up_button, down_button, assign_menu_handlers, clear_button_handlers, assign_menu_handlers)
     back_button.when_pressed = exit_menu_to_transfer_mode
 
 def clear_button_handlers():

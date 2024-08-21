@@ -44,18 +44,17 @@ def navigate_down():
     current_menu_index = (current_menu_index + 1) % len(menu_options)
     display_menu()
 
-def select_option(ok_button, back_button, up_button, down_button, on_complete):
+def select_option(ok_button, back_button, up_button, down_button, on_complete, clear_handlers, assign_handlers):
     global processing_option
 
-    # Attempt to acquire the lock; if not possible, return early
     if not option_lock.acquire(blocking=False):
         return
 
     try:
-        if processing_option:  # Skip if an option is already being processed
+        if processing_option:
             return
 
-        processing_option = True  # Set the flag
+        processing_option = True
         logger.info(f"OK button pressed, selecting option at index {current_menu_index}.")
 
         selected_option = menu_options[current_menu_index]
@@ -65,27 +64,27 @@ def select_option(ok_button, back_button, up_button, down_button, on_complete):
         lcd1602.write(0, 1, "Running...")
 
         if selected_option == "List Drives":
-            list_drives(ok_button, back_button, up_button, down_button)
+            list_drives(ok_button, back_button, up_button, down_button, clear_handlers, assign_handlers)
         elif selected_option == "Format Drive":
-            format_drive(ok_button, back_button, up_button, down_button)
+            format_drive(ok_button, back_button, up_button, down_button, clear_handlers, assign_handlers)
         elif selected_option == "Test LEDs":
-            test_leds(ok_button, back_button, up_button, down_button)
+            test_leds(ok_button, back_button, up_button, down_button, clear_handlers, assign_handlers)
         elif selected_option == "Test Screen":
-            test_screen(ok_button, back_button, up_button, down_button)
-
-        # Ensure the OK button is not still pressed after completing an action
+            test_screen(ok_button, back_button, up_button, down_button, clear_handlers, assign_handlers)
+        elif selected_option == "Shutdown":
+            shutdown_system(ok_button, back_button, up_button, down_button, clear_handlers, assign_handlers)
+        elif selected_option == "Reboot":
+            reboot_system(ok_button, back_button, up_button, down_button, clear_handlers, assign_handlers)
         while ok_button.is_pressed:
             logger.debug("Waiting for OK button to be released after action")
             sleep(0.1)
 
         logger.info("OK button released, returning to menu.")
-        
-        # Adding a debounce delay to prevent immediate re-trigger
         sleep(0.5)
 
     finally:
-        processing_option = False  # Reset the flag only after ensuring the button is released and debounce delay is applied
-        option_lock.release()  # Release the lock
+        processing_option = False
+        option_lock.release()
         on_complete()
 
 def handle_option_completion(on_complete):
@@ -98,7 +97,7 @@ def handle_option_completion(on_complete):
 
     display_menu()
 
-def list_drives(ok_button, back_button, up_button, down_button):
+def list_drives(ok_button, back_button, up_button, down_button, clear_handlers, assign_handlers):
     drives = get_mounted_drives_lsblk()
     for drive in drives:
         # Get the last part of the path
@@ -107,18 +106,18 @@ def list_drives(ok_button, back_button, up_button, down_button):
         lcd1602.write(0, 0, "Mounted Drives:")
         lcd1602.write(0, 1, drive_name)
         time.sleep(2)  # Pause to display each drive for 2 seconds
-    handle_option_completion(lambda: select_option(ok_button, back_button, up_button, down_button, handle_option_completion))
+    handle_option_completion(lambda: select_option(ok_button, back_button, up_button, down_button, handle_option_completion, clear_handlers, assign_handlers))
 
-def format_drive(ok_button, back_button, up_button, down_button):
+def format_drive(ok_button, back_button, up_button, down_button, clear_handlers, assign_handlers):
     # Implement drive formatting logic here
     lcd1602.clear()
     lcd1602.write(0, 0, "Formatting...")
     sleep(2)
     lcd1602.clear()
     lcd1602.write(0, 1, "Done")
-    handle_option_completion(lambda: select_option(ok_button, back_button, up_button, down_button, handle_option_completion))
+    handle_option_completion(lambda: select_option(ok_button, back_button, up_button, down_button, handle_option_completion, clear_handlers, assign_handlers))
 
-def test_leds(ok_button, back_button, up_button, down_button):
+def test_leds(ok_button, back_button, up_button, down_button, clear_handlers, assign_handlers):
     lcd1602.write(0, 0, "Testing LEDs")
     setup_leds()
     LED1_PIN.on()
@@ -139,9 +138,9 @@ def test_leds(ok_button, back_button, up_button, down_button):
     lcd1602.clear()
     lcd1602.write(0, 0, "LED Test Done")
     sleep(2)
-    handle_option_completion(lambda: select_option(ok_button, back_button, up_button, down_button, handle_option_completion))
+    handle_option_completion(lambda: select_option(ok_button, back_button, up_button, down_button, handle_option_completion, clear_handlers, assign_handlers))
 
-def test_screen(ok_button, back_button, up_button, down_button):
+def test_screen(ok_button, back_button, up_button, down_button, clear_handlers, assign_handlers):
     lcd1602.write(0, 0, "Testing Screen")
     sleep(2)
     lcd1602.clear()
@@ -204,5 +203,22 @@ def test_screen(ok_button, back_button, up_button, down_button):
 
     lcd1602.write(0, 0, "Screen Test Done")
     sleep(2)
-    handle_option_completion(lambda: select_option(ok_button, back_button, up_button, down_button, handle_option_completion))
+    handle_option_completion(lambda: select_option(ok_button, back_button, up_button, down_button, handle_option_completion, clear_handlers, assign_handlers))
 
+def shutdown_system(ok_button, back_button, up_button, down_button, clear_handlers, assign_handlers):
+    logger.info("Shutting down the system...")
+    lcd1602.clear()
+    lcd1602.write(0, 0, "Shutting Down...")
+    lcd1602.write(0, 1, "Wait 60 Seconds.")
+    sleep(5)
+    lcd1602.set_backlight(False)
+    os.system('sudo shutdown now')
+
+def reboot_system(ok_button, back_button, up_button, down_button, clear_handlers, assign_handlers):
+    logger.info("Rebooting the system...")
+    lcd1602.clear()
+    lcd1602.write(0, 0, "Rebooting...")
+    lcd1602.write(0, 1, "Wait 60 Seconds.")
+    sleep(5)
+    lcd1602.set_backlight(False)
+    os.system('sudo reboot now')
