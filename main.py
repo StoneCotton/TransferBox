@@ -17,9 +17,9 @@ DUMP_DRIVE_MOUNTPOINT = get_dump_drive_mountpoint()
 
 # GPIO pins for buttons
 BACK_BUTTON_PIN = 10
-UP_BUTTON_PIN = 11
-DOWN_BUTTON_PIN = 12
-OK_BUTTON_PIN = 13
+UP_BUTTON_PIN = 9
+DOWN_BUTTON_PIN = 11
+OK_BUTTON_PIN = 8
 
 # Initialize buttons
 back_button = Button(BACK_BUTTON_PIN)
