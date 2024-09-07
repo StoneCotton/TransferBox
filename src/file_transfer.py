@@ -108,7 +108,7 @@ def rsync_copy(source, destination, file_size, file_number, file_count, retries=
 def calculate_checksum(file_path, retries=3, delay=5):
     """Calculate checksum with LED blinking for checksum operation."""
     stop_blink_event = Event()
-    blink_thread = Thread(target=blink_led, args=(CHECKSUM_LED, stop_blink_event, 0.2))
+    blink_thread = Thread(target=blink_led, args=(CHECKSUM_LED, stop_blink_event, 0.1))
     blink_thread.start()  # Start blinking checksum LED
 
     for attempt in range(1, retries + 1):
