@@ -11,10 +11,11 @@ import time
 from datetime import datetime
 from threading import Thread, Event
 from gpiozero import Button
-import src.pi74HC595 as pi74HC595
+from src.pi74HC595 import pi74HC595
 
 logger = setup_logging()
 DUMP_DRIVE_MOUNTPOINT = get_dump_drive_mountpoint()
+shift_register = pi74HC595(DS=7, ST=26, SH=19, daisy_chain=2)
 
 # GPIO pins for buttons
 BACK_BUTTON_PIN = 10
@@ -181,10 +182,11 @@ def main():
         set_led_state(CHECKSUM_LED, False)
         set_led_state(SUCCESS_LED, False)
         set_led_state(ERROR_LED, False)
+        set_led_bar_graph(0)
         lcd1602.clear()
         lcd1602.set_backlight(False)
-        pi74HC595.clear()
-        pi74HC595.cleanup()
+        shift_register.clear()
+        shift_register.cleanup()
         logger.info("Exiting program.")
 
 

@@ -6,6 +6,7 @@ class pi74HC595:
         self, DS: int = 11, ST: int = 13, SH: int = 15, daisy_chain: int = 1,
     ):
         gpio.setwarnings(False)  # Add this line to suppress warnings
+        gpio.setmode(gpio.BCM)
 
         if not (isinstance(DS, int) or isinstance(ST, int) or isinstance(SH, int)):
             raise ValueError("Pins must be int")
@@ -26,7 +27,6 @@ class pi74HC595:
         self.clear()
 
     def _setup_board(self):
-        gpio.setmode(gpio.BCM)
         gpio.setup(self.data, gpio.OUT)
         gpio.output(self.data, gpio.LOW)
         gpio.setup(self.parallel, gpio.OUT)
@@ -123,6 +123,9 @@ class pi74HC595:
         if not isinstance(values, list):
             raise ValueError("Argument must be a list")
 
+        # Reverse the list to correct the output order for the shift register
+        values = values[::-1]
+
         for i in range(len(values)):
             if values[i] == True:
                 values[i] = 1
@@ -131,6 +134,7 @@ class pi74HC595:
             else:
                 raise ValueError("Values within list must be 1, 0, or boolean")
         self._set_values(values)
+
 
     def set_by_int(self, value: int):
         """
