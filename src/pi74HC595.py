@@ -5,6 +5,7 @@ class pi74HC595:
     def __init__(
         self, DS: int = 11, ST: int = 13, SH: int = 15, daisy_chain: int = 1,
     ):
+        gpio.setwarnings(False)  # Add this line to suppress warnings
 
         if not (isinstance(DS, int) or isinstance(ST, int) or isinstance(SH, int)):
             raise ValueError("Pins must be int")
@@ -25,6 +26,7 @@ class pi74HC595:
         self.clear()
 
     def _setup_board(self):
+        gpio.setmode(gpio.BCM)
         gpio.setup(self.data, gpio.OUT)
         gpio.output(self.data, gpio.LOW)
         gpio.setup(self.parallel, gpio.OUT)
@@ -190,3 +192,6 @@ class pi74HC595:
 
         """
         self._set_values([0, 0, 0, 0, 0, 0, 0, 0] * self.daisy_chain)
+    def cleanup(self):
+        """Clean up the GPIO pins."""
+        gpio.cleanup()

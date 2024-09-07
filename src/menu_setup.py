@@ -2,7 +2,7 @@ from time import sleep
 from src.lcd_display import lcd1602
 from src.drive_detection import get_mounted_drives_lsblk
 from src.system_utils import unmount_drive
-from src.led_control import setup_leds, LED_BAR_PINS, LED1_PIN, LED2_PIN, LED3_PIN, CHECKSUM_LED_PIN
+from src.led_control import setup_leds, set_led_state, PROGRESS_LED, CHECKSUM_LED, SUCCESS_LED, ERROR_LED, BAR_GRAPH_LEDS
 import logging
 from threading import Lock
 import os
@@ -120,23 +120,17 @@ def format_drive(ok_button, back_button, up_button, down_button, clear_handlers,
     handle_option_completion(lambda: select_option(ok_button, back_button, up_button, down_button, handle_option_completion, clear_handlers, assign_handlers))
 
 def test_leds(ok_button, back_button, up_button, down_button, clear_handlers, assign_handlers):
+    """Test all LEDs by turning them on/off."""
     lcd1602.write(0, 0, "Testing LEDs")
     setup_leds()
-    LED1_PIN.on()
-    sleep(2)
-    LED1_PIN.off()
-    LED2_PIN.on()
-    sleep(2)
-    LED2_PIN.off()
-    LED3_PIN.on()
-    sleep(2)
-    LED3_PIN.off()
-    CHECKSUM_LED_PIN.on()
-    sleep(2)
-    CHECKSUM_LED_PIN.off()
-    LED_BAR_PINS.on()
-    sleep(2)
-    LED_BAR_PINS.off()
+    
+    leds = [PROGRESS_LED, CHECKSUM_LED, SUCCESS_LED, ERROR_LED] + BAR_GRAPH_LEDS
+    
+    for led in leds:
+        set_led_state(led, True)
+        sleep(0.5)
+        set_led_state(led, False)
+
     lcd1602.clear()
     lcd1602.write(0, 0, "LED Test Done")
     sleep(2)

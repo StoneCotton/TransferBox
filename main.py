@@ -3,7 +3,7 @@ from src.drive_detection import get_mounted_drives_lsblk, detect_new_drive, wait
 from src.mhl_handler import initialize_mhl_file, add_file_to_mhl
 from src.file_transfer import copy_sd_to_dump, create_timestamped_dir, rsync_dry_run, rsync_copy, copy_file_with_checksum_verification
 from src.lcd_display import setup_lcd, update_lcd_progress, shorten_filename, lcd1602
-from src.led_control import setup_leds, blink_led, LED1_PIN, LED2_PIN, LED3_PIN, CHECKSUM_LED_PIN, set_led_bar_graph
+from src.led_control import setup_leds, set_led_state, blink_led, PROGRESS_LED, CHECKSUM_LED, SUCCESS_LED, ERROR_LED, set_led_bar_graph
 from src.system_utils import get_dump_drive_mountpoint, unmount_drive
 from src.menu_setup import navigate_up, navigate_down, select_option, display_menu, handle_option_completion
 import os
@@ -11,6 +11,7 @@ import time
 from datetime import datetime
 from threading import Thread, Event
 from gpiozero import Button
+import src.pi74HC595 as pi74HC595
 
 logger = setup_logging()
 DUMP_DRIVE_MOUNTPOINT = get_dump_drive_mountpoint()
@@ -121,7 +122,7 @@ def main():
     lcd1602.write(0, 0, "Storage Missing")
 
     button_thread = Thread(target=button_listener)
-    button_thread.start()  # Start the button listener thread (non-daemon)
+    button_thread.start()
 
     try:
         while not os.path.ismount(DUMP_DRIVE_MOUNTPOINT):
@@ -131,41 +132,34 @@ def main():
         lcd1602.write(0, 0, "Storage Detected")
         lcd1602.write(0, 1, "Load Media")
 
-        LED3_PIN.off()
+        set_led_state(SUCCESS_LED, False)  # Turn off success LED
 
         while True:
             if not transfer_in_progress and current_mode == "transfer":
-                # Ensure no menu handlers are active
                 clear_button_handlers()
 
-                # Start the transfer process
                 initial_drives = get_mounted_drives_lsblk()
-                logger.debug(f"Initial mounted drives: {initial_drives}")
-
                 logger.info("Waiting for SD card to be plugged in...")
                 sd_mountpoint = detect_new_drive(initial_drives)
                 if sd_mountpoint:
                     transfer_in_progress = True
-                    logger.info(f"SD card detected at {sd_mountpoint}.")
-                    logger.debug(f"Updated state of drives: {get_mounted_drives_lsblk()}")
+                    logger.info(f"SD card detected at {sd_mountpoint}")
 
-                    LED3_PIN.off()
-                    LED2_PIN.off()
+                    set_led_state(PROGRESS_LED, True)  # Turn on progress LED
 
                     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
                     target_dir = create_timestamped_dir(DUMP_DRIVE_MOUNTPOINT, timestamp)
                     log_file = os.path.join(target_dir, f"transfer_log_{timestamp}.log")
 
                     stop_event.clear()
-                    blink_thread = Thread(target=blink_led, args=(LED1_PIN, stop_event))
+                    blink_thread = Thread(target=blink_led, args=(PROGRESS_LED, stop_event))
                     blink_thread.start()
 
                     try:
                         success = copy_sd_to_dump(sd_mountpoint, DUMP_DRIVE_MOUNTPOINT, log_file, stop_event, blink_thread)
                         if success:
-                            LED3_PIN.on()
-                            LED1_PIN.off()
-                            CHECKSUM_LED_PIN.off()
+                            set_led_state(SUCCESS_LED, True)  # Turn on success LED
+                            set_led_state(PROGRESS_LED, False)
                             lcd1602.clear()
                             lcd1602.write(0, 0, "Transfer Done")
                             lcd1602.write(0, 1, "Load New Media")
@@ -175,27 +169,24 @@ def main():
 
                     unmount_drive(sd_mountpoint)
                     wait_for_drive_removal(sd_mountpoint)
-                    logger.info("Monitoring for new storage devices...")
                     transfer_in_progress = False
-                    logger.debug("Transfer in progress set to False after transfer.")
     except KeyboardInterrupt:
-        logger.info("KeyboardInterrupt received. Cleaning up and exiting.")
-        stop_event.set()  # Signal threads to stop
-        button_thread.join()  # Wait for the button thread to finish
+        stop_event.set()
+        button_thread.join()
     except Exception as e:
-        logger.error(f"An unexpected error occurred: {e}")
-        logger.debug(f"Transfer in progress at error: {transfer_in_progress}")
-        LED2_PIN.on()
+        logger.error(f"An error occurred: {e}")
+        set_led_state(ERROR_LED, True)
     finally:
-        logger.debug("Final cleanup.")
-        LED1_PIN.off()
-        LED2_PIN.off()
-        LED3_PIN.off()
-        CHECKSUM_LED_PIN.off()
+        set_led_state(PROGRESS_LED, False)
+        set_led_state(CHECKSUM_LED, False)
+        set_led_state(SUCCESS_LED, False)
+        set_led_state(ERROR_LED, False)
         lcd1602.clear()
         lcd1602.set_backlight(False)
-        if hasattr(lcd1602, 'cleanup'):
-            lcd1602.cleanup()
+        pi74HC595.clear()
+        pi74HC595.cleanup()
+        logger.info("Exiting program.")
+
 
 if __name__ == "__main__":
     main()
