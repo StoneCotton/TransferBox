@@ -1,17 +1,21 @@
-from src.logger_setup import setup_logging
-from src.drive_detection import get_mounted_drives_lsblk, detect_new_drive, wait_for_drive_removal
-from src.mhl_handler import initialize_mhl_file, add_file_to_mhl
-from src.file_transfer import copy_sd_to_dump, create_timestamped_dir, rsync_dry_run, rsync_copy, copy_file_with_checksum_verification
-from src.lcd_display import setup_lcd, update_lcd_progress, shorten_filename, lcd1602
-from src.led_control import setup_leds, set_led_state, blink_led, PROGRESS_LED, CHECKSUM_LED, SUCCESS_LED, ERROR_LED, set_led_bar_graph
-from src.system_utils import get_dump_drive_mountpoint, unmount_drive
-from src.menu_setup import navigate_up, navigate_down, select_option, display_menu, handle_option_completion
 import os
 import time
 from datetime import datetime
 from threading import Thread, Event
+
 from gpiozero import Button
 from src.pi74HC595 import pi74HC595
+
+from src.logger_setup import setup_logging
+from src.drive_detection import get_mounted_drives_lsblk, detect_new_drive, wait_for_drive_removal
+from src.mhl_handler import initialize_mhl_file, add_file_to_mhl
+from src.file_transfer import copy_sd_to_dump, create_timestamped_dir
+from src.lcd_display import setup_lcd, lcd1602
+from src.led_control import setup_leds, set_led_state, PROGRESS_LED, SUCCESS_LED, ERROR_LED, set_led_bar_graph, blink_led
+from src.system_utils import get_dump_drive_mountpoint, unmount_drive
+from src.menu_setup import navigate_up, navigate_down, select_option, display_menu
+from src.button_handler import ButtonHandler
+from src.state_manager import StateManager
 
 logger = setup_logging()
 DUMP_DRIVE_MOUNTPOINT = get_dump_drive_mountpoint()
@@ -32,6 +36,9 @@ ok_button = Button(OK_BUTTON_PIN)
 # Event to signal threads to stop
 stop_event = Event()
 
+# Initialize StateManager
+state_manager = StateManager()
+
 def assign_menu_handlers():
     """Assign the correct handlers for when the menu is active."""
     logger.debug("Assigning menu handlers from main.py.")
@@ -49,55 +56,11 @@ def clear_button_handlers():
     ok_button.when_pressed = None
     back_button.when_pressed = None
 
-# State variables
-last_ok_time = 0
-ok_press_count = 0
-transfer_in_progress = False
-menu_active = False
-current_mode = "transfer"  # Either 'transfer' or 'utility'
-
-def button_listener():
-    global last_ok_time, ok_press_count, menu_active, current_mode
-
-    while not stop_event.is_set():  # Use the stop_event to control thread termination
-        if back_button.is_pressed:
-            logger.debug("Back button is held down.")
-
-            if ok_button.is_pressed:
-                logger.debug("OK button is pressed.")
-                current_time = time.time()
-
-                if current_time - last_ok_time <= 2:
-                    ok_press_count += 1
-                    logger.debug(f"OK button press count: {ok_press_count}")
-                else:
-                    ok_press_count = 1  # Reset counter if more than 2 seconds passed
-                    logger.debug("Resetting OK button press count due to timeout.")
-
-                last_ok_time = current_time
-
-                if ok_press_count >= 2:
-                    logger.info("Menu activated.")
-                    menu_active = True
-                    current_mode = "utility"
-                    display_menu()
-                    assign_menu_handlers()  # No arguments are needed here now
-                    ok_press_count = 0  # Reset count after activation
-            else:
-                logger.debug("OK button is not pressed after back button.")
-        else:
-            if ok_press_count > 0:
-                logger.debug("Back button released, resetting OK press count.")
-            ok_press_count = 0
-
-        time.sleep(0.1)  # Small delay to avoid overwhelming the logs
-
 def exit_menu_to_transfer_mode():
     """Exit the utility menu and return to transfer mode."""
-    global menu_active, current_mode
     logger.info("Exiting utility menu, returning to transfer mode from main.py.")
-    menu_active = False
-    current_mode = "transfer"
+    state_manager.set_menu_active(False)
+    state_manager.set_current_mode("transfer")
     lcd1602.clear()
     lcd1602.write(0, 0, "Returning to")
     lcd1602.write(0, 1, "Transfer Mode")
@@ -114,15 +77,19 @@ def display_transfer_mode_screen():
         lcd1602.write(0, 0, "Storage Detected")
         lcd1602.write(0, 1, "Load Media")
 
-def main():
-    global transfer_in_progress, menu_active
+def menu_callback():
+    """Callback function to be called when menu is activated."""
+    display_menu()
+    assign_menu_handlers()
 
+def main():
     setup_leds()
     setup_lcd()
     lcd1602.clear()
     lcd1602.write(0, 0, "Storage Missing")
 
-    button_thread = Thread(target=button_listener)
+    button_handler = ButtonHandler(back_button, ok_button, up_button, down_button, state_manager, menu_callback)
+    button_thread = Thread(target=button_handler.button_listener, args=(stop_event,))
     button_thread.start()
 
     try:
@@ -141,14 +108,14 @@ def main():
 
         while True:
             # Only reset LEDs when starting a new transfer
-            if not transfer_in_progress and current_mode == "transfer":
+            if not state_manager.get_transfer_in_progress() and state_manager.get_current_mode() == "transfer":
                 initial_drives = get_mounted_drives_lsblk()
                 logger.info("Waiting for SD card to be plugged in...")
 
                 # Detect new SD card
                 sd_mountpoint = detect_new_drive(initial_drives)
                 if sd_mountpoint:
-                    transfer_in_progress = True
+                    state_manager.set_transfer_in_progress(True)
                     logger.info(f"SD card detected at {sd_mountpoint}")
 
                     # Now we reset LEDs because a new transfer is starting
@@ -195,7 +162,7 @@ def main():
                     unmount_drive(sd_mountpoint)
                     wait_for_drive_removal(sd_mountpoint)
 
-                    transfer_in_progress = False
+                    state_manager.set_transfer_in_progress(False)
 
     except KeyboardInterrupt:
         stop_event.set()
@@ -206,7 +173,6 @@ def main():
     finally:
         # Cleanup and turn off all LEDs when the program exits
         set_led_state(PROGRESS_LED, False)
-        set_led_state(CHECKSUM_LED, False)
         set_led_state(SUCCESS_LED, False)
         set_led_state(ERROR_LED, False)
         set_led_bar_graph(0)
@@ -215,8 +181,6 @@ def main():
         shift_register.clear()
         shift_register.cleanup()
         logger.info("Exiting program.")
-
-
 
 if __name__ == "__main__":
     main()
