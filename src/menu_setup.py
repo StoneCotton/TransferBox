@@ -1,12 +1,14 @@
 from time import sleep
 from src.lcd_display import lcd1602
 from src.drive_detection import get_mounted_drives_lsblk
-from src.system_utils import unmount_drive
+from src.system_utils import unmount_drive, get_dump_drive_mountpoint
 from src.led_control import setup_leds, set_led_state, PROGRESS_LED, CHECKSUM_LED, SUCCESS_LED, ERROR_LED, BAR_GRAPH_LEDS
 import logging
 from threading import Lock
 import os
 import time
+import subprocess
+import shutil
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +21,7 @@ current_menu_index = 0
 processing_option = False  # Flag to prevent double handling
 
 # Menu options
-menu_options = ["List Drives", "Format Drive", "Unmount Drives", "Test LEDs", "Test Screen", "Shutdown", "Reboot", "Availble Space", "Version Info", "Update Firmware", "Reset to Factory"]
+menu_options = ["List Drives", "Format Drive", "Unmount Drives", "Test LEDs", "Test Screen", "Shutdown", "Reboot", "Available Space", "Version Info", "Update Firmware", "Reset to Factory"]
 
 def display_menu():
     global processing_option
@@ -77,6 +79,8 @@ def select_option(ok_button, back_button, up_button, down_button, on_complete, c
             reboot_system(ok_button, back_button, up_button, down_button, clear_handlers, assign_handlers)
         elif selected_option == "Version Info":
             version_number(ok_button, back_button, up_button, down_button, clear_handlers, assign_handlers)
+        elif selected_option == "Available Space":
+            check_available_space(ok_button, back_button, up_button, down_button, clear_handlers, assign_handlers)
         while ok_button.is_pressed:
             logger.debug("Waiting for OK button to be released after action")
             sleep(0.1)
@@ -111,13 +115,72 @@ def list_drives(ok_button, back_button, up_button, down_button, clear_handlers, 
     handle_option_completion(lambda: select_option(ok_button, back_button, up_button, down_button, handle_option_completion, clear_handlers, assign_handlers))
 
 def format_drive(ok_button, back_button, up_button, down_button, clear_handlers, assign_handlers):
-    # Implement drive formatting logic here
+    dump_drive_mountpoint = get_dump_drive_mountpoint()
+    mounted_drives = get_mounted_drives_lsblk()
+
+    if dump_drive_mountpoint not in mounted_drives:
+        lcd1602.clear()
+        lcd1602.write(0, 0, "DUMP_DRIVE not")
+        lcd1602.write(0, 1, "connected")
+        time.sleep(2)
+        return handle_option_completion(lambda: select_option(ok_button, back_button, up_button, down_button, handle_option_completion, clear_handlers, assign_handlers))
+
+    lcd1602.clear()
+    lcd1602.write(0, 0, "Hold OK for 3s")
+    lcd1602.write(0, 1, "to format drive")
+
+    start_time = time.time()
+    while ok_button.is_pressed:
+        if time.time() - start_time >= 3:
+            break
+        time.sleep(0.1)
+    
+    if time.time() - start_time < 3:
+        lcd1602.clear()
+        lcd1602.write(0, 0, "Format cancelled")
+        time.sleep(2)
+        return handle_option_completion(lambda: select_option(ok_button, back_button, up_button, down_button, handle_option_completion, clear_handlers, assign_handlers))
+
     lcd1602.clear()
     lcd1602.write(0, 0, "Formatting...")
-    sleep(2)
-    lcd1602.clear()
-    lcd1602.write(0, 1, "Done")
-    handle_option_completion(lambda: select_option(ok_button, back_button, up_button, down_button, handle_option_completion, clear_handlers, assign_handlers))
+    lcd1602.write(0, 1, "Please wait...")
+
+    try:
+        # Unmount the drive before formatting
+        subprocess.run(['sudo', 'umount', dump_drive_mountpoint], check=True)
+        
+        # Get the device name from the mountpoint
+        lsblk_output = subprocess.check_output(['lsblk', '-ndo', 'NAME,MOUNTPOINT']).decode()
+        for line in lsblk_output.split('\n'):
+            if dump_drive_mountpoint in line:
+                device = '/dev/' + line.split()[0]
+                break
+        else:
+            raise ValueError("Couldn't find device for DUMP_DRIVE")
+
+        # Format the drive as NTFS
+        subprocess.run(['sudo', 'mkfs.ntfs', '-f', '-L', 'DUMP_DRIVE', device], check=True)
+        
+        # Remount the drive
+        subprocess.run(['sudo', 'mount', '-a'], check=True)
+
+        lcd1602.clear()
+        lcd1602.write(0, 0, "Format complete")
+        lcd1602.write(0, 1, "DUMP_DRIVE ready")
+        logger.info("DUMP_DRIVE formatted successfully")
+    except subprocess.CalledProcessError as e:
+        lcd1602.clear()
+        lcd1602.write(0, 0, "Format failed")
+        lcd1602.write(0, 1, "Check logs")
+        logger.error(f"Error formatting DUMP_DRIVE: {e}")
+    except ValueError as e:
+        lcd1602.clear()
+        lcd1602.write(0, 0, "Error: Drive not")
+        lcd1602.write(0, 1, "found")
+        logger.error(f"Error finding DUMP_DRIVE: {e}")
+
+    time.sleep(3)
+    return handle_option_completion(lambda: select_option(ok_button, back_button, up_button, down_button, handle_option_completion, clear_handlers, assign_handlers))
 
 def test_leds(ok_button, back_button, up_button, down_button, clear_handlers, assign_handlers):
     """Test all LEDs by turning them on/off."""
@@ -226,3 +289,45 @@ def version_number(ok_button, back_button, up_button, down_button, clear_handler
     lcd1602.write(0, 1, "v0.0.1 240820")
     sleep(5)
     handle_option_completion(lambda: select_option(ok_button, back_button, up_button, down_button, handle_option_completion, clear_handlers, assign_handlers))
+
+def check_available_space(ok_button, back_button, up_button, down_button, clear_handlers, assign_handlers):
+    dump_drive_mountpoint = get_dump_drive_mountpoint()
+
+    if not os.path.ismount(dump_drive_mountpoint):
+        lcd1602.clear()
+        lcd1602.write(0, 0, "DUMP_DRIVE not")
+        lcd1602.write(0, 1, "connected")
+        logger.warning("DUMP_DRIVE not connected when checking available space")
+    else:
+        try:
+            total, used, free = shutil.disk_usage(dump_drive_mountpoint)
+            
+            # Convert to appropriate unit
+            if free < 999 * 1024 * 1024:  # Less than 999 MB
+                free_space = free / (1024 * 1024)
+                unit = "MB"
+            elif free < 999 * 1024 * 1024 * 1024:  # Less than 999 GB
+                free_space = free / (1024 * 1024 * 1024)
+                unit = "GB"
+            else:  # 1 TB or more
+                free_space = free / (1024 * 1024 * 1024 * 1024)
+                unit = "TB"
+            
+            # Round to 2 decimal places
+            free_space = round(free_space, 2)
+            
+            lcd1602.clear()
+            lcd1602.write(0, 0, "Available Space:")
+            lcd1602.write(0, 1, f"{free_space} {unit}")
+            logger.info(f"Available space on DUMP_DRIVE: {free_space} {unit}")
+        except Exception as e:
+            lcd1602.clear()
+            lcd1602.write(0, 0, "Error checking")
+            lcd1602.write(0, 1, "available space")
+            logger.error(f"Error checking available space: {e}")
+
+    # Wait for OK button press to return to menu
+    while not ok_button.is_pressed:
+        pass
+    
+    return handle_option_completion(lambda: select_option(ok_button, back_button, up_button, down_button, handle_option_completion, clear_handlers, assign_handlers))
