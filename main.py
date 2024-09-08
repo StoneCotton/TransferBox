@@ -126,6 +126,7 @@ def main():
     button_thread.start()
 
     try:
+        # Wait until the dump drive is mounted
         while not os.path.ismount(DUMP_DRIVE_MOUNTPOINT):
             time.sleep(2)
 
@@ -133,21 +134,31 @@ def main():
         lcd1602.write(0, 0, "Storage Detected")
         lcd1602.write(0, 1, "Load Media")
 
-        set_led_state(SUCCESS_LED, False)  # Turn off success LED
+        # This LED state resetting should only happen on program startup
+        set_led_state(SUCCESS_LED, False)  # Initially turn off success LED
+        set_led_state(ERROR_LED, False)    # Initially turn off error LED
+        set_led_state(PROGRESS_LED, False) # Ensure progress LED is off
 
         while True:
+            # Only reset LEDs when starting a new transfer
             if not transfer_in_progress and current_mode == "transfer":
-                clear_button_handlers()
-
                 initial_drives = get_mounted_drives_lsblk()
                 logger.info("Waiting for SD card to be plugged in...")
+
+                # Detect new SD card
                 sd_mountpoint = detect_new_drive(initial_drives)
                 if sd_mountpoint:
                     transfer_in_progress = True
                     logger.info(f"SD card detected at {sd_mountpoint}")
 
-                    set_led_state(PROGRESS_LED, True)  # Turn on progress LED
+                    # Now we reset LEDs because a new transfer is starting
+                    set_led_state(SUCCESS_LED, False)  # Turn off previous success LED
+                    set_led_state(ERROR_LED, False)    # Turn off previous error LED
+                    set_led_bar_graph(0)               # Reset the progress bar
 
+                    set_led_state(PROGRESS_LED, True)  # Turn on progress LED for new transfer
+
+                    # Proceed with transfer
                     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
                     target_dir = create_timestamped_dir(DUMP_DRIVE_MOUNTPOINT, timestamp)
                     log_file = os.path.join(target_dir, f"transfer_log_{timestamp}.log")
@@ -159,18 +170,33 @@ def main():
                     try:
                         success = copy_sd_to_dump(sd_mountpoint, DUMP_DRIVE_MOUNTPOINT, log_file, stop_event, blink_thread)
                         if success:
-                            set_led_state(SUCCESS_LED, True)  # Turn on success LED
-                            set_led_state(PROGRESS_LED, False)
+                            set_led_state(SUCCESS_LED, True)  # Turn on success LED after a successful transfer
+                            set_led_state(PROGRESS_LED, False) # Turn off progress LED when done
                             lcd1602.clear()
                             lcd1602.write(0, 0, "Transfer Done")
                             lcd1602.write(0, 1, "Load New Media")
+                        else:
+                            set_led_state(PROGRESS_LED, False) # Ensure progress LED is off in case of failure
                     finally:
                         stop_event.set()
                         blink_thread.join()
 
+                    # After the transfer, we either show SUCCESS_LED or ERROR_LED depending on the result
+                    if success:
+                        set_led_state(PROGRESS_LED, False) # Turn off progress LED when done
+                        set_led_state(SUCCESS_LED, True)  # Keep the success LED on after successful transfer
+                        set_led_state(ERROR_LED, False)    # Turn off the error LED if the transfer succeeded
+                    else:
+                        set_led_state(ERROR_LED, True)    # Keep the error LED on if the transfer failed
+                        set_led_state(SUCCESS_LED, False)  # Turn off the success LED if the transfer failed
+                        set_led_state(PROGRESS_LED, False)
+
+                    # Unmount and wait for card removal
                     unmount_drive(sd_mountpoint)
                     wait_for_drive_removal(sd_mountpoint)
+
                     transfer_in_progress = False
+
     except KeyboardInterrupt:
         stop_event.set()
         button_thread.join()
@@ -178,6 +204,7 @@ def main():
         logger.error(f"An error occurred: {e}")
         set_led_state(ERROR_LED, True)
     finally:
+        # Cleanup and turn off all LEDs when the program exits
         set_led_state(PROGRESS_LED, False)
         set_led_state(CHECKSUM_LED, False)
         set_led_state(SUCCESS_LED, False)
@@ -188,6 +215,7 @@ def main():
         shift_register.clear()
         shift_register.cleanup()
         logger.info("Exiting program.")
+
 
 
 if __name__ == "__main__":

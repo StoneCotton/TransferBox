@@ -174,7 +174,6 @@ def copy_file_with_checksum_verification(src_path, dst_path, file_number, file_c
         set_led_state(ERROR_LED, True)  # Turn on error LED
         return False
 
-
 def copy_sd_to_dump(sd_mountpoint, dump_drive_mountpoint, log_file, stop_event, blink_thread):
     """Main function for copying files from the SD card to the dump drive."""
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -183,31 +182,30 @@ def copy_sd_to_dump(sd_mountpoint, dump_drive_mountpoint, log_file, stop_event, 
 
     logger.info(f"Starting to copy files from {sd_mountpoint} to {dump_drive_mountpoint}")
 
-    # Initialize MHL file
+    # Initialize MHL file for logging the transfer
     mhl_filename, tree, hashes = initialize_mhl_file(timestamp, target_dir)
 
     # Perform dry run to get file count and total size
     file_count, total_size = rsync_dry_run(sd_mountpoint, target_dir)
     logger.info(f"Number of files to transfer: {file_count}, Total size: {total_size} bytes")
 
+    # Check if there's enough space on the target drive
     if not has_enough_space(dump_drive_mountpoint, total_size):
         logger.error(f"Not enough space on {dump_drive_mountpoint}. Required: {total_size} bytes")
         
+        # Stop blinking progress LED and show error
         stop_event.set()
         blink_thread.join()
 
+        # Turn off the progress LED and turn on the error LED
+        set_led_state(PROGRESS_LED, False)
+        set_led_state(ERROR_LED, True)
+        
         lcd1602.clear()
         lcd1602.write(0, 0, "ERROR: No Space")
         lcd1602.write(0, 1, "Remove Drives")
         
-        blink_event = Event()
-        blink_thread_error = Thread(target=blink_led, args=(ERROR_LED, blink_event, 0.5))
-        blink_thread_error.start()
-
-        unmount_drive(dump_drive_mountpoint)
-        unmount_drive(sd_mountpoint)
-
-        wait_for_drive_removal(dump_drive_mountpoint)
+        # Wait for the user to take action
         while True:
             time.sleep(1)
 
@@ -223,6 +221,7 @@ def copy_sd_to_dump(sd_mountpoint, dump_drive_mountpoint, log_file, stop_event, 
 
                 os.makedirs(os.path.dirname(dst_path), exist_ok=True)
 
+                # Ensure source file exists
                 if not os.path.exists(src_path):
                     logger.warning(f"Source file {src_path} not found. Skipping...")
                     failures.append(src_path)
@@ -233,10 +232,7 @@ def copy_sd_to_dump(sd_mountpoint, dump_drive_mountpoint, log_file, stop_event, 
                 lcd1602.write(0, 0, short_file)
                 lcd1602.write(0, 1, f"{file_number}/{file_count}")
 
-                progress = (file_number / file_count) * 100
-                set_led_bar_graph(overall_progress)
-                overall_progress = update_lcd_progress(file_number, file_count, 0)
-
+                # Start copying and updating the progress LEDs
                 logger.info(f"Copying {src_path} to {dst_path}")
                 if not copy_file_with_checksum_verification(src_path, dst_path, file_number, file_count):
                     failures.append(src_path)
@@ -245,23 +241,29 @@ def copy_sd_to_dump(sd_mountpoint, dump_drive_mountpoint, log_file, stop_event, 
                     log.write(f"Source: {src_path} copied successfully to Destination: {dst_path}\n")
                     log.flush()
 
+                    # Calculate the checksum
                     src_checksum = calculate_checksum(src_path)
                     if src_checksum:
                         add_file_to_mhl(mhl_filename, tree, hashes, dst_path, src_checksum, os.path.getsize(src_path))
 
                 file_number += 1
                 overall_progress = (file_number / file_count) * 100
-                set_led_bar_graph(overall_progress)
+                set_led_bar_graph(overall_progress)  # Update the progress bar based on the overall progress
 
-    # After all files are transferred, handle the success or error
+    # After all files are transferred, handle success or failure cases
     if failures:
         logger.error("The following files failed to copy:")
         for failure in failures:
             logger.error(failure)
-        set_led_state(ERROR_LED, True)
+        
+        # Transfer failed: turn off progress LED and turn on error LED
+        set_led_state(PROGRESS_LED, False)
+        set_led_state(ERROR_LED, True)  # Ensure ERROR_LED stays on after an error
         return False
     else:
         logger.info("All files copied successfully.")
-        set_led_state(SUCCESS_LED, True)  # Turn on success LED only after all files are transferred
-        set_led_state(PROGRESS_LED, False)  # Turn off progress LED
+        
+        # Transfer succeeded: turn off progress LED and turn on success LED
+        set_led_state(PROGRESS_LED, False)
+        set_led_state(SUCCESS_LED, True)  # SUCCESS_LED stays on after successful transfer
         return True
