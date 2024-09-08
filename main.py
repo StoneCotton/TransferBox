@@ -34,7 +34,7 @@ down_button = Button(DOWN_BUTTON_PIN)
 ok_button = Button(OK_BUTTON_PIN)
 
 # Event to signal threads to stop
-stop_event = Event()
+main_stop_event = Event()
 
 # Initialize StateManager
 state_manager = StateManager()
@@ -42,11 +42,10 @@ state_manager = StateManager()
 def assign_menu_handlers():
     """Assign the correct handlers for when the menu is active."""
     logger.debug("Assigning menu handlers from main.py.")
-    clear_button_handlers()  # Ensure previous handlers are cleared
     up_button.when_pressed = navigate_up
     down_button.when_pressed = navigate_down
-    ok_button.when_pressed = lambda: select_option(ok_button, back_button, up_button, down_button, assign_menu_handlers, clear_button_handlers, assign_menu_handlers)
-    back_button.when_pressed = exit_menu_to_transfer_mode
+    ok_button.when_pressed = lambda: select_option(ok_button, back_button, up_button, down_button, exit_menu_to_standby, clear_button_handlers, assign_menu_handlers)
+    back_button.when_pressed = exit_menu_to_standby
 
 def clear_button_handlers():
     """Clear button event handlers to avoid unintended behavior."""
@@ -56,20 +55,19 @@ def clear_button_handlers():
     ok_button.when_pressed = None
     back_button.when_pressed = None
 
-def exit_menu_to_transfer_mode():
-    """Exit the utility menu and return to transfer mode."""
-    logger.info("Exiting utility menu, returning to transfer mode from main.py.")
-    state_manager.set_menu_active(False)
-    state_manager.set_current_mode("transfer")
+def exit_menu_to_standby():
+    """Exit the utility menu and return to standby mode."""
+    logger.info("Exiting utility menu, returning to standby mode from main.py.")
+    state_manager.exit_utility()
     lcd1602.clear()
     lcd1602.write(0, 0, "Returning to")
-    lcd1602.write(0, 1, "Transfer Mode")
+    lcd1602.write(0, 1, "Standby Mode")
     time.sleep(1)
     clear_button_handlers()
-    display_transfer_mode_screen()
+    display_standby_mode_screen()
 
-def display_transfer_mode_screen():
-    """Display the default transfer mode screen."""
+def display_standby_mode_screen():
+    """Display the default standby mode screen."""
     lcd1602.clear()
     if not os.path.ismount(DUMP_DRIVE_MOUNTPOINT):
         lcd1602.write(0, 0, "Storage Missing")
@@ -89,7 +87,7 @@ def main():
     lcd1602.write(0, 0, "Storage Missing")
 
     button_handler = ButtonHandler(back_button, ok_button, up_button, down_button, state_manager, menu_callback)
-    button_thread = Thread(target=button_handler.button_listener, args=(stop_event,))
+    button_thread = Thread(target=button_handler.button_listener, args=(main_stop_event,))
     button_thread.start()
 
     try:
@@ -97,25 +95,23 @@ def main():
         while not os.path.ismount(DUMP_DRIVE_MOUNTPOINT):
             time.sleep(2)
 
-        lcd1602.clear()
-        lcd1602.write(0, 0, "Storage Detected")
-        lcd1602.write(0, 1, "Load Media")
+        display_standby_mode_screen()
 
         # This LED state resetting should only happen on program startup
         set_led_state(SUCCESS_LED, False)  # Initially turn off success LED
         set_led_state(ERROR_LED, False)    # Initially turn off error LED
         set_led_state(PROGRESS_LED, False) # Ensure progress LED is off
 
-        while True:
-            # Only reset LEDs when starting a new transfer
-            if not state_manager.get_transfer_in_progress() and state_manager.get_current_mode() == "transfer":
+        while not main_stop_event.is_set():
+            # Check if we're in standby mode
+            if state_manager.is_standby():
                 initial_drives = get_mounted_drives_lsblk()
                 logger.info("Waiting for SD card to be plugged in...")
 
                 # Detect new SD card
                 sd_mountpoint = detect_new_drive(initial_drives)
                 if sd_mountpoint:
-                    state_manager.set_transfer_in_progress(True)
+                    state_manager.enter_transfer()
                     logger.info(f"SD card detected at {sd_mountpoint}")
 
                     # Now we reset LEDs because a new transfer is starting
@@ -130,12 +126,12 @@ def main():
                     target_dir = create_timestamped_dir(DUMP_DRIVE_MOUNTPOINT, timestamp)
                     log_file = os.path.join(target_dir, f"transfer_log_{timestamp}.log")
 
-                    stop_event.clear()
-                    blink_thread = Thread(target=blink_led, args=(PROGRESS_LED, stop_event))
+                    transfer_stop_event = Event()
+                    blink_thread = Thread(target=blink_led, args=(PROGRESS_LED, transfer_stop_event))
                     blink_thread.start()
 
                     try:
-                        success = copy_sd_to_dump(sd_mountpoint, DUMP_DRIVE_MOUNTPOINT, log_file, stop_event, blink_thread)
+                        success = copy_sd_to_dump(sd_mountpoint, DUMP_DRIVE_MOUNTPOINT, log_file, transfer_stop_event, blink_thread)
                         if success:
                             set_led_state(SUCCESS_LED, True)  # Turn on success LED after a successful transfer
                             set_led_state(PROGRESS_LED, False) # Turn off progress LED when done
@@ -145,7 +141,7 @@ def main():
                         else:
                             set_led_state(PROGRESS_LED, False) # Ensure progress LED is off in case of failure
                     finally:
-                        stop_event.set()
+                        transfer_stop_event.set()
                         blink_thread.join()
 
                     # After the transfer, we either show SUCCESS_LED or ERROR_LED depending on the result
@@ -162,15 +158,27 @@ def main():
                     unmount_drive(sd_mountpoint)
                     wait_for_drive_removal(sd_mountpoint)
 
-                    state_manager.set_transfer_in_progress(False)
+                    # Return to standby mode
+                    state_manager.enter_standby()
+                    display_standby_mode_screen()
+
+            elif state_manager.is_utility():
+                # If in utility mode, just wait
+                time.sleep(0.1)
+            else:
+                # If in transfer mode, wait for it to complete
+                time.sleep(0.1)
 
     except KeyboardInterrupt:
-        stop_event.set()
-        button_thread.join()
+        logger.info("Keyboard interrupt received. Exiting...")
     except Exception as e:
         logger.error(f"An error occurred: {e}")
         set_led_state(ERROR_LED, True)
     finally:
+        # Signal all threads to stop
+        main_stop_event.set()
+        button_thread.join()
+
         # Cleanup and turn off all LEDs when the program exits
         set_led_state(PROGRESS_LED, False)
         set_led_state(SUCCESS_LED, False)

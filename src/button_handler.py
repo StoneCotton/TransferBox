@@ -14,8 +14,8 @@ class ButtonHandler:
         self.last_ok_time = 0
         self.ok_press_count = 0
 
-    def button_listener(self, stop_event):
-        while not stop_event.is_set():
+    def button_listener(self, main_stop_event):
+        while not main_stop_event.is_set():
             if self.back_button.is_pressed:
                 logger.debug("Back button is held down.")
 
@@ -33,11 +33,13 @@ class ButtonHandler:
                     self.last_ok_time = current_time
 
                     if self.ok_press_count >= 2:
-                        logger.info("Menu activated.")
-                        self.state_manager.set_menu_active(True)
-                        self.state_manager.set_current_mode("utility")
-                        self.menu_callback()  # Call the menu callback function
-                        self.ok_press_count = 0  # Reset count after activation
+                        if self.state_manager.is_standby():
+                            logger.info("Menu activated.")
+                            self.state_manager.enter_utility()
+                            self.menu_callback()  # Call the menu callback function
+                        else:
+                            logger.info("Cannot enter utility mode: not in standby mode.")
+                        self.ok_press_count = 0  # Reset count after activation attempt
                 else:
                     logger.debug("OK button is not pressed after back button.")
             else:
