@@ -7,6 +7,8 @@ import xxhash
 import sys
 from datetime import datetime
 from threading import Event, Thread
+from contextlib import contextmanager
+
 from src.mhl_handler import add_file_to_mhl, initialize_mhl_file
 from src.lcd_display import update_lcd_progress, shorten_filename, lcd1602
 from src.led_control import setup_leds, set_led_state, blink_led, PROGRESS_LED, CHECKSUM_LED, SUCCESS_LED, ERROR_LED, set_led_bar_graph
@@ -15,12 +17,31 @@ from src.drive_detection import wait_for_drive_removal
 
 logger = logging.getLogger(__name__)
 
+@contextmanager
+def led_context(led, blink=False, blink_speed=0.5):
+    """Context manager for handling LED states."""
+    stop_event = Event()
+    if blink:
+        blink_thread = Thread(target=blink_led, args=(led, stop_event, blink_speed))
+        blink_thread.start()
+    else:
+        set_led_state(led, True)
+    try:
+        yield
+    finally:
+        if blink:
+            stop_event.set()
+            blink_thread.join()
+        set_led_state(led, False)
+
 def create_timestamped_dir(dump_drive_mountpoint, timestamp):
+    """Create a timestamped directory for the dump."""
     target_dir = os.path.join(dump_drive_mountpoint, timestamp)
     os.makedirs(target_dir, exist_ok=True)
     return target_dir
 
 def rsync_dry_run(source, destination):
+    """Perform a dry run of rsync to get file count and total size."""
     try:
         process = subprocess.run(
             ['rsync', '-a', '--dry-run', '--stats', source, destination],
@@ -30,29 +51,17 @@ def rsync_dry_run(source, destination):
             check=True
         )
         output = process.stdout
-        file_count_pattern = re.compile(r'Number of regular files transferred: (\d+)')
-        total_size_pattern = re.compile(r'Total transferred file size: ([\d,]+)')
-
-        file_count = int(file_count_pattern.search(output).group(1))
-        total_size = int(total_size_pattern.search(output).group(1).replace(',', ''))
+        file_count = int(re.search(r'Number of regular files transferred: (\d+)', output).group(1))
+        total_size = int(re.search(r'Total transferred file size: ([\d,]+)', output).group(1).replace(',', ''))
         return file_count, total_size
     except (subprocess.CalledProcessError, AttributeError) as e:
         logger.error(f"Error during rsync dry run: {e}")
         return 0, 0
 
-def rsync_copy(source, destination, file_size, file_number, file_count, retries=3, delay=5):
-    """Copy files using rsync with progress reporting and retry logic."""
-    stop_blink_event = Event()
-    blink_thread = Thread(target=blink_led, args=(PROGRESS_LED, stop_blink_event, 0.5))
-
-    # Do NOT clear all LEDs before starting the transfer (removed setup_leds())
-    # The progress bar LEDs should not be cleared
-
-    blink_thread.start()  # Start blinking the progress LED
-
-    for attempt in range(1, retries + 1):
+def rsync_copy(source, destination, file_size, file_number, file_count):
+    """Copy files using rsync with progress reporting."""
+    with led_context(PROGRESS_LED, blink=True, blink_speed=0.5):
         try:
-            logger.info(f"Running rsync copy (Attempt {attempt})...")
             process = subprocess.Popen(
                 ['rsync', '-a', '--info=progress2', source, destination],
                 stdout=subprocess.PIPE,
@@ -61,120 +70,74 @@ def rsync_copy(source, destination, file_size, file_number, file_count, retries=
             )
             transferred = 0
             last_percent = 0
-            overall_progress = 0  # Initialize overall progress
 
-            while True:
-                output = process.stdout.readline()
-                if output == '' and process.poll() is not None:
-                    break
-                if output:
-                    sys.stdout.write(output)
-                    sys.stdout.flush()
+            for line in process.stdout:
+                sys.stdout.write(line)
+                sys.stdout.flush()
 
-                    # Match the progress percentage and update the LCD
-                    match = re.search(r'(\d+)%', output)
-                    if match:
-                        percent = int(match.group(1))
-                        if percent - last_percent >= 10:
-                            last_percent = update_lcd_progress(file_number, file_count, percent, last_percent)
+                if match := re.search(r'(\d+)%', line):
+                    percent = int(match.group(1))
+                    if percent - last_percent >= 10:
+                        last_percent = update_lcd_progress(file_number, file_count, percent, last_percent)
 
-                    # Calculate the transfer progress for the LED bar graph
-                    match = re.search(r'(\d+) bytes/sec', output)
-                    if match:
-                        bytes_transferred = int(match.group(1))
-                        transferred += bytes_transferred
-                        overall_progress = int((transferred / file_size) * 100)
+                if match := re.search(r'(\d+) bytes/sec', line):
+                    bytes_transferred = int(match.group(1))
+                    transferred += bytes_transferred
+                    overall_progress = int((transferred / file_size) * 100)
+                    set_led_bar_graph(overall_progress)
 
-                        # Update the bar graph based on the overall progress
-                        set_led_bar_graph(overall_progress)  # Update the bar graph continuously
-
-            stderr_output = process.stderr.read()
-            if stderr_output:
-                logger.error(stderr_output.strip())
-            if process.returncode == 0:
-                stop_blink_event.set()  # Stop blinking when done
-                blink_thread.join()
-                return True, stderr_output
+            process.wait()
+            if process.returncode != 0:
+                raise subprocess.CalledProcessError(process.returncode, process.args)
+            return True, process.stderr.read()
         except subprocess.CalledProcessError as e:
             logger.error(f"Error during rsync: {e}")
-        logger.warning(f"Attempt {attempt} failed, retrying after {delay} seconds...")
-        time.sleep(delay)
+            return False, str(e)
 
-    stop_blink_event.set()  # Stop blinking in case of failure
-    blink_thread.join()
-    return False, stderr_output
-
-
-def calculate_checksum(file_path, retries=3, delay=5):
-    """Calculate checksum with LED blinking for checksum operation."""
-    stop_blink_event = Event()
-    blink_thread = Thread(target=blink_led, args=(CHECKSUM_LED, stop_blink_event, 0.1))
-    blink_thread.start()  # Start blinking checksum LED
-
-    for attempt in range(1, retries + 1):
+def calculate_checksum(file_path):
+    """Calculate checksum of a file."""
+    with led_context(CHECKSUM_LED, blink=True, blink_speed=0.1):
         try:
-            logger.info(f"Calculating checksum for {file_path} (Attempt {attempt})...")
             hash_obj = xxhash.xxh64()
             with open(file_path, 'rb') as f:
-                while chunk := f.read(32 * 1024 * 1024):
+                for chunk in iter(lambda: f.read(32 * 1024 * 1024), b''):
                     hash_obj.update(chunk)
-            stop_blink_event.set()  # Stop blinking when done
-            blink_thread.join()
-            return hash_obj.hexdigest()
+            checksum = hash_obj.hexdigest()
+            logger.info(f"Checksum calculated for {file_path}: {checksum}")
+            return checksum
         except Exception as e:
-            logger.error(f"Error calculating checksum: {e}")
-        time.sleep(delay)
+            logger.error(f"Error calculating checksum for {file_path}: {e}")
+            return None
 
-    stop_blink_event.set()  # Stop blinking in case of failure
-    blink_thread.join()
-    return None
-
-def copy_file_with_checksum_verification(src_path, dst_path, file_number, file_count, retries=3, delay=5):
-    """Copy a file with retry logic and checksum verification."""
+def copy_file_with_verification(src_path, dst_path, file_number, file_count):
+    """Copy a file with checksum verification."""
     try:
-        for attempt in range(1, retries + 1):
-            logger.info(f"Attempt {attempt} to copy {src_path} to {dst_path}")
-            try:
-                file_size = os.path.getsize(src_path)
-            except FileNotFoundError:
-                logger.error(f"Source file {src_path} not found.")
-                set_led_state(ERROR_LED, True)  # Turn on error LED
-                return False
-            except Exception as e:
-                logger.error(f"Unexpected error getting file size: {e}")
-                set_led_state(ERROR_LED, True)  # Turn on error LED
-                return False
+        file_size = os.path.getsize(src_path)
+    except OSError as e:
+        logger.error(f"Error getting file size for {src_path}: {e}")
+        return False, None
 
-            success, stderr = rsync_copy(src_path, dst_path, file_size, file_number, file_count, retries, delay)
+    success, stderr = rsync_copy(src_path, dst_path, file_size, file_number, file_count)
+    if not success:
+        return False, None
 
-            if success:
-                # Verify checksum
-                src_checksum = calculate_checksum(src_path)
-                dst_checksum = calculate_checksum(dst_path)
+    logger.info(f"Calculating checksum for source file: {src_path}")
+    src_checksum = calculate_checksum(src_path)
+    logger.info(f"Calculating checksum for destination file: {dst_path}")
+    dst_checksum = calculate_checksum(dst_path)
 
-                if src_checksum == dst_checksum:
-                    logger.info(f"File {src_path} copied and checksum verified.")
-                    return True
-                else:
-                    logger.warning(f"Checksum mismatch for {src_path}")
-                    set_led_state(ERROR_LED, True)  # Turn on error LED for mismatch
-                    return False
-            else:
-                logger.warning(f"Attempt {attempt} failed with error: {stderr}")
-                set_led_state(ERROR_LED, True)  # Turn on error LED
+    if src_checksum != dst_checksum:
+        logger.warning(f"Checksum mismatch for {src_path}")
+        logger.warning(f"Source checksum: {src_checksum}")
+        logger.warning(f"Destination checksum: {dst_checksum}")
+        set_led_state(ERROR_LED, True)
+        return False, None
 
-            time.sleep(delay)
+    logger.info(f"File {src_path} copied and verified successfully.")
+    logger.info(f"Checksum: {src_checksum}")
+    return True, src_checksum
 
-        logger.error(f"Failed to copy {src_path} to {dst_path} after {retries} attempts")
-        set_led_state(ERROR_LED, True)  # Turn on error LED
-        return False
-
-    except Exception as e:
-        logger.error(f"An unexpected error occurred in copy_file_with_checksum_verification: {e}")
-        set_led_state(ERROR_LED, True)  # Turn on error LED
-        return False
-
-def copy_sd_to_dump(sd_mountpoint, dump_drive_mountpoint, log_file, stop_event, blink_thread):
+def copy_sd_to_dump(sd_mountpoint, dump_drive_mountpoint, log_file):
     """Main function for copying files from the SD card to the dump drive."""
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     target_dir = create_timestamped_dir(dump_drive_mountpoint, timestamp)
@@ -182,46 +145,31 @@ def copy_sd_to_dump(sd_mountpoint, dump_drive_mountpoint, log_file, stop_event, 
 
     logger.info(f"Starting to copy files from {sd_mountpoint} to {dump_drive_mountpoint}")
 
-    # Initialize MHL file for logging the transfer
     mhl_filename, tree, hashes = initialize_mhl_file(timestamp, target_dir)
 
-    # Perform dry run to get file count and total size
     file_count, total_size = rsync_dry_run(sd_mountpoint, target_dir)
     logger.info(f"Number of files to transfer: {file_count}, Total size: {total_size} bytes")
 
-    # Check if there's enough space on the target drive
     if not has_enough_space(dump_drive_mountpoint, total_size):
         logger.error(f"Not enough space on {dump_drive_mountpoint}. Required: {total_size} bytes")
-        
-        # Stop blinking progress LED and show error
-        stop_event.set()
-        blink_thread.join()
-
-        # Turn off the progress LED and turn on the error LED
-        set_led_state(PROGRESS_LED, False)
-        set_led_state(ERROR_LED, True)
-        
         lcd1602.clear()
         lcd1602.write(0, 0, "ERROR: No Space")
         lcd1602.write(0, 1, "Remove Drives")
-        
-        # Wait for the user to take action
-        while True:
-            time.sleep(1)
-
-    file_number = 1
-    overall_progress = 0
+        set_led_state(ERROR_LED, True)
+        return False
 
     with open(log_file, 'a') as log:
+        total_files = sum([len(files) for _, _, files in os.walk(sd_mountpoint)])
+        file_number = 0
         for root, _, files in os.walk(sd_mountpoint):
             for file in files:
+                file_number += 1
                 src_path = os.path.join(root, file)
                 rel_path = os.path.relpath(src_path, sd_mountpoint)
                 dst_path = os.path.join(target_dir, rel_path)
 
                 os.makedirs(os.path.dirname(dst_path), exist_ok=True)
 
-                # Ensure source file exists
                 if not os.path.exists(src_path):
                     logger.warning(f"Source file {src_path} not found. Skipping...")
                     failures.append(src_path)
@@ -230,40 +178,31 @@ def copy_sd_to_dump(sd_mountpoint, dump_drive_mountpoint, log_file, stop_event, 
                 short_file = shorten_filename(file, 16)
                 lcd1602.clear()
                 lcd1602.write(0, 0, short_file)
-                lcd1602.write(0, 1, f"{file_number}/{file_count}")
+                lcd1602.write(0, 1, f"{file_number}/{total_files}")
 
-                # Start copying and updating the progress LEDs
-                logger.info(f"Copying {src_path} to {dst_path}")
-                if not copy_file_with_checksum_verification(src_path, dst_path, file_number, file_count):
-                    failures.append(src_path)
-                    log.write(f"Failed to copy {src_path} to {dst_path} after multiple attempts\n")
-                else:
+                logger.info(f"Copying file {file_number}/{total_files}: {src_path}")
+                success, checksum = copy_file_with_verification(src_path, dst_path, file_number, total_files)
+                if success:
                     log.write(f"Source: {src_path} copied successfully to Destination: {dst_path}\n")
                     log.flush()
+                    if checksum:
+                        add_file_to_mhl(mhl_filename, tree, hashes, dst_path, checksum, os.path.getsize(dst_path))
+                        logger.info(f"Added file to MHL: {dst_path}, Checksum: {checksum}")
+                else:
+                    failures.append(src_path)
+                    log.write(f"Failed to copy {src_path} to {dst_path}\n")
+                    logger.error(f"Failed to copy {src_path} to {dst_path}")
 
-                    # Calculate the checksum
-                    src_checksum = calculate_checksum(src_path)
-                    if src_checksum:
-                        add_file_to_mhl(mhl_filename, tree, hashes, dst_path, src_checksum, os.path.getsize(src_path))
+                overall_progress = int((file_number / total_files) * 100)
+                set_led_bar_graph(overall_progress)
 
-                file_number += 1
-                overall_progress = (file_number / file_count) * 100
-                set_led_bar_graph(overall_progress)  # Update the progress bar based on the overall progress
-
-    # After all files are transferred, handle success or failure cases
     if failures:
         logger.error("The following files failed to copy:")
         for failure in failures:
             logger.error(failure)
-        
-        # Transfer failed: turn off progress LED and turn on error LED
-        set_led_state(PROGRESS_LED, False)
-        set_led_state(ERROR_LED, True)  # Ensure ERROR_LED stays on after an error
+        set_led_state(ERROR_LED, True)
         return False
     else:
         logger.info("All files copied successfully.")
-        
-        # Transfer succeeded: turn off progress LED and turn on success LED
-        set_led_state(PROGRESS_LED, False)
-        set_led_state(SUCCESS_LED, True)  # SUCCESS_LED stays on after successful transfer
+        set_led_state(SUCCESS_LED, True)
         return True

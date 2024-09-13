@@ -64,12 +64,13 @@ def set_led_bar_graph(progress):
     :param progress: Progress as a percentage (0-100).
     """
     global led_state
-    num_leds_on = int((progress / 100.0) * len(BAR_GRAPH_LEDS))
+    num_leds = len(BAR_GRAPH_LEDS)
+    num_leds_on = int((progress / 100.0) * num_leds)
     
     logger.debug(f"Setting bar graph LEDs. Progress: {progress}%, LEDs on: {num_leds_on}")
 
     # Turn on LEDs according to the progress, and ensure others remain off
-    for i in range(len(BAR_GRAPH_LEDS)):
+    for i in range(num_leds):
         led_state[BAR_GRAPH_LEDS[i]] = 1 if i < num_leds_on else 0
 
     shift_register.set_by_list(led_state)  # Update the shift register with the bar graph state

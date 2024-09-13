@@ -126,12 +126,9 @@ def main():
                     target_dir = create_timestamped_dir(DUMP_DRIVE_MOUNTPOINT, timestamp)
                     log_file = os.path.join(target_dir, f"transfer_log_{timestamp}.log")
 
-                    transfer_stop_event = Event()
-                    blink_thread = Thread(target=blink_led, args=(PROGRESS_LED, transfer_stop_event))
-                    blink_thread.start()
-
                     try:
-                        success = copy_sd_to_dump(sd_mountpoint, DUMP_DRIVE_MOUNTPOINT, log_file, transfer_stop_event, blink_thread)
+                        # Updated function call to match new signature
+                        success = copy_sd_to_dump(sd_mountpoint, DUMP_DRIVE_MOUNTPOINT, log_file)
                         if success:
                             set_led_state(SUCCESS_LED, True)  # Turn on success LED after a successful transfer
                             set_led_state(PROGRESS_LED, False) # Turn off progress LED when done
@@ -140,9 +137,10 @@ def main():
                             lcd1602.write(0, 1, "Load New Media")
                         else:
                             set_led_state(PROGRESS_LED, False) # Ensure progress LED is off in case of failure
-                    finally:
-                        transfer_stop_event.set()
-                        blink_thread.join()
+                    except Exception as e:
+                        logger.error(f"An error occurred during transfer: {e}")
+                        set_led_state(ERROR_LED, True)
+                        set_led_state(PROGRESS_LED, False)
 
                     # After the transfer, we either show SUCCESS_LED or ERROR_LED depending on the result
                     if success:
