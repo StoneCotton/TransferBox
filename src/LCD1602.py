@@ -3,12 +3,10 @@ import subprocess
 from time import sleep
 
 class CharLCD1602(object):
-    def __init__(self):
-        self.bus = smbus.SMBus(1)
-        self.BLEN = 1  # turn on/off background light
-        self.PCF8574_address = 0x27  # I2C address of the PCF8574 chip.
-        self.PCF8574A_address = 0x3f  # I2C address of the PCF8574A chip.
-        self.LCD_ADDR = self.PCF8574A_address  # Set default address
+    def __init__(self, i2c_bus=3, address=0x3f):
+        self.bus = smbus.SMBus(i2c_bus)  # Use the software I2C bus 3
+        self.BLEN = 1  # Turn on/off backlight
+        self.LCD_ADDR = address  # Default I2C address
 
     def write_word(self, addr, data):
         temp = data
@@ -47,7 +45,7 @@ class CharLCD1602(object):
         self.write_word(self.LCD_ADDR, buf)
 
     def i2c_scan(self):
-        cmd = "i2cdetect -y 1 |awk 'NR>1 {$1=\"\";print}'"
+        cmd = "i2cdetect -y 3"  # Scan the software I2C bus (bus 3)
         result = subprocess.check_output(cmd, shell=True).decode()
         result = result.replace("\n", "").replace(" --", "")
         i2c_list = result.split(' ')
@@ -56,10 +54,10 @@ class CharLCD1602(object):
     def init_lcd(self, addr=None, bl=1):
         i2c_list = self.i2c_scan()
         if addr is None:
-            if '27' in i2c_list:
-                self.LCD_ADDR = self.PCF8574_address
-            elif '3f' in i2c_list:
-                self.LCD_ADDR = self.PCF8574A_address
+            if '3f' in i2c_list:
+                self.LCD_ADDR = 0x3f
+            elif '27' in i2c_list:
+                self.LCD_ADDR = 0x27
             else:
                 raise IOError("I2C address 0x27 or 0x3f not found.")
         else:
