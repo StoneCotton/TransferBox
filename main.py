@@ -19,7 +19,7 @@ from src.state_manager import StateManager
 
 logger = setup_logging()
 DUMP_DRIVE_MOUNTPOINT = get_dump_drive_mountpoint()
-shift_register = pi74HC595(DS=7, ST=26, SH=19, daisy_chain=2)
+shift_register = pi74HC595(DS=7, ST=13, SH=19, daisy_chain=2)
 
 # GPIO pins for buttons
 BACK_BUTTON_PIN = 10

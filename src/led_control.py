@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 from src.pi74HC595 import pi74HC595
 
 # Set up the shift register (with your pin configuration)
-shift_register = pi74HC595(DS=7, ST=26, SH=19, daisy_chain=2)
+shift_register = pi74HC595(DS=7, ST=13, SH=19, daisy_chain=2)
 
 # Constants for the LED positions on the shift register
 PROGRESS_LED = 0
