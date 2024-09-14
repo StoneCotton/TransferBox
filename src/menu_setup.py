@@ -3,6 +3,7 @@ from src.lcd_display import lcd1602
 from src.drive_detection import get_mounted_drives_lsblk
 from src.system_utils import unmount_drive, get_dump_drive_mountpoint
 from src.led_control import setup_leds, set_led_state, PROGRESS_LED, CHECKSUM_LED, SUCCESS_LED, ERROR_LED, BAR_GRAPH_LEDS
+from src.power_management import power_manager
 import logging
 from threading import Lock
 import os
@@ -270,8 +271,7 @@ def shutdown_system(ok_button, back_button, up_button, down_button, clear_handle
     lcd1602.write(0, 0, "Shutting Down...")
     lcd1602.write(0, 1, "Wait 60 Seconds.")
     sleep(5)
-    lcd1602.set_backlight(False)
-    os.system('sudo shutdown now')
+    power_manager.safe_shutdown()
 
 def reboot_system(ok_button, back_button, up_button, down_button, clear_handlers, assign_handlers):
     logger.info("Rebooting the system...")
@@ -279,8 +279,7 @@ def reboot_system(ok_button, back_button, up_button, down_button, clear_handlers
     lcd1602.write(0, 0, "Rebooting...")
     lcd1602.write(0, 1, "Wait 60 Seconds.")
     sleep(5)
-    lcd1602.set_backlight(False)
-    os.system('sudo reboot now')
+    power_manager.safe_reboot()
 
 def version_number(ok_button, back_button, up_button, down_button, clear_handlers, assign_handlers):
     logger.info("Version Number: v0.0.1")

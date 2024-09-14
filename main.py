@@ -16,6 +16,7 @@ from src.system_utils import get_dump_drive_mountpoint, unmount_drive
 from src.menu_setup import navigate_up, navigate_down, select_option, display_menu
 from src.button_handler import ButtonHandler
 from src.state_manager import StateManager
+from src.power_management import power_manager
 
 logger = setup_logging()
 DUMP_DRIVE_MOUNTPOINT = get_dump_drive_mountpoint()
@@ -40,7 +41,6 @@ main_stop_event = Event()
 state_manager = StateManager()
 
 def assign_menu_handlers():
-    """Assign the correct handlers for when the menu is active."""
     logger.debug("Assigning menu handlers from main.py.")
     up_button.when_pressed = navigate_up
     down_button.when_pressed = navigate_down
@@ -48,7 +48,6 @@ def assign_menu_handlers():
     back_button.when_pressed = exit_menu_to_standby
 
 def clear_button_handlers():
-    """Clear button event handlers to avoid unintended behavior."""
     logger.debug("Clearing button handlers to prevent unintended actions from main.py.")
     up_button.when_pressed = None
     down_button.when_pressed = None
@@ -56,7 +55,6 @@ def clear_button_handlers():
     back_button.when_pressed = None
 
 def exit_menu_to_standby():
-    """Exit the utility menu and return to standby mode."""
     logger.info("Exiting utility menu, returning to standby mode from main.py.")
     state_manager.exit_utility()
     lcd1602.clear()
@@ -67,7 +65,6 @@ def exit_menu_to_standby():
     display_standby_mode_screen()
 
 def display_standby_mode_screen():
-    """Display the default standby mode screen."""
     lcd1602.clear()
     if not os.path.ismount(DUMP_DRIVE_MOUNTPOINT):
         lcd1602.write(0, 0, "Storage Missing")
@@ -76,7 +73,6 @@ def display_standby_mode_screen():
         lcd1602.write(0, 1, "Load Media")
 
 def menu_callback():
-    """Callback function to be called when menu is activated."""
     display_menu()
     assign_menu_handlers()
 
@@ -89,6 +85,9 @@ def main():
     button_handler = ButtonHandler(back_button, ok_button, up_button, down_button, state_manager, menu_callback)
     button_thread = Thread(target=button_handler.button_listener, args=(main_stop_event,))
     button_thread.start()
+
+    # Start power monitoring
+    power_manager.start_monitoring()
 
     try:
         # Wait until the dump drive is mounted
@@ -176,6 +175,9 @@ def main():
         # Signal all threads to stop
         main_stop_event.set()
         button_thread.join()
+
+        # Stop power monitoring
+        power_manager.stop_monitoring()
 
         # Cleanup and turn off all LEDs when the program exits
         set_led_state(PROGRESS_LED, False)
