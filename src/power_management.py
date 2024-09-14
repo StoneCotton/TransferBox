@@ -78,11 +78,12 @@ class PowerManager:
         logger.warning("Initiating safe shutdown...")
         self.stop_monitoring()
         try:
-            subprocess.run(['x728off'], check=True)
+            subprocess.run(['sudo', '/usr/local/bin/xSoft.sh', '0', '26'], check=True)
         except subprocess.CalledProcessError as e:
-            logger.error(f"Failed to execute x728off command: {e}")
+            logger.error(f"Failed to execute shutdown command: {e}")
         except FileNotFoundError:
-            logger.error("x728off command not found. Make sure it's installed and in the system PATH.")
+            logger.error("Shutdown script not found. Make sure it's installed and the path is correct.")
+
 
     def safe_reboot(self):
         """
