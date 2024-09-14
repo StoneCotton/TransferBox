@@ -19,7 +19,8 @@ from src.state_manager import StateManager
 from src.power_management import power_manager
 
 logger = setup_logging()
-DUMP_DRIVE_MOUNTPOINT = get_dump_drive_mountpoint()
+DUMP_DRIVE_MOUNTPOINT = None  # Initialize to None
+
 shift_register = pi74HC595(DS=7, ST=13, SH=19, daisy_chain=2)
 
 # GPIO pins for buttons
@@ -39,6 +40,14 @@ main_stop_event = Event()
 
 # Initialize StateManager
 state_manager = StateManager()
+
+def update_dump_drive_mountpoint():
+    global DUMP_DRIVE_MOUNTPOINT
+    DUMP_DRIVE_MOUNTPOINT = get_dump_drive_mountpoint()
+    if DUMP_DRIVE_MOUNTPOINT is None:
+        logger.warning("DUMP_DRIVE not found")
+    else:
+        logger.info(f"DUMP_DRIVE found at {DUMP_DRIVE_MOUNTPOINT}")
 
 def assign_menu_handlers():
     logger.debug("Assigning menu handlers from main.py.")
@@ -66,7 +75,8 @@ def exit_menu_to_standby():
 
 def display_standby_mode_screen():
     lcd1602.clear()
-    if not os.path.ismount(DUMP_DRIVE_MOUNTPOINT):
+    update_dump_drive_mountpoint()
+    if DUMP_DRIVE_MOUNTPOINT is None or not os.path.ismount(DUMP_DRIVE_MOUNTPOINT):
         lcd1602.write(0, 0, "Storage Missing")
     else:
         lcd1602.write(0, 0, "Storage Detected")
@@ -90,8 +100,10 @@ def main():
     power_manager.start_monitoring()
 
     try:
-        # Wait until the dump drive is mounted
-        while not os.path.ismount(DUMP_DRIVE_MOUNTPOINT):
+        while True:
+            update_dump_drive_mountpoint()
+            if DUMP_DRIVE_MOUNTPOINT is not None and os.path.ismount(DUMP_DRIVE_MOUNTPOINT):
+                break
             time.sleep(2)
 
         display_standby_mode_screen()
@@ -102,7 +114,12 @@ def main():
         set_led_state(PROGRESS_LED, False) # Ensure progress LED is off
 
         while not main_stop_event.is_set():
-            # Check if we're in standby mode
+            update_dump_drive_mountpoint()  # Periodically update DUMP_DRIVE_MOUNTPOINT
+            if DUMP_DRIVE_MOUNTPOINT is None:
+                lcd1602.clear()
+                lcd1602.write(0, 0, "Storage Missing")
+                time.sleep(5)  # Wait a bit before checking again
+                continue
             if state_manager.is_standby():
                 initial_drives = get_mounted_drives_lsblk()
                 logger.info("Waiting for SD card to be plugged in...")

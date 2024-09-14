@@ -138,7 +138,9 @@ def copy_file_with_verification(src_path, dst_path, file_number, file_count):
     return True, src_checksum
 
 def copy_sd_to_dump(sd_mountpoint, dump_drive_mountpoint, log_file):
-    """Main function for copying files from the SD card to the dump drive."""
+    if dump_drive_mountpoint is None:
+        logger.error("DUMP_DRIVE not found, cannot proceed with copy")
+        return False
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     target_dir = create_timestamped_dir(dump_drive_mountpoint, timestamp)
     failures = []

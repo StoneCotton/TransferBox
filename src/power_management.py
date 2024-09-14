@@ -91,17 +91,29 @@ class PowerManager:
         """
         logger.warning("Initiating safe reboot...")
         self.stop_monitoring()
-        if self.h is not None:
+        
+        if self.h is None:
+            try:
+                self.h = lgpio.gpiochip_open(0)
+                lgpio.gpio_claim_output(self.h, self.GPIO_PORT, 0)
+            except lgpio.error as e:
+                logger.error(f"Failed to re-initialize GPIO: {e}")
+                return
+        
+        try:
             lgpio.gpio_write(self.h, self.GPIO_PORT, 1)
             time.sleep(1.5)  # Press for 1.5 seconds
             lgpio.gpio_write(self.h, self.GPIO_PORT, 0)
-        else:
-            logger.error("GPIO chip handle is not valid. Cannot initiate reboot.")
+        except lgpio.error as e:
+            logger.error(f"Failed to perform GPIO operations: {e}")
+        finally:
+            self.close_gpio()
         
-    def initiate_shutdown(self):
-        logger.warning("Battery critically low. Initiating shutdown...")
-        self.safe_shutdown()
-
+        # Initiate system reboot
+        try:
+            subprocess.run(['sudo', 'reboot'], check=True)
+        except subprocess.CalledProcessError as e:
+            logger.error(f"Failed to execute reboot command: {e}")
 
     def monitor_power(self):
         last_beep_time = 0
