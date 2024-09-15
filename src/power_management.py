@@ -17,8 +17,15 @@ class PowerManager:
         self.bus = smbus.SMBus(1)
         self.h = None
         self.stop_event = Event()
+        self.shutdown_event = Event()
+        self.monitor_thread = None
         
+        self.initialize_gpio()
+
+    def initialize_gpio(self):
         try:
+            if self.h is not None:
+                self.close_gpio()
             self.h = lgpio.gpiochip_open(0)
             lgpio.gpio_claim_output(self.h, self.GPIO_PORT, 0)
             lgpio.gpio_claim_input(self.h, self.PLD_PIN)
@@ -31,11 +38,20 @@ class PowerManager:
     def close_gpio(self):
         if self.h is not None:
             try:
+                lgpio.gpio_free(self.h, self.GPIO_PORT)
+                lgpio.gpio_free(self.h, self.PLD_PIN)
+                lgpio.gpio_free(self.h, self.BUZZER_PIN)
                 lgpio.gpiochip_close(self.h)
-            except lgpio.error:
-                logger.warning("GPIO chip handle already closed or invalid.")
+            except lgpio.error as e:
+                logger.warning(f"Error while closing GPIO: {e}")
             finally:
                 self.h = None
+
+    def release_gpio_resources(self):
+        logger.info("Releasing GPIO resources before shutdown")
+        self.close_gpio()
+        # Add a small delay to ensure resources are fully released
+        time.sleep(0.5)
 
     def read_voltage(self):
         try:
@@ -76,14 +92,21 @@ class PowerManager:
         Perform a safe shutdown of the system using the x728 command.
         """
         logger.warning("Initiating safe shutdown...")
-        self.stop_monitoring()
+        self.shutdown_event.set()  # Signal the monitoring thread to stop
+        self.release_gpio_resources()  # Release GPIO resources
+        
         try:
-            subprocess.run(['sudo', '/usr/local/bin/xSoft.sh', '0', '26'], check=True)
+            result = subprocess.run(['sudo', '/usr/local/bin/xSoft.sh', '0', '26'], 
+                                    check=True, 
+                                    capture_output=True, 
+                                    text=True)
+            logger.info(f"Shutdown command output: {result.stdout}")
         except subprocess.CalledProcessError as e:
             logger.error(f"Failed to execute shutdown command: {e}")
+            logger.error(f"Command output: {e.output}")
+            logger.error(f"Command stderr: {e.stderr}")
         except FileNotFoundError:
             logger.error("Shutdown script not found. Make sure it's installed and the path is correct.")
-
 
     def safe_reboot(self):
         """
@@ -121,7 +144,7 @@ class PowerManager:
         last_print_time = 0
         print_interval = 15
 
-        while not self.stop_event.is_set():
+        while not self.stop_event.is_set() and not self.shutdown_event.is_set():
             current_time = time.time()
             voltage = self.read_voltage()
             capacity = self.read_capacity()
@@ -146,22 +169,25 @@ class PowerManager:
                         self.beep_buzzer()
                         last_beep_time = current_time
                 
-                if voltage < 3.00:
+                if voltage < 3.45:
                     logger.critical("Battery critically low!")
                     time.sleep(10)
-                    self.initiate_shutdown()
+                    self.safe_shutdown()
                     break
             
             time.sleep(5)  # Check every 5 seconds, but only print every 15 seconds
 
     def start_monitoring(self):
-        self.monitor_thread = Thread(target=self.monitor_power)
-        self.monitor_thread.start()
+        if self.monitor_thread is None or not self.monitor_thread.is_alive():
+            self.stop_event.clear()
+            self.shutdown_event.clear()
+            self.monitor_thread = Thread(target=self.monitor_power)
+            self.monitor_thread.start()
 
     def stop_monitoring(self):
         self.stop_event.set()
-        if self.monitor_thread.is_alive():
-            self.monitor_thread.join()
+        if self.monitor_thread and self.monitor_thread.is_alive():
+            self.monitor_thread.join(timeout=5)  # Wait for up to 5 seconds
         self.close_gpio()
 
 power_manager = PowerManager()
