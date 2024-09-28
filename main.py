@@ -150,7 +150,6 @@ def main():
                         lcd_display.clear()
                         lcd_display.write(0, 0, "Transfer Done")
                         lcd_display.write(0, 1, "Load New Media")
-                        time.sleep(5)
                     else:
                         set_led_state(LEDControl.ERROR_LED, True)
 
