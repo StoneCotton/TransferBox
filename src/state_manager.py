@@ -31,33 +31,26 @@ class StateManager:
 
     def enter_standby(self):
         self.current_state = "standby"
-        self.menu_active = False
-
-    def format_time(self, seconds):
-        """Convert seconds to HH:MM:SS format."""
-        return str(timedelta(seconds=int(seconds)))
+        logger.info("Entering standby state")
 
     def enter_transfer(self):
-        if self.current_state == "standby":
-            self.current_state = "transfer"
-            self.transfer_start_time = time.time()
-            logger.info("Entering transfer state")
-        else:
+        if self.current_state != "standby":
             raise ValueError("Can only enter transfer state from standby state.")
+        self.current_state = "transfer"
+        self.transfer_start_time = time.time()
+        logger.info("Entering transfer state")
 
     def exit_transfer(self):
-        if self.current_state == "transfer":
-            end_time = time.time()
-            transfer_duration = end_time - self.transfer_start_time
-            self.total_transfer_time += transfer_duration
-            self.current_state = "standby"
-            formatted_duration = self.format_time(transfer_duration)
-            formatted_total = self.format_time(self.total_transfer_time)
-            logger.info(f"Exiting transfer state. Duration: {formatted_duration}")
-            logger.info(f"Total transfer time: {formatted_total}")
-            self.transfer_start_time = None
-        else:
-            raise ValueError("Can only exit transfer state when in transfer state.")
+        if self.current_state != "transfer":
+            logger.warning("Attempting to exit transfer state when not in transfer state.")
+            return
+        end_time = time.time()
+        transfer_duration = end_time - self.transfer_start_time
+        self.total_transfer_time += transfer_duration
+        self.current_state = "standby"
+        logger.info(f"Exiting transfer state. Duration: {self.format_time(transfer_duration)}")
+        logger.info(f"Total transfer time: {self.format_time(self.total_transfer_time)}")
+        self.transfer_start_time = None
 
     def get_current_transfer_time(self):
         if self.current_state == "transfer" and self.transfer_start_time is not None:
@@ -69,18 +62,21 @@ class StateManager:
         return self.format_time(self.total_transfer_time)
     
     def enter_utility(self):
-        if self.current_state == "standby":
-            self.current_state = "utility"
-            self.menu_active = True
-        else:
+        if self.current_state != "standby":
             raise ValueError("Can only enter utility state from standby state.")
+        self.current_state = "utility"
+        logger.info("Entering utility state")
 
     def exit_utility(self):
-        if self.current_state == "utility":
-            self.current_state = "standby"
-            self.menu_active = False
-        else:
-            raise ValueError("Can only exit utility state when in utility state.")
+        if self.current_state != "utility":
+            logger.warning("Attempting to exit utility state when not in utility state.")
+            return
+        self.current_state = "standby"
+        logger.info("Exiting utility state")
+
+    @staticmethod
+    def format_time(seconds):
+        return str(timedelta(seconds=int(seconds)))
 
     def is_menu_active(self):
         return self.menu_active

@@ -9,7 +9,7 @@ from src.pi74HC595 import pi74HC595
 from src.logger_setup import setup_logging
 from src.drive_detection import DriveDetection
 from src.mhl_handler import initialize_mhl_file, add_file_to_mhl
-from src.file_transfer import copy_sd_to_dump, create_timestamped_dir
+from src.file_transfer import FileTransfer
 from src.lcd_display import setup_lcd, lcd1602
 from src.led_control import setup_leds, set_led_state, PROGRESS_LED, SUCCESS_LED, ERROR_LED, set_led_bar_graph, blink_led
 from src.system_utils import get_dump_drive_mountpoint, unmount_drive
@@ -41,6 +41,7 @@ main_stop_event = Event()
 
 # Initialize StateManager
 state_manager = StateManager()
+file_transfer = FileTransfer(state_manager)
 
 def update_dump_drive_mountpoint():
     global DUMP_DRIVE_MOUNTPOINT
@@ -110,78 +111,61 @@ def main():
         display_standby_mode_screen()
 
         # This LED state resetting should only happen on program startup
-        set_led_state(SUCCESS_LED, False)  # Initially turn off success LED
-        set_led_state(ERROR_LED, False)    # Initially turn off error LED
-        set_led_state(PROGRESS_LED, False) # Ensure progress LED is off
+        set_led_state(SUCCESS_LED, False)
+        set_led_state(ERROR_LED, False)
+        set_led_state(PROGRESS_LED, False)
 
         while not main_stop_event.is_set():
-            update_dump_drive_mountpoint()  # Periodically update DUMP_DRIVE_MOUNTPOINT
+            update_dump_drive_mountpoint()
             if DUMP_DRIVE_MOUNTPOINT is None:
                 lcd1602.clear()
                 lcd1602.write(0, 0, "Storage Missing")
-                time.sleep(5)  # Wait a bit before checking again
+                time.sleep(5)
                 continue
+
+            logger.debug(f"Current state: {state_manager.get_current_state()}")
+
             if state_manager.is_standby():
                 initial_drives = drive_detector.get_mounted_drives_lsblk()
                 logger.info("Waiting for SD card to be plugged in...")
 
-                # Detect new SD card
                 sd_mountpoint = drive_detector.detect_new_drive(initial_drives)
                 if sd_mountpoint:
-                    state_manager.enter_transfer()
                     logger.info(f"SD card detected at {sd_mountpoint}")
 
-                    # Now we reset LEDs because a new transfer is starting
-                    set_led_state(SUCCESS_LED, False)  # Turn off previous success LED
-                    set_led_state(ERROR_LED, False)    # Turn off previous error LED
-                    set_led_bar_graph(0)               # Reset the progress bar
+                    # Reset LEDs
+                    set_led_state(SUCCESS_LED, False)
+                    set_led_state(ERROR_LED, False)
+                    set_led_bar_graph(0)
 
-                    set_led_state(PROGRESS_LED, True)  # Turn on progress LED for new transfer
-
-                    # Proceed with transfer
+                    # Prepare for transfer
                     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-                    target_dir = create_timestamped_dir(DUMP_DRIVE_MOUNTPOINT, timestamp)
+                    target_dir = file_transfer.create_timestamped_dir(DUMP_DRIVE_MOUNTPOINT, timestamp)
                     log_file = os.path.join(target_dir, f"transfer_log_{timestamp}.log")
 
-                    try:
-                        # Updated function call to match new signature
-                        success = copy_sd_to_dump(sd_mountpoint, DUMP_DRIVE_MOUNTPOINT, log_file)
-                        if success:
-                            set_led_state(SUCCESS_LED, True)  # Turn on success LED after a successful transfer
-                            set_led_state(PROGRESS_LED, False) # Turn off progress LED when done
-                            lcd1602.clear()
-                            lcd1602.write(0, 0, "Transfer Done")
-                            lcd1602.write(0, 1, "Load New Media")
-                        else:
-                            set_led_state(PROGRESS_LED, False) # Ensure progress LED is off in case of failure
-                    except Exception as e:
-                        logger.error(f"An error occurred during transfer: {e}")
-                        set_led_state(ERROR_LED, True)
-                        set_led_state(PROGRESS_LED, False)
-
-                    # After the transfer, we either show SUCCESS_LED or ERROR_LED depending on the result
+                    # Perform transfer
+                    success = file_transfer.copy_sd_to_dump(sd_mountpoint, DUMP_DRIVE_MOUNTPOINT, log_file)
                     if success:
-                        set_led_state(PROGRESS_LED, False) # Turn off progress LED when done
-                        set_led_state(SUCCESS_LED, True)  # Keep the success LED on after successful transfer
-                        set_led_state(ERROR_LED, False)    # Turn off the error LED if the transfer succeeded
+                        set_led_state(SUCCESS_LED, True)
+                        lcd1602.clear()
+                        lcd1602.write(0, 0, "Transfer Done")
+                        lcd1602.write(0, 1, "Load New Media")
                     else:
-                        set_led_state(ERROR_LED, True)    # Keep the error LED on if the transfer failed
-                        set_led_state(SUCCESS_LED, False)  # Turn off the success LED if the transfer failed
-                        set_led_state(PROGRESS_LED, False)
+                        set_led_state(ERROR_LED, True)
 
                     # Unmount and wait for card removal
                     unmount_drive(sd_mountpoint)
                     drive_detector.wait_for_drive_removal(sd_mountpoint)
 
                     # Return to standby mode
+                    logger.info("Returning to standby mode")
                     state_manager.enter_standby()
                     display_standby_mode_screen()
 
             elif state_manager.is_utility():
-                # If in utility mode, just wait
                 time.sleep(0.1)
             else:
-                # If in transfer mode, wait for it to complete
+                logger.debug("System in transfer mode, waiting for completion")
                 time.sleep(0.1)
 
     except KeyboardInterrupt:
