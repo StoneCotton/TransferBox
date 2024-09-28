@@ -16,9 +16,11 @@ from src.system_utils import get_dump_drive_mountpoint, unmount_drive
 from src.menu_setup import navigate_up, navigate_down, select_option, display_menu
 from src.button_handler import ButtonHandler
 from src.state_manager import StateManager
+from src.power_management import power_manager
 
 logger = setup_logging()
-DUMP_DRIVE_MOUNTPOINT = get_dump_drive_mountpoint()
+DUMP_DRIVE_MOUNTPOINT = None  # Initialize to None
+
 shift_register = pi74HC595(DS=7, ST=13, SH=19, daisy_chain=2)
 
 # GPIO pins for buttons
@@ -39,8 +41,15 @@ main_stop_event = Event()
 # Initialize StateManager
 state_manager = StateManager()
 
+def update_dump_drive_mountpoint():
+    global DUMP_DRIVE_MOUNTPOINT
+    DUMP_DRIVE_MOUNTPOINT = get_dump_drive_mountpoint()
+    if DUMP_DRIVE_MOUNTPOINT is None:
+        logger.warning("DUMP_DRIVE not found")
+    else:
+        logger.info(f"DUMP_DRIVE found at {DUMP_DRIVE_MOUNTPOINT}")
+
 def assign_menu_handlers():
-    """Assign the correct handlers for when the menu is active."""
     logger.debug("Assigning menu handlers from main.py.")
     up_button.when_pressed = navigate_up
     down_button.when_pressed = navigate_down
@@ -48,7 +57,6 @@ def assign_menu_handlers():
     back_button.when_pressed = exit_menu_to_standby
 
 def clear_button_handlers():
-    """Clear button event handlers to avoid unintended behavior."""
     logger.debug("Clearing button handlers to prevent unintended actions from main.py.")
     up_button.when_pressed = None
     down_button.when_pressed = None
@@ -56,7 +64,6 @@ def clear_button_handlers():
     back_button.when_pressed = None
 
 def exit_menu_to_standby():
-    """Exit the utility menu and return to standby mode."""
     logger.info("Exiting utility menu, returning to standby mode from main.py.")
     state_manager.exit_utility()
     lcd1602.clear()
@@ -67,16 +74,15 @@ def exit_menu_to_standby():
     display_standby_mode_screen()
 
 def display_standby_mode_screen():
-    """Display the default standby mode screen."""
     lcd1602.clear()
-    if not os.path.ismount(DUMP_DRIVE_MOUNTPOINT):
+    update_dump_drive_mountpoint()
+    if DUMP_DRIVE_MOUNTPOINT is None or not os.path.ismount(DUMP_DRIVE_MOUNTPOINT):
         lcd1602.write(0, 0, "Storage Missing")
     else:
         lcd1602.write(0, 0, "Storage Detected")
         lcd1602.write(0, 1, "Load Media")
 
 def menu_callback():
-    """Callback function to be called when menu is activated."""
     display_menu()
     assign_menu_handlers()
 
@@ -90,9 +96,14 @@ def main():
     button_thread = Thread(target=button_handler.button_listener, args=(main_stop_event,))
     button_thread.start()
 
+    # Start power monitoring
+    power_manager.start_monitoring()
+
     try:
-        # Wait until the dump drive is mounted
-        while not os.path.ismount(DUMP_DRIVE_MOUNTPOINT):
+        while True:
+            update_dump_drive_mountpoint()
+            if DUMP_DRIVE_MOUNTPOINT is not None and os.path.ismount(DUMP_DRIVE_MOUNTPOINT):
+                break
             time.sleep(2)
 
         display_standby_mode_screen()
@@ -103,7 +114,12 @@ def main():
         set_led_state(PROGRESS_LED, False) # Ensure progress LED is off
 
         while not main_stop_event.is_set():
-            # Check if we're in standby mode
+            update_dump_drive_mountpoint()  # Periodically update DUMP_DRIVE_MOUNTPOINT
+            if DUMP_DRIVE_MOUNTPOINT is None:
+                lcd1602.clear()
+                lcd1602.write(0, 0, "Storage Missing")
+                time.sleep(5)  # Wait a bit before checking again
+                continue
             if state_manager.is_standby():
                 initial_drives = get_mounted_drives_lsblk()
                 logger.info("Waiting for SD card to be plugged in...")
@@ -176,6 +192,9 @@ def main():
         # Signal all threads to stop
         main_stop_event.set()
         button_thread.join()
+
+        # Stop power monitoring
+        power_manager.stop_monitoring()
 
         # Cleanup and turn off all LEDs when the program exits
         set_led_state(PROGRESS_LED, False)

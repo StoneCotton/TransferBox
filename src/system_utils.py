@@ -10,13 +10,23 @@ logger = logging.getLogger(__name__)
 def get_dump_drive_mountpoint():
     username = os.getenv("USER")
     if platform.system() == 'Linux':
-        return f'/media/{username}/DUMP_DRIVE'
-    elif platform.system() == 'Darwin':  # macOS
-        return '/Volumes/DUMP_DRIVE'
-    elif platform.system() == 'Windows':
-        return 'D:\\DUMP_DRIVE'
+        possible_mountpoints = [f'/media/{username}/DUMP_DRIVE', f'/media/{username}/DUMP_DRIVE1']
+        for mountpoint in possible_mountpoints:
+            if os.path.ismount(mountpoint):
+                return mountpoint
+        
+        # If not found in the expected locations, search all mounted drives
+        try:
+            mount_output = subprocess.check_output(['mount'], text=True)
+            for line in mount_output.split('\n'):
+                if 'DUMP_DRIVE' in line:
+                    return line.split()[2]  # The mount point is typically the third item
+        except subprocess.CalledProcessError:
+            pass
+        
+        return None  # Return None if no matching mountpoint is found
     else:
-        raise NotImplementedError("This script only supports Linux, macOS, and Windows.")
+        raise NotImplementedError("This script only supports Linux.")
 
 def unmount_drive(drive_mountpoint):
     try:

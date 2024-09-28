@@ -3,6 +3,7 @@ from src.lcd_display import lcd1602
 from src.drive_detection import get_mounted_drives_lsblk
 from src.system_utils import unmount_drive, get_dump_drive_mountpoint
 from src.led_control import setup_leds, set_led_state, PROGRESS_LED, CHECKSUM_LED, SUCCESS_LED, ERROR_LED, BAR_GRAPH_LEDS
+from src.power_management import power_manager
 import logging
 from threading import Lock
 import os
@@ -116,12 +117,22 @@ def list_drives(ok_button, back_button, up_button, down_button, clear_handlers, 
 
 def format_drive(ok_button, back_button, up_button, down_button, clear_handlers, assign_handlers):
     dump_drive_mountpoint = get_dump_drive_mountpoint()
-    mounted_drives = get_mounted_drives_lsblk()
-
-    if dump_drive_mountpoint not in mounted_drives:
+    
+    # Check if a valid mountpoint was found
+    if dump_drive_mountpoint is None:
         lcd1602.clear()
         lcd1602.write(0, 0, "DUMP_DRIVE not")
-        lcd1602.write(0, 1, "connected")
+        lcd1602.write(0, 1, "found")
+        logger.error("DUMP_DRIVE mountpoint not found")
+        time.sleep(2)
+        return handle_option_completion(lambda: select_option(ok_button, back_button, up_button, down_button, handle_option_completion, clear_handlers, assign_handlers))
+
+    # Check if the drive is mounted
+    if not os.path.ismount(dump_drive_mountpoint):
+        lcd1602.clear()
+        lcd1602.write(0, 0, "DUMP_DRIVE not")
+        lcd1602.write(0, 1, "mounted")
+        logger.error(f"DUMP_DRIVE not mounted at {dump_drive_mountpoint}")
         time.sleep(2)
         return handle_option_completion(lambda: select_option(ok_button, back_button, up_button, down_button, handle_option_completion, clear_handlers, assign_handlers))
 
@@ -134,7 +145,7 @@ def format_drive(ok_button, back_button, up_button, down_button, clear_handlers,
         if time.time() - start_time >= 3:
             break
         time.sleep(0.1)
-    
+   
     if time.time() - start_time < 3:
         lcd1602.clear()
         lcd1602.write(0, 0, "Format cancelled")
@@ -146,38 +157,79 @@ def format_drive(ok_button, back_button, up_button, down_button, clear_handlers,
     lcd1602.write(0, 1, "Please wait...")
 
     try:
+        # Use findmnt to get the device name
+        findmnt_output = subprocess.check_output(['findmnt', '-n', '-o', 'SOURCE', dump_drive_mountpoint], text=True).strip()
+        logger.info(f"findmnt output: {findmnt_output}")
+
+        if not findmnt_output:
+            raise ValueError(f"Couldn't find device for {dump_drive_mountpoint} using findmnt")
+
+        device = findmnt_output
+
+        logger.info(f"Found device {device} for {dump_drive_mountpoint}")
+
         # Unmount the drive before formatting
         subprocess.run(['sudo', 'umount', dump_drive_mountpoint], check=True)
-        
-        # Get the device name from the mountpoint
-        lsblk_output = subprocess.check_output(['lsblk', '-ndo', 'NAME,MOUNTPOINT']).decode()
-        for line in lsblk_output.split('\n'):
-            if dump_drive_mountpoint in line:
-                device = '/dev/' + line.split()[0]
-                break
-        else:
-            raise ValueError("Couldn't find device for DUMP_DRIVE")
+        logger.info(f"Unmounted {dump_drive_mountpoint}")
+
+        # Double-check if the device still exists after unmounting
+        blkid_output = subprocess.check_output(['sudo', 'blkid', '-o', 'device'], text=True)
+        logger.info(f"blkid output: {blkid_output}")
+        if device not in blkid_output:
+            raise ValueError(f"Device {device} not found after unmounting")
 
         # Format the drive as NTFS
-        subprocess.run(['sudo', 'mkfs.ntfs', '-f', '-L', 'DUMP_DRIVE', device], check=True)
-        
-        # Remount the drive
-        subprocess.run(['sudo', 'mount', '-a'], check=True)
+        subprocess.run(['sudo', 'ntfslabel', '--force', device, 'DUMP_DRIVE'], check=True)
 
-        lcd1602.clear()
-        lcd1602.write(0, 0, "Format complete")
-        lcd1602.write(0, 1, "DUMP_DRIVE ready")
-        logger.info("DUMP_DRIVE formatted successfully")
+        subprocess.run(['sudo', 'mkfs.ntfs', '-f', '-L', 'DUMP_DRIVE', device], check=True)
+        logger.info(f"Formatted {device} as NTFS")
+        subprocess.run(['sudo', 'systemctl', 'daemon-reload'], check=True)
+
+        # Create the mount point if it doesn't exist
+        subprocess.run(['sudo', 'mkdir', '-p', dump_drive_mountpoint], check=True)
+        logger.info(f"Created mount point: {dump_drive_mountpoint}")
+
+        # Mount the newly formatted drive
+        current_label = subprocess.check_output(['sudo', 'blkid', '-s', 'LABEL', '-o', 'value', device], text=True).strip()
+        if current_label != 'DUMP_DRIVE':
+            subprocess.run(['sudo', 'ntfslabel', device, 'DUMP_DRIVE'], check=True)
+        subprocess.run(['sudo', 'mount', '-t', 'ntfs', device, dump_drive_mountpoint], check=True)
+        logger.info(f"Mounted {device} to {dump_drive_mountpoint}")
+
+        # Verify that the drive is mounted
+        if os.path.ismount(dump_drive_mountpoint):
+            lcd1602.clear()
+            lcd1602.write(0, 0, "Format complete")
+            lcd1602.write(0, 1, "DUMP_DRIVE ready")
+            logger.info("DUMP_DRIVE formatted and mounted successfully")
+        else:
+            raise RuntimeError(f"Failed to mount {device} to {dump_drive_mountpoint}")
+
+        # Optionally, change ownership of the mount point to the current user
+        current_user = os.environ.get('SUDO_USER', os.environ.get('USER'))
+        subprocess.run(['sudo', 'chown', f'{current_user}:{current_user}', dump_drive_mountpoint], check=True)
+        logger.info(f"Changed ownership of {dump_drive_mountpoint} to {current_user}")
+
     except subprocess.CalledProcessError as e:
         lcd1602.clear()
         lcd1602.write(0, 0, "Format failed")
         lcd1602.write(0, 1, "Check logs")
-        logger.error(f"Error formatting DUMP_DRIVE: {e}")
+        logger.error(f"Error formatting or mounting DUMP_DRIVE: {e}")
     except ValueError as e:
         lcd1602.clear()
         lcd1602.write(0, 0, "Error: Drive not")
         lcd1602.write(0, 1, "found")
         logger.error(f"Error finding DUMP_DRIVE: {e}")
+    except RuntimeError as e:
+        lcd1602.clear()
+        lcd1602.write(0, 0, "Mount failed")
+        lcd1602.write(0, 1, "Check logs")
+        logger.error(str(e))
+    except Exception as e:
+        lcd1602.clear()
+        lcd1602.write(0, 0, "Unexpected error")
+        lcd1602.write(0, 1, "Check logs")
+        logger.error(f"Unexpected error during formatting: {e}", exc_info=True)
 
     time.sleep(3)
     return handle_option_completion(lambda: select_option(ok_button, back_button, up_button, down_button, handle_option_completion, clear_handlers, assign_handlers))
@@ -270,8 +322,7 @@ def shutdown_system(ok_button, back_button, up_button, down_button, clear_handle
     lcd1602.write(0, 0, "Shutting Down...")
     lcd1602.write(0, 1, "Wait 60 Seconds.")
     sleep(5)
-    lcd1602.set_backlight(False)
-    os.system('sudo shutdown now')
+    power_manager.safe_shutdown()
 
 def reboot_system(ok_button, back_button, up_button, down_button, clear_handlers, assign_handlers):
     logger.info("Rebooting the system...")
@@ -279,8 +330,7 @@ def reboot_system(ok_button, back_button, up_button, down_button, clear_handlers
     lcd1602.write(0, 0, "Rebooting...")
     lcd1602.write(0, 1, "Wait 60 Seconds.")
     sleep(5)
-    lcd1602.set_backlight(False)
-    os.system('sudo reboot now')
+    power_manager.safe_reboot()
 
 def version_number(ok_button, back_button, up_button, down_button, clear_handlers, assign_handlers):
     logger.info("Version Number: v0.0.1")
