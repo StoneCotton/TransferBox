@@ -10,7 +10,7 @@ from threading import Event, Thread
 from contextlib import contextmanager
 
 from src.mhl_handler import add_file_to_mhl, initialize_mhl_file
-from src.lcd_display import update_lcd_progress, shorten_filename, lcd1602
+from src.lcd_display import lcd_display
 from src.led_control import setup_leds, set_led_state, blink_led, PROGRESS_LED, CHECKSUM_LED, SUCCESS_LED, ERROR_LED, set_led_bar_graph
 from src.system_utils import has_enough_space, unmount_drive
 from src.drive_detection import DriveDetection
@@ -78,7 +78,7 @@ class FileTransfer:
                     if match := re.search(r'(\d+)%', line):
                         percent = int(match.group(1))
                         if percent - last_percent >= 10:
-                            last_percent = update_lcd_progress(file_number, file_count, percent, last_percent)
+                            last_percent = lcd_display.update_progress(file_number, file_count, percent, last_percent)
 
                     if match := re.search(r'(\d+) bytes/sec', line):
                         bytes_transferred = int(match.group(1))
@@ -171,9 +171,9 @@ class FileTransfer:
 
             if not has_enough_space(dump_drive_mountpoint, total_size):
                 logger.error(f"Not enough space on {dump_drive_mountpoint}. Required: {total_size} bytes")
-                lcd1602.clear()
-                lcd1602.write(0, 0, "ERROR: No Space")
-                lcd1602.write(0, 1, "Remove Drives")
+                lcd_display.clear()
+                lcd_display.write(0, 0, "ERROR: No Space")
+                lcd_display.write(0, 1, "Remove Drives")
                 set_led_state(ERROR_LED, True)
                 return False
 
@@ -194,10 +194,10 @@ class FileTransfer:
                             failures.append(src_path)
                             continue
 
-                        short_file = shorten_filename(file, 16)
-                        lcd1602.clear()
-                        lcd1602.write(0, 0, short_file)
-                        lcd1602.write(0, 1, f"{file_number}/{total_files}")
+                        short_file = lcd_display.shorten_filename(file, 16)
+                        lcd_display.clear()
+                        lcd_display.write(0, 0, short_file)
+                        lcd_display.write(0, 1, f"{file_number}/{total_files}")
 
                         logger.info(f"Copying file {file_number}/{total_files}: {src_path}")
                         success, checksum = self.copy_file_with_verification(src_path, dst_path, file_number, total_files)

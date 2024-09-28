@@ -1,5 +1,5 @@
 from time import sleep
-from src.lcd_display import lcd1602
+from src.lcd_display import lcd_display, setup_lcd
 from src.drive_detection import DriveDetection
 from src.system_utils import unmount_drive, get_dump_drive_mountpoint
 from src.led_control import setup_leds, set_led_state, PROGRESS_LED, CHECKSUM_LED, SUCCESS_LED, ERROR_LED, BAR_GRAPH_LEDS
@@ -27,9 +27,9 @@ menu_options = ["List Drives", "Format Drive", "Unmount Drives", "Test LEDs", "T
 def display_menu():
     global processing_option
     processing_option = False  # Reset the flag when displaying the menu
-    lcd1602.clear()
-    lcd1602.write(0, 0, "UTIL MENU")
-    lcd1602.write(0, 1, menu_options[current_menu_index])
+    lcd_display.clear()
+    lcd_display.write(0, 0, "UTIL MENU")
+    lcd_display.write(0, 1, menu_options[current_menu_index])
 
 def navigate_up():
     global current_menu_index, processing_option
@@ -62,9 +62,9 @@ def select_option(ok_button, back_button, up_button, down_button, on_complete, c
 
         selected_option = menu_options[current_menu_index]
         logger.info(f"Selected option: {selected_option}")
-        lcd1602.clear()
-        lcd1602.write(0, 0, selected_option)
-        lcd1602.write(0, 1, "Running...")
+        lcd_display.clear()
+        lcd_display.write(0, 0, selected_option)
+        lcd_display.write(0, 1, "Running...")
 
         if selected_option == "List Drives":
             list_drives(ok_button, back_button, up_button, down_button, clear_handlers, assign_handlers)
@@ -98,7 +98,7 @@ def handle_option_completion(on_complete):
     global processing_option
     logger.info("Action completed, waiting for OK button press to confirm.")
 
-    lcd1602.clear()
+    lcd_display.clear()
 
     on_complete()
 
@@ -109,9 +109,9 @@ def list_drives(ok_button, back_button, up_button, down_button, clear_handlers, 
     for drive in drives:
         # Get the last part of the path
         drive_name = os.path.basename(drive)
-        lcd1602.clear()
-        lcd1602.write(0, 0, "Mounted Drives:")
-        lcd1602.write(0, 1, drive_name)
+        lcd_display.clear()
+        lcd_display.write(0, 0, "Mounted Drives:")
+        lcd_display.write(0, 1, drive_name)
         time.sleep(2)  # Pause to display each drive for 2 seconds
     handle_option_completion(lambda: select_option(ok_button, back_button, up_button, down_button, handle_option_completion, clear_handlers, assign_handlers))
 
@@ -120,25 +120,25 @@ def format_drive(ok_button, back_button, up_button, down_button, clear_handlers,
     
     # Check if a valid mountpoint was found
     if dump_drive_mountpoint is None:
-        lcd1602.clear()
-        lcd1602.write(0, 0, "DUMP_DRIVE not")
-        lcd1602.write(0, 1, "found")
+        lcd_display.clear()
+        lcd_display.write(0, 0, "DUMP_DRIVE not")
+        lcd_display.write(0, 1, "found")
         logger.error("DUMP_DRIVE mountpoint not found")
         time.sleep(2)
         return handle_option_completion(lambda: select_option(ok_button, back_button, up_button, down_button, handle_option_completion, clear_handlers, assign_handlers))
 
     # Check if the drive is mounted
     if not os.path.ismount(dump_drive_mountpoint):
-        lcd1602.clear()
-        lcd1602.write(0, 0, "DUMP_DRIVE not")
-        lcd1602.write(0, 1, "mounted")
+        lcd_display.clear()
+        lcd_display.write(0, 0, "DUMP_DRIVE not")
+        lcd_display.write(0, 1, "mounted")
         logger.error(f"DUMP_DRIVE not mounted at {dump_drive_mountpoint}")
         time.sleep(2)
         return handle_option_completion(lambda: select_option(ok_button, back_button, up_button, down_button, handle_option_completion, clear_handlers, assign_handlers))
 
-    lcd1602.clear()
-    lcd1602.write(0, 0, "Hold OK for 3s")
-    lcd1602.write(0, 1, "to format drive")
+    lcd_display.clear()
+    lcd_display.write(0, 0, "Hold OK for 3s")
+    lcd_display.write(0, 1, "to format drive")
 
     start_time = time.time()
     while ok_button.is_pressed:
@@ -147,14 +147,14 @@ def format_drive(ok_button, back_button, up_button, down_button, clear_handlers,
         time.sleep(0.1)
    
     if time.time() - start_time < 3:
-        lcd1602.clear()
-        lcd1602.write(0, 0, "Format cancelled")
+        lcd_display.clear()
+        lcd_display.write(0, 0, "Format cancelled")
         time.sleep(2)
         return handle_option_completion(lambda: select_option(ok_button, back_button, up_button, down_button, handle_option_completion, clear_handlers, assign_handlers))
 
-    lcd1602.clear()
-    lcd1602.write(0, 0, "Formatting...")
-    lcd1602.write(0, 1, "Please wait...")
+    lcd_display.clear()
+    lcd_display.write(0, 0, "Formatting...")
+    lcd_display.write(0, 1, "Please wait...")
 
     try:
         # Use findmnt to get the device name
@@ -198,9 +198,9 @@ def format_drive(ok_button, back_button, up_button, down_button, clear_handlers,
 
         # Verify that the drive is mounted
         if os.path.ismount(dump_drive_mountpoint):
-            lcd1602.clear()
-            lcd1602.write(0, 0, "Format complete")
-            lcd1602.write(0, 1, "DUMP_DRIVE ready")
+            lcd_display.clear()
+            lcd_display.write(0, 0, "Format complete")
+            lcd_display.write(0, 1, "DUMP_DRIVE ready")
             logger.info("DUMP_DRIVE formatted and mounted successfully")
         else:
             raise RuntimeError(f"Failed to mount {device} to {dump_drive_mountpoint}")
@@ -211,24 +211,24 @@ def format_drive(ok_button, back_button, up_button, down_button, clear_handlers,
         logger.info(f"Changed ownership of {dump_drive_mountpoint} to {current_user}")
 
     except subprocess.CalledProcessError as e:
-        lcd1602.clear()
-        lcd1602.write(0, 0, "Format failed")
-        lcd1602.write(0, 1, "Check logs")
+        lcd_display.clear()
+        lcd_display.write(0, 0, "Format failed")
+        lcd_display.write(0, 1, "Check logs")
         logger.error(f"Error formatting or mounting DUMP_DRIVE: {e}")
     except ValueError as e:
-        lcd1602.clear()
-        lcd1602.write(0, 0, "Error: Drive not")
-        lcd1602.write(0, 1, "found")
+        lcd_display.clear()
+        lcd_display.write(0, 0, "Error: Drive not")
+        lcd_display.write(0, 1, "found")
         logger.error(f"Error finding DUMP_DRIVE: {e}")
     except RuntimeError as e:
-        lcd1602.clear()
-        lcd1602.write(0, 0, "Mount failed")
-        lcd1602.write(0, 1, "Check logs")
+        lcd_display.clear()
+        lcd_display.write(0, 0, "Mount failed")
+        lcd_display.write(0, 1, "Check logs")
         logger.error(str(e))
     except Exception as e:
-        lcd1602.clear()
-        lcd1602.write(0, 0, "Unexpected error")
-        lcd1602.write(0, 1, "Check logs")
+        lcd_display.clear()
+        lcd_display.write(0, 0, "Unexpected error")
+        lcd_display.write(0, 1, "Check logs")
         logger.error(f"Unexpected error during formatting: {e}", exc_info=True)
 
     time.sleep(3)
@@ -236,7 +236,7 @@ def format_drive(ok_button, back_button, up_button, down_button, clear_handlers,
 
 def test_leds(ok_button, back_button, up_button, down_button, clear_handlers, assign_handlers):
     """Test all LEDs by turning them on/off."""
-    lcd1602.write(0, 0, "Testing LEDs")
+    lcd_display.write(0, 0, "Testing LEDs")
     setup_leds()
     
     leds = [PROGRESS_LED, CHECKSUM_LED, SUCCESS_LED, ERROR_LED] + BAR_GRAPH_LEDS
@@ -246,97 +246,97 @@ def test_leds(ok_button, back_button, up_button, down_button, clear_handlers, as
         sleep(0.5)
         set_led_state(led, False)
 
-    lcd1602.clear()
-    lcd1602.write(0, 0, "LED Test Done")
+    lcd_display.clear()
+    lcd_display.write(0, 0, "LED Test Done")
     sleep(2)
     handle_option_completion(lambda: select_option(ok_button, back_button, up_button, down_button, handle_option_completion, clear_handlers, assign_handlers))
 
 def test_screen(ok_button, back_button, up_button, down_button, clear_handlers, assign_handlers):
-    lcd1602.write(0, 0, "Testing Screen")
+    lcd_display.write(0, 0, "Testing Screen")
     sleep(2)
-    lcd1602.clear()
+    lcd_display.clear()
     sleep(2)
 
     # Test upper case alphabet on both lines
     for i in range(1, 27):  # 26 letters in the alphabet
-        lcd1602.clear()
+        lcd_display.clear()
         if i <= 16:
-            lcd1602.write(0, 0, "ABCDEFGHIJKLMNOPQRSTUVWXYZ"[:i])
+            lcd_display.write(0, 0, "ABCDEFGHIJKLMNOPQRSTUVWXYZ"[:i])
         else:
-            lcd1602.write(0, 0, "ABCDEFGHIJKLMNOPQRSTUVWXYZ"[:16])
-            lcd1602.write(0, 1, "ABCDEFGHIJKLMNOPQRSTUVWXYZ"[16:i])
+            lcd_display.write(0, 0, "ABCDEFGHIJKLMNOPQRSTUVWXYZ"[:16])
+            lcd_display.write(0, 1, "ABCDEFGHIJKLMNOPQRSTUVWXYZ"[16:i])
         sleep(0.1)  # Adding a small delay to see the changes
 
     sleep(2)
-    lcd1602.clear()
+    lcd_display.clear()
     sleep(2)
 
     # Test lower case alphabet on both lines
     for i in range(1, 27):  # 26 letters in the alphabet
-        lcd1602.clear()
+        lcd_display.clear()
         if i <= 16:
-            lcd1602.write(0, 0, "abcdefghijklmnopqrstuvwxyz"[:i])
+            lcd_display.write(0, 0, "abcdefghijklmnopqrstuvwxyz"[:i])
         else:
-            lcd1602.write(0, 0, "abcdefghijklmnopqrstuvwxyz"[:16])
-            lcd1602.write(0, 1, "abcdefghijklmnopqrstuvwxyz"[16:i])
+            lcd_display.write(0, 0, "abcdefghijklmnopqrstuvwxyz"[:16])
+            lcd_display.write(0, 1, "abcdefghijklmnopqrstuvwxyz"[16:i])
         sleep(0.1)  # Adding a small delay to see the changes
 
     sleep(2)
-    lcd1602.clear()
+    lcd_display.clear()
     sleep(2)
 
     # Test digits and special characters on both lines
     for i in range(1, 21):  # 10 digits plus 10 special characters
-        lcd1602.clear()
+        lcd_display.clear()
         if i <= 10:
-            lcd1602.write(0, 0, "0123456789"[:i])
+            lcd_display.write(0, 0, "0123456789"[:i])
         else:
-            lcd1602.write(0, 0, "0123456789")
-            lcd1602.write(0, 1, ".,:;!?/()@#$%^&*"[0:i-10])
+            lcd_display.write(0, 0, "0123456789")
+            lcd_display.write(0, 1, ".,:;!?/()@#$%^&*"[0:i-10])
         sleep(0.1)  # Adding a small delay to see the changes
 
     sleep(2)
-    lcd1602.clear()
+    lcd_display.clear()
     sleep(2)
 
     # Test special character pattern on both lines
     for i in range(1, 33):  # 32 `#` characters
-        lcd1602.clear()
+        lcd_display.clear()
         if i <= 16:
-            lcd1602.write(0, 0, "################################"[:i])
+            lcd_display.write(0, 0, "################################"[:i])
         else:
-            lcd1602.write(0, 0, "################################"[:16])
-            lcd1602.write(0, 1, "################################"[16:i])
+            lcd_display.write(0, 0, "################################"[:16])
+            lcd_display.write(0, 1, "################################"[16:i])
         sleep(0.1)  # Adding a small delay to see the changes
 
     sleep(2)
-    lcd1602.clear()
+    lcd_display.clear()
 
-    lcd1602.write(0, 0, "Screen Test Done")
+    lcd_display.write(0, 0, "Screen Test Done")
     sleep(2)
     handle_option_completion(lambda: select_option(ok_button, back_button, up_button, down_button, handle_option_completion, clear_handlers, assign_handlers))
 
 def shutdown_system(ok_button, back_button, up_button, down_button, clear_handlers, assign_handlers):
     logger.info("Shutting down the system...")
-    lcd1602.clear()
-    lcd1602.write(0, 0, "Shutting Down...")
-    lcd1602.write(0, 1, "Wait 60 Seconds.")
+    lcd_display.clear()
+    lcd_display.write(0, 0, "Shutting Down...")
+    lcd_display.write(0, 1, "Wait 60 Seconds.")
     sleep(5)
     power_manager.safe_shutdown()
 
 def reboot_system(ok_button, back_button, up_button, down_button, clear_handlers, assign_handlers):
     logger.info("Rebooting the system...")
-    lcd1602.clear()
-    lcd1602.write(0, 0, "Rebooting...")
-    lcd1602.write(0, 1, "Wait 60 Seconds.")
+    lcd_display.clear()
+    lcd_display.write(0, 0, "Rebooting...")
+    lcd_display.write(0, 1, "Wait 60 Seconds.")
     sleep(5)
     power_manager.safe_reboot()
 
 def version_number(ok_button, back_button, up_button, down_button, clear_handlers, assign_handlers):
     logger.info("Version Number: v0.0.1")
-    lcd1602.clear()
-    lcd1602.write(0, 0, "Version Number:")
-    lcd1602.write(0, 1, "v0.0.1 240820")
+    lcd_display.clear()
+    lcd_display.write(0, 0, "Version Number:")
+    lcd_display.write(0, 1, "v0.0.1 240820")
     sleep(5)
     handle_option_completion(lambda: select_option(ok_button, back_button, up_button, down_button, handle_option_completion, clear_handlers, assign_handlers))
 
@@ -344,9 +344,9 @@ def check_available_space(ok_button, back_button, up_button, down_button, clear_
     dump_drive_mountpoint = get_dump_drive_mountpoint()
 
     if not os.path.ismount(dump_drive_mountpoint):
-        lcd1602.clear()
-        lcd1602.write(0, 0, "DUMP_DRIVE not")
-        lcd1602.write(0, 1, "connected")
+        lcd_display.clear()
+        lcd_display.write(0, 0, "DUMP_DRIVE not")
+        lcd_display.write(0, 1, "connected")
         logger.warning("DUMP_DRIVE not connected when checking available space")
     else:
         try:
@@ -366,14 +366,14 @@ def check_available_space(ok_button, back_button, up_button, down_button, clear_
             # Round to 2 decimal places
             free_space = round(free_space, 2)
             
-            lcd1602.clear()
-            lcd1602.write(0, 0, "Available Space:")
-            lcd1602.write(0, 1, f"{free_space} {unit}")
+            lcd_display.clear()
+            lcd_display.write(0, 0, "Available Space:")
+            lcd_display.write(0, 1, f"{free_space} {unit}")
             logger.info(f"Available space on DUMP_DRIVE: {free_space} {unit}")
         except Exception as e:
-            lcd1602.clear()
-            lcd1602.write(0, 0, "Error checking")
-            lcd1602.write(0, 1, "available space")
+            lcd_display.clear()
+            lcd_display.write(0, 0, "Error checking")
+            lcd_display.write(0, 1, "available space")
             logger.error(f"Error checking available space: {e}")
 
     # Wait for OK button press to return to menu

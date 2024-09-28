@@ -10,7 +10,7 @@ from src.logger_setup import setup_logging
 from src.drive_detection import DriveDetection
 from src.mhl_handler import initialize_mhl_file, add_file_to_mhl
 from src.file_transfer import FileTransfer
-from src.lcd_display import setup_lcd, lcd1602
+from src.lcd_display import lcd_display, setup_lcd
 from src.led_control import setup_leds, set_led_state, PROGRESS_LED, SUCCESS_LED, ERROR_LED, set_led_bar_graph, blink_led
 from src.system_utils import get_dump_drive_mountpoint, unmount_drive
 from src.menu_setup import navigate_up, navigate_down, select_option, display_menu
@@ -68,21 +68,21 @@ def clear_button_handlers():
 def exit_menu_to_standby():
     logger.info("Exiting utility menu, returning to standby mode from main.py.")
     state_manager.exit_utility()
-    lcd1602.clear()
-    lcd1602.write(0, 0, "Returning to")
-    lcd1602.write(0, 1, "Standby Mode")
+    lcd_display.clear()
+    lcd_display.write(0, 0, "Returning to")
+    lcd_display.write(0, 1, "Standby Mode")
     time.sleep(1)
     clear_button_handlers()
     display_standby_mode_screen()
 
 def display_standby_mode_screen():
-    lcd1602.clear()
+    lcd_display.clear()
     update_dump_drive_mountpoint()
     if DUMP_DRIVE_MOUNTPOINT is None or not os.path.ismount(DUMP_DRIVE_MOUNTPOINT):
-        lcd1602.write(0, 0, "Storage Missing")
+        lcd_display.write(0, 0, "Storage Missing")
     else:
-        lcd1602.write(0, 0, "Storage Detected")
-        lcd1602.write(0, 1, "Load Media")
+        lcd_display.write(0, 0, "Storage Detected")
+        lcd_display.write(0, 1, "Load Media")
 
 def menu_callback():
     display_menu()
@@ -91,8 +91,8 @@ def menu_callback():
 def main():
     setup_leds()
     setup_lcd()
-    lcd1602.clear()
-    lcd1602.write(0, 0, "Storage Missing")
+    lcd_display.clear()
+    lcd_display.write(0, 0, "Storage Missing")
 
     button_handler = ButtonHandler(back_button, ok_button, up_button, down_button, state_manager, menu_callback)
     button_thread = Thread(target=button_handler.button_listener, args=(main_stop_event,))
@@ -118,8 +118,8 @@ def main():
         while not main_stop_event.is_set():
             update_dump_drive_mountpoint()
             if DUMP_DRIVE_MOUNTPOINT is None:
-                lcd1602.clear()
-                lcd1602.write(0, 0, "Storage Missing")
+                lcd_display.clear()
+                lcd_display.write(0, 0, "Storage Missing")
                 time.sleep(5)
                 continue
 
@@ -147,9 +147,10 @@ def main():
                     success = file_transfer.copy_sd_to_dump(sd_mountpoint, DUMP_DRIVE_MOUNTPOINT, log_file)
                     if success:
                         set_led_state(SUCCESS_LED, True)
-                        lcd1602.clear()
-                        lcd1602.write(0, 0, "Transfer Done")
-                        lcd1602.write(0, 1, "Load New Media")
+                        lcd_display.clear()
+                        lcd_display.write(0, 0, "Transfer Done")
+                        lcd_display.write(0, 1, "Load New Media")
+                        time.sleep(5)
                     else:
                         set_led_state(ERROR_LED, True)
 
@@ -186,8 +187,8 @@ def main():
         set_led_state(SUCCESS_LED, False)
         set_led_state(ERROR_LED, False)
         set_led_bar_graph(0)
-        lcd1602.clear()
-        lcd1602.set_backlight(False)
+        lcd_display.clear()
+        lcd_display.set_backlight(False)
         shift_register.clear()
         shift_register.cleanup()
         logger.info("Exiting program.")
