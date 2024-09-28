@@ -13,7 +13,7 @@ from src.mhl_handler import add_file_to_mhl, initialize_mhl_file
 from src.lcd_display import update_lcd_progress, shorten_filename, lcd1602
 from src.led_control import setup_leds, set_led_state, blink_led, PROGRESS_LED, CHECKSUM_LED, SUCCESS_LED, ERROR_LED, set_led_bar_graph
 from src.system_utils import has_enough_space, unmount_drive
-from src.drive_detection import wait_for_drive_removal
+from src.drive_detection import DriveDetection
 from src.state_manager import StateManager
 
 logger = logging.getLogger(__name__)

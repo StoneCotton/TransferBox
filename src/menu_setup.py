@@ -1,6 +1,6 @@
 from time import sleep
 from src.lcd_display import lcd1602
-from src.drive_detection import get_mounted_drives_lsblk
+from src.drive_detection import DriveDetection
 from src.system_utils import unmount_drive, get_dump_drive_mountpoint
 from src.led_control import setup_leds, set_led_state, PROGRESS_LED, CHECKSUM_LED, SUCCESS_LED, ERROR_LED, BAR_GRAPH_LEDS
 from src.power_management import power_manager
@@ -12,7 +12,7 @@ import subprocess
 import shutil
 
 logger = logging.getLogger(__name__)
-
+drive_detector = DriveDetection()
 # Global lock for preventing simultaneous access
 option_lock = Lock()
 
@@ -105,7 +105,7 @@ def handle_option_completion(on_complete):
     display_menu()
 
 def list_drives(ok_button, back_button, up_button, down_button, clear_handlers, assign_handlers):
-    drives = get_mounted_drives_lsblk()
+    drives = drive_detector.get_mounted_drives_lsblk()
     for drive in drives:
         # Get the last part of the path
         drive_name = os.path.basename(drive)

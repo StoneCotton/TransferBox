@@ -7,7 +7,7 @@ from gpiozero import Button
 from src.pi74HC595 import pi74HC595
 
 from src.logger_setup import setup_logging
-from src.drive_detection import get_mounted_drives_lsblk, detect_new_drive, wait_for_drive_removal
+from src.drive_detection import DriveDetection
 from src.mhl_handler import initialize_mhl_file, add_file_to_mhl
 from src.file_transfer import copy_sd_to_dump, create_timestamped_dir
 from src.lcd_display import setup_lcd, lcd1602
@@ -19,6 +19,7 @@ from src.state_manager import StateManager
 from src.power_management import power_manager
 
 logger = setup_logging()
+drive_detector = DriveDetection()
 DUMP_DRIVE_MOUNTPOINT = None  # Initialize to None
 
 shift_register = pi74HC595(DS=7, ST=13, SH=19, daisy_chain=2)
@@ -121,11 +122,11 @@ def main():
                 time.sleep(5)  # Wait a bit before checking again
                 continue
             if state_manager.is_standby():
-                initial_drives = get_mounted_drives_lsblk()
+                initial_drives = drive_detector.get_mounted_drives_lsblk()
                 logger.info("Waiting for SD card to be plugged in...")
 
                 # Detect new SD card
-                sd_mountpoint = detect_new_drive(initial_drives)
+                sd_mountpoint = drive_detector.detect_new_drive(initial_drives)
                 if sd_mountpoint:
                     state_manager.enter_transfer()
                     logger.info(f"SD card detected at {sd_mountpoint}")
@@ -170,7 +171,7 @@ def main():
 
                     # Unmount and wait for card removal
                     unmount_drive(sd_mountpoint)
-                    wait_for_drive_removal(sd_mountpoint)
+                    drive_detector.wait_for_drive_removal(sd_mountpoint)
 
                     # Return to standby mode
                     state_manager.enter_standby()
