@@ -11,7 +11,7 @@ from src.drive_detection import DriveDetection
 from src.mhl_handler import initialize_mhl_file, add_file_to_mhl
 from src.file_transfer import FileTransfer
 from src.lcd_display import lcd_display, setup_lcd
-from src.led_control import setup_leds, set_led_state, PROGRESS_LED, SUCCESS_LED, ERROR_LED, set_led_bar_graph, blink_led
+from src.led_control import LEDControl, setup_leds, set_led_state, set_led_bar_graph, blink_led, cleanup_leds
 from src.system_utils import get_dump_drive_mountpoint, unmount_drive
 from src.menu_setup import navigate_up, navigate_down, select_option, display_menu
 from src.button_handler import ButtonHandler
@@ -111,9 +111,9 @@ def main():
         display_standby_mode_screen()
 
         # This LED state resetting should only happen on program startup
-        set_led_state(SUCCESS_LED, False)
-        set_led_state(ERROR_LED, False)
-        set_led_state(PROGRESS_LED, False)
+        set_led_state(LEDControl.SUCCESS_LED, False)
+        set_led_state(LEDControl.ERROR_LED, False)
+        set_led_state(LEDControl.PROGRESS_LED, False)
 
         while not main_stop_event.is_set():
             update_dump_drive_mountpoint()
@@ -134,8 +134,8 @@ def main():
                     logger.info(f"SD card detected at {sd_mountpoint}")
 
                     # Reset LEDs
-                    set_led_state(SUCCESS_LED, False)
-                    set_led_state(ERROR_LED, False)
+                    set_led_state(LEDControl.SUCCESS_LED, False)
+                    set_led_state(LEDControl.ERROR_LED, False)
                     set_led_bar_graph(0)
 
                     # Prepare for transfer
@@ -146,13 +146,13 @@ def main():
                     # Perform transfer
                     success = file_transfer.copy_sd_to_dump(sd_mountpoint, DUMP_DRIVE_MOUNTPOINT, log_file)
                     if success:
-                        set_led_state(SUCCESS_LED, True)
+                        set_led_state(LEDControl.SUCCESS_LED, True)
                         lcd_display.clear()
                         lcd_display.write(0, 0, "Transfer Done")
                         lcd_display.write(0, 1, "Load New Media")
                         time.sleep(5)
                     else:
-                        set_led_state(ERROR_LED, True)
+                        set_led_state(LEDControl.ERROR_LED, True)
 
                     # Unmount and wait for card removal
                     unmount_drive(sd_mountpoint)
@@ -173,7 +173,7 @@ def main():
         logger.info("Keyboard interrupt received. Exiting...")
     except Exception as e:
         logger.error(f"An error occurred: {e}")
-        set_led_state(ERROR_LED, True)
+        set_led_state(LEDControl.ERROR_LED, True)
     finally:
         # Signal all threads to stop
         main_stop_event.set()
@@ -183,9 +183,10 @@ def main():
         power_manager.stop_monitoring()
 
         # Cleanup and turn off all LEDs when the program exits
-        set_led_state(PROGRESS_LED, False)
-        set_led_state(SUCCESS_LED, False)
-        set_led_state(ERROR_LED, False)
+        set_led_state(LEDControl.PROGRESS_LED, False)
+        set_led_state(LEDControl.SUCCESS_LED, False)
+        set_led_state(LEDControl.ERROR_LED, False)
+        cleanup_leds()
         set_led_bar_graph(0)
         lcd_display.clear()
         lcd_display.set_backlight(False)

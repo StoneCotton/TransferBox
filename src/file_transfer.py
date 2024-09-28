@@ -11,7 +11,7 @@ from contextlib import contextmanager
 
 from src.mhl_handler import add_file_to_mhl, initialize_mhl_file
 from src.lcd_display import lcd_display
-from src.led_control import setup_leds, set_led_state, blink_led, PROGRESS_LED, CHECKSUM_LED, SUCCESS_LED, ERROR_LED, set_led_bar_graph
+from src.led_control import LEDControl, setup_leds, set_led_state, set_led_bar_graph, blink_led
 from src.system_utils import has_enough_space, unmount_drive
 from src.drive_detection import DriveDetection
 
@@ -60,7 +60,7 @@ class FileTransfer:
             return 0, 0
 
     def rsync_copy(self, source, destination, file_size, file_number, file_count):
-        with self.led_context(PROGRESS_LED, blink=True, blink_speed=0.5):
+        with self.led_context(LEDControl.PROGRESS_LED, blink=True, blink_speed=0.5):
             try:
                 process = subprocess.Popen(
                     ['rsync', '-a', '--info=progress2', source, destination],
@@ -95,7 +95,7 @@ class FileTransfer:
                 return False, str(e)
 
     def calculate_checksum(self, file_path):
-        with self.led_context(CHECKSUM_LED, blink=True, blink_speed=0.1):
+        with self.led_context(LEDControl.CHECKSUM_LED, blink=True, blink_speed=0.1):
             try:
                 hash_obj = xxhash.xxh64()
                 with open(file_path, 'rb') as f:
@@ -128,7 +128,7 @@ class FileTransfer:
             logger.warning(f"Checksum mismatch for {src_path}")
             logger.warning(f"Source checksum: {src_checksum}")
             logger.warning(f"Destination checksum: {dst_checksum}")
-            set_led_state(ERROR_LED, True)
+            set_led_state(LEDControl.ERROR_LED, True)
             return False, None
 
         logger.info(f"File {src_path} copied and verified successfully.")
@@ -174,7 +174,7 @@ class FileTransfer:
                 lcd_display.clear()
                 lcd_display.write(0, 0, "ERROR: No Space")
                 lcd_display.write(0, 1, "Remove Drives")
-                set_led_state(ERROR_LED, True)
+                set_led_state(LEDControl.ERROR_LED, True)
                 return False
 
             with open(log_file, 'a') as log:
@@ -217,7 +217,7 @@ class FileTransfer:
 
         except Exception as e:
             logger.error(f"An error occurred during transfer: {e}")
-            set_led_state(ERROR_LED, True)
+            set_led_state(LEDControl.ERROR_LED, True)
             return False
         finally:
             logger.info("Exiting transfer state")
@@ -227,9 +227,9 @@ class FileTransfer:
             logger.error("The following files failed to copy:")
             for failure in failures:
                 logger.error(failure)
-            set_led_state(ERROR_LED, True)
+            set_led_state(LEDControl.ERROR_LED, True)
             return False
         else:
             logger.info("All files copied successfully.")
-            set_led_state(SUCCESS_LED, True)
+            set_led_state(LEDControl.SUCCESS_LED, True)
             return True

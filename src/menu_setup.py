@@ -2,7 +2,7 @@ from time import sleep
 from src.lcd_display import lcd_display, setup_lcd
 from src.drive_detection import DriveDetection
 from src.system_utils import unmount_drive, get_dump_drive_mountpoint
-from src.led_control import setup_leds, set_led_state, PROGRESS_LED, CHECKSUM_LED, SUCCESS_LED, ERROR_LED, BAR_GRAPH_LEDS
+from src.led_control import setup_leds, set_led_state, LEDControl
 from src.power_management import power_manager
 import logging
 from threading import Lock
@@ -239,7 +239,7 @@ def test_leds(ok_button, back_button, up_button, down_button, clear_handlers, as
     lcd_display.write(0, 0, "Testing LEDs")
     setup_leds()
     
-    leds = [PROGRESS_LED, CHECKSUM_LED, SUCCESS_LED, ERROR_LED] + BAR_GRAPH_LEDS
+    leds = [LEDControl.PROGRESS_LED, LEDControl.CHECKSUM_LED, LEDControl.SUCCESS_LED, LEDControl.ERROR_LED] + LEDControl.BAR_GRAPH_LEDS
     
     for led in leds:
         set_led_state(led, True)
