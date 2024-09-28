@@ -169,7 +169,7 @@ class PowerManager:
                         self.beep_buzzer()
                         last_beep_time = current_time
                 
-                if voltage < 3.45:
+                if voltage < 3.25:
                     logger.critical("Battery critically low!")
                     time.sleep(10)
                     self.safe_shutdown()

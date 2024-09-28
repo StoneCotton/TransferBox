@@ -14,8 +14,10 @@ from src.lcd_display import update_lcd_progress, shorten_filename, lcd1602
 from src.led_control import setup_leds, set_led_state, blink_led, PROGRESS_LED, CHECKSUM_LED, SUCCESS_LED, ERROR_LED, set_led_bar_graph
 from src.system_utils import has_enough_space, unmount_drive
 from src.drive_detection import wait_for_drive_removal
+from src.state_manager import StateManager
 
 logger = logging.getLogger(__name__)
+state_manager = StateManager()
 
 @contextmanager
 def led_context(led, blink=False, blink_speed=0.5):
@@ -141,6 +143,9 @@ def copy_sd_to_dump(sd_mountpoint, dump_drive_mountpoint, log_file):
     if dump_drive_mountpoint is None:
         logger.error("DUMP_DRIVE not found, cannot proceed with copy")
         return False
+
+    state_manager.enter_transfer()  # Start timing the transfer
+
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     target_dir = create_timestamped_dir(dump_drive_mountpoint, timestamp)
     failures = []
@@ -158,6 +163,7 @@ def copy_sd_to_dump(sd_mountpoint, dump_drive_mountpoint, log_file):
         lcd1602.write(0, 0, "ERROR: No Space")
         lcd1602.write(0, 1, "Remove Drives")
         set_led_state(ERROR_LED, True)
+        state_manager.exit_transfer()  # End timing if there's an error
         return False
 
     with open(log_file, 'a') as log:
@@ -203,8 +209,13 @@ def copy_sd_to_dump(sd_mountpoint, dump_drive_mountpoint, log_file):
         for failure in failures:
             logger.error(failure)
         set_led_state(ERROR_LED, True)
+        state_manager.exit_transfer()  # End timing if there are failures
         return False
     else:
         logger.info("All files copied successfully.")
         set_led_state(SUCCESS_LED, True)
+        state_manager.exit_transfer()  # End timing on successful transfer
         return True
+    
+    # If you want to log the current transfer time during the process, you can add this anywhere in the function:
+    # logger.info(f"Current transfer time: {state_manager.get_current_transfer_time()}")
