@@ -16,6 +16,7 @@ class LEDControl:
     def __init__(self, ds_pin=7, st_pin=13, sh_pin=19, daisy_chain=2):
         self.shift_register = pi74HC595(DS=ds_pin, ST=st_pin, SH=sh_pin, daisy_chain=daisy_chain)
         self.led_state = [0] * 16  # 16 bits for 2 daisy-chained shift registers
+        self.cleanup_performed = False
 
     def setup_leds(self):
         """Clear all the LEDs by turning off all shift register outputs."""
@@ -69,10 +70,17 @@ class LEDControl:
 
     def cleanup(self):
         """Turn off all LEDs and clean up resources."""
-        self.led_state = [0] * 16
-        self.shift_register.set_by_list(self.led_state)
-        self.shift_register.cleanup()
-        logger.info("LED cleanup completed")
+        if not self.cleanup_performed:
+            try:
+                self.led_state = [0] * 16
+                self.shift_register.set_by_list(self.led_state)
+                self.shift_register.cleanup()
+                logger.info("LED cleanup completed")
+                self.cleanup_performed = True
+            except Exception as e:
+                logger.error(f"Error during LED cleanup: {e}")
+        else:
+            logger.info("LED cleanup already performed, skipping.")
 
 # Create a single instance of LEDControl to be used throughout the application
 led_control = LEDControl()
@@ -88,7 +96,10 @@ def blink_led(led_index, stop_event, blink_speed=0.5):
     led_control.blink_led(led_index, stop_event, blink_speed)
 
 def set_led_bar_graph(progress):
-    led_control.set_led_bar_graph(progress)
+    if not led_control.cleanup_performed:
+        led_control.set_led_bar_graph(progress)
+    else:
+        logger.debug(f"Skipping set_led_bar_graph({progress}) as cleanup has been performed.")
 
 def cleanup_leds():
     led_control.cleanup()

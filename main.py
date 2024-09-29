@@ -182,15 +182,13 @@ def main():
         power_manager.stop_monitoring()
 
         # Cleanup and turn off all LEDs when the program exits
-        set_led_state(LEDControl.PROGRESS_LED, False)
-        set_led_state(LEDControl.SUCCESS_LED, False)
-        set_led_state(LEDControl.ERROR_LED, False)
-        cleanup_leds()
-        set_led_bar_graph(0)
-        lcd_display.clear()
-        lcd_display.set_backlight(False)
-        shift_register.clear()
-        shift_register.cleanup()
+        try:
+            cleanup_leds()  # This will handle turning off all LEDs
+            lcd_display.clear()
+            lcd_display.set_backlight(False)
+        except Exception as e:
+            logger.error(f"Error during final cleanup: {e}")
+
         logger.info("Exiting program.")
 
 if __name__ == "__main__":
