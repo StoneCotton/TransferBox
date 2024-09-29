@@ -39,9 +39,10 @@ def add_file_to_mhl(mhl_filename, tree, hashes, file_path, checksum, file_size):
     path.text = os.path.relpath(file_path)
     last_modification_date = ET.SubElement(path, "lastmodificationdate")
     last_modification_date.text = datetime.fromtimestamp(os.path.getmtime(file_path)).isoformat()
-    
+
     xxh64 = ET.SubElement(hash_element, "xxh64", action="original")
     xxh64.text = checksum
     xxh64.set("hashdate", datetime.now().isoformat())
-    
+
     tree.write(mhl_filename, encoding='utf-8', xml_declaration=True)
+

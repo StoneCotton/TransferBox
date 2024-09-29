@@ -5,9 +5,13 @@ class pi74HC595:
     def __init__(
         self, DS: int = 11, ST: int = 13, SH: int = 15, daisy_chain: int = 1,
     ):
-        gpio.setwarnings(False)  # Add this line to suppress warnings
-        gpio.setmode(gpio.BCM)
-
+        self.gpio = gpio
+        self.gpio.setwarnings(False)
+        
+        # Check if mode is already set, if not, set it to BCM
+        if not self.gpio.getmode():
+            self.gpio.setmode(self.gpio.BCM)
+        
         if not (isinstance(DS, int) or isinstance(ST, int) or isinstance(SH, int)):
             raise ValueError("Pins must be int")
         elif DS < 1 or DS > 40 or ST < 1 or ST > 40 or SH < 1 or SH > 40:
@@ -27,12 +31,12 @@ class pi74HC595:
         self.clear()
 
     def _setup_board(self):
-        gpio.setup(self.data, gpio.OUT)
-        gpio.output(self.data, gpio.LOW)
-        gpio.setup(self.parallel, gpio.OUT)
-        gpio.output(self.parallel, gpio.LOW)
-        gpio.setup(self.serial, gpio.OUT)
-        gpio.output(self.serial, gpio.LOW)
+        self.gpio.setup(self.data, self.gpio.OUT)
+        self.gpio.output(self.data, self.gpio.LOW)
+        self.gpio.setup(self.parallel, self.gpio.OUT)
+        self.gpio.output(self.parallel, self.gpio.LOW)
+        self.gpio.setup(self.serial, self.gpio.OUT)
+        self.gpio.output(self.serial, self.gpio.LOW)
 
     def _output(self):  # ST_CP
         gpio.output(self.parallel, gpio.HIGH)
@@ -198,4 +202,4 @@ class pi74HC595:
         self._set_values([0, 0, 0, 0, 0, 0, 0, 0] * self.daisy_chain)
     def cleanup(self):
         """Clean up the GPIO pins."""
-        gpio.cleanup()
+        self.gpio.cleanup([self.data, self.parallel, self.serial])
