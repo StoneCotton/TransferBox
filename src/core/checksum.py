@@ -20,24 +20,17 @@ class ChecksumCalculator:
     def calculate_file_checksum(
         self, 
         file_path: Path, 
-        progress_callback: Optional[Callable[[int, int], None]] = None
+        progress_callback: Optional[Callable[[int, int], None]] = None,
+        current_progress: Optional[TransferProgress] = None  # Add current_progress parameter
     ) -> Optional[str]:
-        """
-        Calculate XXH64 checksum for a file with progress monitoring.
-        
-        Args:
-            file_path: Path to the file
-            progress_callback: Optional callback function(bytes_processed, total_bytes)
-        
-        Returns:
-            Hexadecimal checksum string or None if calculation fails
-        """
+        """Calculate XXH64 checksum for a file with progress monitoring."""
         try:
             file_size = file_path.stat().st_size
             bytes_processed = 0
             hash_obj = xxhash.xxh64()
 
-            progress = TransferProgress(
+            # Use existing progress object if provided, otherwise create new one
+            progress = current_progress or TransferProgress(
                 current_file=file_path.name,
                 file_number=1,
                 total_files=1,
@@ -48,20 +41,20 @@ class ChecksumCalculator:
                 status=TransferStatus.CHECKSUMMING
             )
 
-            self.display.show_status(f"Checksumming: {file_path.name}")
-
             with open(file_path, 'rb') as f:
                 for chunk in self._read_chunks(f):
                     hash_obj.update(chunk)
                     bytes_processed += len(chunk)
                     
-                    # Update progress
+                    # Update only the bytes progress, maintain other values
                     progress.bytes_transferred = bytes_processed
                     progress.current_file_progress = bytes_processed / file_size
-                    progress.overall_progress = bytes_processed / file_size
-                    self.display.show_progress(progress)
+                    # Don't update overall_progress as it's managed by the main process
+                    
+                    # Only show progress if we're using the main progress object
+                    if current_progress:
+                        self.display.show_progress(progress)
 
-                    # Call progress callback if provided
                     if progress_callback:
                         progress_callback(bytes_processed, file_size)
 
@@ -70,8 +63,8 @@ class ChecksumCalculator:
             return checksum
 
         except Exception as e:
-            error_msg = f"Error calculating checksum for {file_path}: {e}"
-            logger.error(error_msg)
+            error_msg = f"Error: Checksum"
+            logger.error(f"Error calculating checksum for {file_path}: {e}")
             self.display.show_error(error_msg)
             return None
 
@@ -79,21 +72,15 @@ class ChecksumCalculator:
         self, 
         file_path: Path, 
         expected_checksum: str,
-        progress_callback: Optional[Callable[[int, int], None]] = None
+        progress_callback: Optional[Callable[[int, int], None]] = None,
+        current_progress: Optional[TransferProgress] = None  # Add current_progress parameter
     ) -> bool:
-        """
-        Verify a file's checksum against an expected value.
-        
-        Args:
-            file_path: Path to the file
-            expected_checksum: Expected checksum value
-            progress_callback: Optional callback function(bytes_processed, total_bytes)
-            
-        Returns:
-            True if checksums match, False otherwise
-        """
-        self.display.show_status(f"Verifying: {file_path.name}")
-        actual_checksum = self.calculate_file_checksum(file_path, progress_callback)
+        """Verify a file's checksum against an expected value."""
+        actual_checksum = self.calculate_file_checksum(
+            file_path, 
+            progress_callback,
+            current_progress
+        )
         
         if actual_checksum is None:
             return False
@@ -106,7 +93,7 @@ class ChecksumCalculator:
                 f"Expected: {expected_checksum}\n"
                 f"Actual  : {actual_checksum}"
             )
-            self.display.show_error("Checksum verification failed")
+            self.display.show_error("Verify Failed")
             
         return matches
 

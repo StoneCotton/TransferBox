@@ -27,6 +27,7 @@ class FileTransfer:
 
     @contextmanager
     def _status_context(self, status: TransferStatus, message: Optional[str] = None):
+        """Context manager for maintaining transfer status."""
         if self._current_progress is None:
             self._current_progress = TransferProgress(
                 current_file="",
@@ -42,14 +43,17 @@ class FileTransfer:
         previous_status = self._current_progress.status
         self._current_progress.status = status
         
-        if message:
+        # Only show status message if explicitly provided and not during transfer
+        if message and status not in (TransferStatus.COPYING, TransferStatus.CHECKSUMMING):
             self.display.show_status(message)
         
         try:
             yield
         finally:
             self._current_progress.status = previous_status
-            self.display.show_progress(self._current_progress)
+            # Only update progress display during transfer states
+            if status in (TransferStatus.COPYING, TransferStatus.CHECKSUMMING):
+                self.display.show_progress(self._current_progress)
 
     def create_timestamped_dir(self, base_path: Path, timestamp: Optional[str] = None) -> Path:
         """
@@ -137,7 +141,7 @@ class FileTransfer:
         Returns:
             Tuple of (success: bool, error_message: str)
         """
-        with self._status_context(TransferStatus.COPYING, "Copying files..."):
+        with self._status_context(TransferStatus.COPYING):
             try:
                 rsync_command = ['rsync', '-a', '--info=progress2']
                 
@@ -223,7 +227,7 @@ class FileTransfer:
                 self.display.show_error(f"Copy failed: {error}")
                 return False, None
             
-            # Update progress for checksumming state
+            # Update status for checksumming while maintaining progress info
             self._current_progress.status = TransferStatus.CHECKSUMMING
             self.display.show_progress(self._current_progress)
             
@@ -231,27 +235,30 @@ class FileTransfer:
             calculator = ChecksumCalculator(self.display)
             
             logger.info(f"Calculating checksum for source file: {src_path}")
-            src_checksum = calculator.calculate_file_checksum(src_path)
+            src_checksum = calculator.calculate_file_checksum(
+                src_path,
+                progress_callback=None,
+                current_progress=self._current_progress  # Pass the current progress object
+            )
             
             if src_checksum is None:
-                self.display.show_error("Source checksum calculation failed")
+                self.display.show_error("Source checksum failed")
                 return False, None
             
             logger.info(f"Calculating checksum for destination file: {dst_path}")
-            dst_checksum = calculator.calculate_file_checksum(dst_path)
+            dst_checksum = calculator.calculate_file_checksum(
+                dst_path,
+                progress_callback=None,
+                current_progress=self._current_progress  # Pass the current progress object
+            )
             
             if dst_checksum is None:
-                self.display.show_error("Destination checksum calculation failed")
+                self.display.show_error("Dest checksum failed")
                 return False, None
             
             if src_checksum != dst_checksum:
-                error_msg = (
-                    f"Checksum mismatch for {src_path.name}\n"
-                    f"Source: {src_checksum}\n"
-                    f"Destination: {dst_checksum}"
-                )
-                logger.warning(error_msg)
-                self.display.show_error("Checksum verification failed")
+                logger.warning(f"Checksum mismatch for {src_path.name}")
+                self.display.show_error("Checksum failed")
                 return False, None
             
             return True, src_checksum
@@ -399,9 +406,6 @@ class FileTransfer:
             # Ensure destination directory exists
             dst_path.parent.mkdir(parents=True, exist_ok=True)
             
-            # Update display with current file
-            self.display.show_status(src_file.name)
-            
             # Copy and verify file
             success, checksum = self.copy_file_with_verification(
                 src_file,
@@ -440,12 +444,16 @@ class FileTransfer:
     def _handle_transfer_completion(self, failures: list) -> bool:
         """Handle the completion of the transfer process."""
         if failures:
-            error_msg = "Some files failed to transfer"
-            logger.error(error_msg)
+            error_msg = "Transfer Failed"  # Keep error message short for LCD
+            logger.error("Some files failed to transfer")
             for failure in failures:
                 logger.error(f"Failed: {failure}")
             self.display.show_error(error_msg)
             return False
+        
+        logger.info("Transfer completed successfully")
+        # Don't show status message here as it will be handled by state management
+        return True
         
         logger.info("Transfer completed successfully")
         self.display.show_status("Transfer complete")
