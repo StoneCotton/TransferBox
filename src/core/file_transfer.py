@@ -265,29 +265,26 @@ class FileTransfer:
         destination_path: Path,
         log_file: Path
     ) -> bool:
-        """
-        Copy files from source (SD card) to destination with verification.
-        
-        Args:
-            source_path: Source directory (SD card mount point)
-            destination_path: Destination directory (dump drive mount point)
-            log_file: Path to the transfer log file
-            
-        Returns:
-            True if transfer was successful, False otherwise
-        """
+        """Copy files from source (SD card) to destination with verification."""
         if not self._validate_transfer_preconditions(destination_path):
+            self.display.show_error("Transfer preconditions failed")
             return False
 
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         
         try:
             with self._transfer_session():
-                return self._execute_transfer(source_path, destination_path, timestamp, log_file)
+                success = self._execute_transfer(source_path, destination_path, timestamp, log_file)
+                if success:
+                    # Update progress to success state
+                    self._current_progress.status = TransferStatus.SUCCESS
+                    self.display.show_progress(self._current_progress)
+                return success
         except Exception as e:
             error_msg = f"Transfer failed: {e}"
             logger.error(error_msg)
-            self.display.show_error(error_msg)
+            self._current_progress.status = TransferStatus.ERROR
+            self.display.show_progress(self._current_progress)
             return False
 
     def _validate_transfer_preconditions(self, destination_path: Path) -> bool:

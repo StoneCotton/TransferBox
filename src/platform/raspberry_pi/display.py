@@ -9,7 +9,7 @@ from src.platform.raspberry_pi.lcd_display import lcd_display  # Import the exis
 from src.platform.raspberry_pi.led_control import (
     LEDControl, 
     set_led_state, 
-    set_bar_graph 
+    set_bar_graph, led_manager 
 )
 
 logger = logging.getLogger(__name__)
@@ -57,25 +57,19 @@ class RaspberryPiDisplay(DisplayInterface):
                 logger.error(f"Error displaying status message: {e}")
 
     def show_progress(self, progress: TransferProgress) -> None:
-        """
-        Update both LCD display and LED indicators with transfer progress
-        
-        Args:
-            progress: TransferProgress object containing current progress information
-        """
         with self.display_lock:
             try:
                 # Update LCD with current file info
                 filename = lcd_display.shorten_filename(progress.current_file, 16)
                 lcd_display.write(0, 0, filename)
                 
-                # Show file count and progress bar on second line
+                # Show file count on second line
                 lcd_display.write(0, 1, f"{progress.file_number}/{progress.total_files}")
                 
                 # Update LED indicators based on status
                 self._update_leds(progress)
                 
-                # Update progress bar LEDs
+                # Update progress bar LEDs with overall progress
                 if progress.overall_progress > 0:
                     set_bar_graph(int(progress.overall_progress * 100))
                 
@@ -83,62 +77,52 @@ class RaspberryPiDisplay(DisplayInterface):
                 logger.error(f"Error updating progress display: {e}")
 
     def show_error(self, message: str) -> None:
-        """
-        Display an error message and activate error LED
-        
-        Args:
-            message: The error message to display
-        """
         with self.display_lock:
             try:
                 lcd_display.clear()
-                # Split message across both lines if needed
                 if len(message) > 16:
                     lcd_display.write(0, 0, message[:16])
                     lcd_display.write(0, 1, message[16:32])
                 else:
                     lcd_display.write(0, 0, message)
                 
-                # Activate error LED
-                set_led_state(LEDControl.ERROR_LED, True)
+                # Error state: only ERROR_LED on
+                led_manager.all_leds_off_except(LEDControl.ERROR_LED)
                 logger.error(f"Error displayed: {message}")
             except Exception as e:
                 logger.error(f"Error showing error message: {e}")
 
     def clear(self) -> None:
-        """Clear both LCD display and LED indicators"""
         with self.display_lock:
             try:
                 lcd_display.clear()
-                # Reset all LEDs
-                set_led_state(LEDControl.SUCCESS_LED, False)
-                set_led_state(LEDControl.ERROR_LED, False)
-                set_led_state(LEDControl.PROGRESS_LED, False)
-                set_led_state(LEDControl.CHECKSUM_LED, False)
+                # Turn off all LEDs and stop any blinking
+                led_manager.all_leds_off_except(None)
                 set_bar_graph(0)
                 logger.debug("Display and LEDs cleared")
             except Exception as e:
                 logger.error(f"Error clearing display: {e}")
 
     def _update_leds(self, progress: TransferProgress) -> None:
-        """
-        Update LED indicators based on transfer status
-        
-        Args:
-            progress: TransferProgress object containing current status
-        """
-        # Reset status LEDs
-        set_led_state(LEDControl.SUCCESS_LED, False)
-        set_led_state(LEDControl.ERROR_LED, False)
-        set_led_state(LEDControl.PROGRESS_LED, False)
-        set_led_state(LEDControl.CHECKSUM_LED, False)
-        
-        # Set appropriate LED based on status
-        if progress.status == TransferStatus.COPYING:
-            set_led_state(LEDControl.PROGRESS_LED, True)
-        elif progress.status == TransferStatus.CHECKSUMMING:
-            set_led_state(LEDControl.CHECKSUM_LED, True)
-        elif progress.status == TransferStatus.SUCCESS:
-            set_led_state(LEDControl.SUCCESS_LED, True)
-        elif progress.status == TransferStatus.ERROR:
-            set_led_state(LEDControl.ERROR_LED, True)
+        """Update LED indicators based on transfer status"""
+        try:
+            if progress.status == TransferStatus.ERROR:
+                # Error state: only ERROR_LED on
+                led_manager.all_leds_off_except(LEDControl.ERROR_LED)
+                
+            elif progress.status == TransferStatus.COPYING:
+                # Copying state: blink PROGRESS_LED
+                led_manager.all_leds_off_except(None)
+                led_manager.start_led_blink(LEDControl.PROGRESS_LED)
+                
+            elif progress.status == TransferStatus.CHECKSUMMING:
+                # Checksumming state: blink CHECKSUM_LED
+                led_manager.stop_led_blink(LEDControl.PROGRESS_LED)
+                led_manager.start_led_blink(LEDControl.CHECKSUM_LED)
+                
+            elif progress.status == TransferStatus.SUCCESS:
+                # Success state: solid SUCCESS_LED
+                led_manager.all_leds_off_except(LEDControl.SUCCESS_LED)
+                
+        except Exception as e:
+            logger.error(f"Error updating LEDs: {e}")

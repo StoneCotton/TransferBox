@@ -4,7 +4,7 @@ import time
 from threading import Event, Thread
 import logging
 from enum import IntEnum
-from typing import List, Optional
+from typing import List, Optional, Dict
 from .pi74HC595 import pi74HC595
 
 logger = logging.getLogger(__name__)
@@ -38,9 +38,10 @@ class LEDManager:
             daisy_chain: Number of daisy-chained shift registers
         """
         self.shift_register = pi74HC595(DS=ds_pin, ST=st_pin, SH=sh_pin, daisy_chain=daisy_chain)
-        self.led_state = [0] * 16  # 16 bits for 2 daisy-chained shift registers
+        self.led_state = [0] * 16
         self.cleanup_performed = False
         self._active_threads: List[Thread] = []
+        self._blink_events: Dict[int, Event] = {}  # Track blink events for each LED
 
     def setup_leds(self) -> None:
         """Initialize all LEDs to off state"""
@@ -71,34 +72,54 @@ class LEDManager:
         except Exception as e:
             logger.error(f"Failed to set LED {led_index}: {e}")
 
-    def start_led_blink(self, led_index: int, blink_speed: float = 0.5) -> Event:
+    def start_led_blink(self, led_index: int, blink_speed: float = 0.5) -> None:
         """
         Start LED blinking in separate thread.
         
         Args:
             led_index: LED to blink
             blink_speed: Time between blinks in seconds
-            
-        Returns:
-            Event to control blinking
         """
+        # Stop any existing blink for this LED
+        self.stop_led_blink(led_index)
+        
         stop_event = Event()
+        self._blink_events[led_index] = stop_event
         
         def blink_loop():
-            original_state = self.led_state[led_index]
             while not stop_event.is_set() and not self.cleanup_performed:
                 self.set_led_state(led_index, True)
                 time.sleep(blink_speed)
+                if stop_event.is_set() or self.cleanup_performed:
+                    break
                 self.set_led_state(led_index, False)
                 time.sleep(blink_speed)
-            self.set_led_state(led_index, original_state)
 
         blink_thread = Thread(target=blink_loop)
         blink_thread.daemon = True
         blink_thread.start()
         self._active_threads.append(blink_thread)
-        
-        return stop_event
+
+    def stop_led_blink(self, led_index: int) -> None:
+        """Stop LED from blinking and turn it off"""
+        if led_index in self._blink_events:
+            self._blink_events[led_index].set()
+            del self._blink_events[led_index]
+        self.set_led_state(led_index, False)
+
+    def stop_all_blinks(self) -> None:
+        """Stop all blinking LEDs"""
+        for led_index in list(self._blink_events.keys()):
+            self.stop_led_blink(led_index)
+
+    def all_leds_off_except(self, exception_led: Optional[int] = None) -> None:
+        """Turn off all LEDs except the specified one"""
+        self.stop_all_blinks()
+        for i in range(4):  # Only the status LEDs
+            if i != exception_led:
+                self.set_led_state(i, False)
+        if exception_led is not None:
+            self.set_led_state(exception_led, True)
 
     def set_bar_graph(self, progress: float) -> None:
         """
