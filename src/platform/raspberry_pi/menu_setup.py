@@ -55,8 +55,11 @@ class MenuManager:
         """Display the current menu option"""
         with self.option_lock:
             self.display.clear()
+            # Force both lines to update
             self.display.show_status("UTIL MENU", line=0)
+            time.sleep(0.1)  # Small delay between lines
             self.display.show_status(self.menu_options[self.current_menu_index], line=1)
+            logger.info(f"Displayed menu option: {self.menu_options[self.current_menu_index]}")
 
     def select_option(self, ok_button: Button, back_button: Button,
                      up_button: Button, down_button: Button) -> None:

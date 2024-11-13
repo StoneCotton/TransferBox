@@ -293,10 +293,14 @@ class FileTransfer:
         if destination_path is None:
             self.display.show_error("Destination drive not found")
             return False
+            
+        # Add state validation
+        if self.state_manager.is_utility():
+            logger.info("Transfer blocked - system in utility mode")
+            return False
 
         return True
-
-    @contextmanager
+    
     def _transfer_session(self):
         """Context manager for handling transfer state."""
         try:

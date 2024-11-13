@@ -10,6 +10,7 @@ from .power_management import power_manager
 from .led_control import setup_leds, cleanup_leds
 from .lcd_display import setup_lcd
 from .menu_setup import MenuManager
+from .button_handler import ButtonHandler
 
 logger = logging.getLogger(__name__)
 
@@ -62,38 +63,17 @@ class RaspberryPiInitializer(PlatformInitializer):
 
     def initialize_buttons(self, state_manager, menu_callback) -> None:
         """Initialize button handling"""
-        from .button_handler import ButtonHandler
-        from gpiozero import Button
-        
         try:
-            # Create buttons only once, when needed
-            if self.back_button is None:
-                self.back_button = Button(self.BACK_BUTTON_PIN)
-                self.up_button = Button(self.UP_BUTTON_PIN)
-                self.down_button = Button(self.DOWN_BUTTON_PIN)
-                self.ok_button = Button(self.OK_BUTTON_PIN)
-            
-            # Initialize button handler with all required dependencies
+            # Create button handler
             self.button_handler = ButtonHandler(
-                self.back_button,
-                self.ok_button,
-                self.up_button,
-                self.down_button,
                 state_manager,
-                menu_callback,
                 self.display,
                 self.storage
             )
-            
-            self.button_thread = Thread(
-                target=self.button_handler.button_listener,
-                args=(self.main_stop_event,)
-            )
-            self.button_thread.start()
             logger.info("Button handling initialized")
             
         except Exception as e:
-            logger.error(f"Failed to initialize buttons: {e}")
+            logger.error(f"Failed to initialize buttons: {e}", exc_info=True)
             raise
 
     def cleanup(self) -> None:
@@ -168,3 +148,4 @@ class RaspberryPiInitializer(PlatformInitializer):
             self.ok_button.when_pressed = None
         if hasattr(self, 'back_button') and self.back_button:
             self.back_button.when_pressed = None
+

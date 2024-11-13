@@ -38,10 +38,6 @@ class StateManager:
         """Check if system is in transfer state."""
         return self.current_state == SystemState.TRANSFER
         
-    def is_utility(self) -> bool:
-        """Check if system is in utility state (Raspberry Pi only)."""
-        return self.current_state == SystemState.UTILITY
-        
     def enter_standby(self) -> None:
         """Enter standby state."""
         self.current_state = SystemState.STANDBY
@@ -78,28 +74,35 @@ class StateManager:
         self.transfer_start_time = None
         
     def enter_utility(self) -> None:
-        """
-        Enter utility state (Raspberry Pi only).
+        """Enter utility state (Raspberry Pi only)."""
+        logger.info(f"Attempting to enter utility state from current state: {self.current_state}")
         
-        Raises:
-            ValueError: If not in standby state
-        """
+        # First ensure we're in standby
         if self.current_state != SystemState.STANDBY:
-            raise ValueError("Can only enter utility state from standby state")
+            logger.info("Forcing standby state before entering utility")
+            self.enter_standby()
             
         self.current_state = SystemState.UTILITY
         self.display.show_status("Utility Mode")
-        logger.info("Entering utility state")
-        
+        logger.info("Successfully entered utility state")
+        return True
+
     def exit_utility(self) -> None:
         """Exit utility state (Raspberry Pi only)."""
+        logger.info(f"Attempting to exit utility state from current state: {self.current_state}")
         if self.current_state != SystemState.UTILITY:
-            logger.warning("Attempting to exit utility state when not in utility state")
-            return
+            logger.warning("Not in utility state, cannot exit")
+            return False
             
-        self.current_state = SystemState.STANDBY
-        self.display.show_status("Exiting Utility Mode")
-        logger.info("Exiting utility state")
+        self.enter_standby()
+        logger.info("Successfully exited utility state")
+        return True
+
+    def is_utility(self) -> bool:
+        """Check if system is in utility state."""
+        is_util = self.current_state == SystemState.UTILITY
+        logger.debug(f"Checking utility state: {is_util}")
+        return is_util
         
     def get_current_transfer_time(self) -> float:
         """
