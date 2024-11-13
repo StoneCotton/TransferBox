@@ -18,21 +18,21 @@ class RaspberryPiInitializer(PlatformInitializer):
 
     def __init__(self):
         super().__init__()
-        # GPIO pins for buttons
+        # GPIO pins for buttons - just store the pin numbers
         self.BACK_BUTTON_PIN = 10
         self.UP_BUTTON_PIN = 9
         self.DOWN_BUTTON_PIN = 11
         self.OK_BUTTON_PIN = 8
         
-        # Initialize buttons
-        self.back_button = Button(self.BACK_BUTTON_PIN)
-        self.up_button = Button(self.UP_BUTTON_PIN)
-        self.down_button = Button(self.DOWN_BUTTON_PIN)
-        self.ok_button = Button(self.OK_BUTTON_PIN)
+        # Don't create buttons here, just initialize variables
+        self.back_button = None
+        self.up_button = None
+        self.down_button = None
+        self.ok_button = None
         
         self.main_stop_event = Event()
         self.button_thread = None
-        self.menu_manager = MenuManager(self.display, self.storage)
+        self.menu_manager = None  # Initialize later when we have display and storage
 
     def initialize_hardware(self) -> None:
         """Initialize Raspberry Pi specific hardware"""
@@ -55,14 +55,19 @@ class RaspberryPiInitializer(PlatformInitializer):
         self.storage = RaspberryPiStorage()
 
     def initialize_buttons(self, state_manager, menu_callback) -> None:
-        """
-        Initialize button handling
-        
-        Args:
-            state_manager: StateManager instance
-            menu_callback: Callback function for menu activation
-        """
+        """Initialize button handling"""
         from .button_handler import ButtonHandler
+        from gpiozero import Button
+        
+        # Create buttons only once, when needed
+        if self.back_button is None:
+            self.back_button = Button(self.BACK_BUTTON_PIN)
+            self.up_button = Button(self.UP_BUTTON_PIN)
+            self.down_button = Button(self.DOWN_BUTTON_PIN)
+            self.ok_button = Button(self.OK_BUTTON_PIN)
+            
+            # Initialize menu manager here when we have display and storage
+            self.menu_manager = MenuManager(self.display, self.storage)
         
         self.button_handler = ButtonHandler(
             self.back_button,
@@ -87,6 +92,16 @@ class RaspberryPiInitializer(PlatformInitializer):
             self.main_stop_event.set()
             if self.button_thread and self.button_thread.is_alive():
                 self.button_thread.join(timeout=2)
+            
+            # Cleanup buttons
+            if self.back_button:
+                self.back_button.close()
+            if self.up_button:
+                self.up_button.close()
+            if self.down_button:
+                self.down_button.close()
+            if self.ok_button:
+                self.ok_button.close()
             
             # Cleanup hardware
             cleanup_leds()
