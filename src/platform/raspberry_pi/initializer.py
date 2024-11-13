@@ -17,22 +17,28 @@ class RaspberryPiInitializer(PlatformInitializer):
     """Handles Raspberry Pi specific initialization and hardware setup"""
 
     def __init__(self):
+        """Initialize Raspberry Pi components"""
         super().__init__()
-        # GPIO pins for buttons - just store the pin numbers
+        # GPIO pins for buttons
         self.BACK_BUTTON_PIN = 10
         self.UP_BUTTON_PIN = 9
         self.DOWN_BUTTON_PIN = 11
         self.OK_BUTTON_PIN = 8
         
-        # Don't create buttons here, just initialize variables
+        # Initialize button attributes
         self.back_button = None
         self.up_button = None
         self.down_button = None
         self.ok_button = None
         
+        # Initialize threading components
         self.main_stop_event = Event()
         self.button_thread = None
-        self.menu_manager = None  # Initialize later when we have display and storage
+        self.button_handler = None
+        
+        # Initialize display and storage attributes
+        self.display = None
+        self.storage = None
 
     def initialize_hardware(self) -> None:
         """Initialize Raspberry Pi specific hardware"""
@@ -59,48 +65,54 @@ class RaspberryPiInitializer(PlatformInitializer):
         from .button_handler import ButtonHandler
         from gpiozero import Button
         
-        # Create buttons only once, when needed
-        if self.back_button is None:
-            self.back_button = Button(self.BACK_BUTTON_PIN)
-            self.up_button = Button(self.UP_BUTTON_PIN)
-            self.down_button = Button(self.DOWN_BUTTON_PIN)
-            self.ok_button = Button(self.OK_BUTTON_PIN)
+        try:
+            # Create buttons only once, when needed
+            if self.back_button is None:
+                self.back_button = Button(self.BACK_BUTTON_PIN)
+                self.up_button = Button(self.UP_BUTTON_PIN)
+                self.down_button = Button(self.DOWN_BUTTON_PIN)
+                self.ok_button = Button(self.OK_BUTTON_PIN)
             
-            # Initialize menu manager here when we have display and storage
-            self.menu_manager = MenuManager(self.display, self.storage)
+            # Initialize button handler with all required dependencies
+            self.button_handler = ButtonHandler(
+                self.back_button,
+                self.ok_button,
+                self.up_button,
+                self.down_button,
+                state_manager,
+                menu_callback,
+                self.display,
+                self.storage
+            )
+            
+            self.button_thread = Thread(
+                target=self.button_handler.button_listener,
+                args=(self.main_stop_event,)
+            )
+            self.button_thread.start()
+            logger.info("Button handling initialized")
+            
+        except Exception as e:
+            logger.error(f"Failed to initialize buttons: {e}")
+            raise
         
-        self.button_handler = ButtonHandler(
-            self.back_button,
-            self.ok_button,
-            self.up_button,
-            self.down_button,
-            state_manager,
-            menu_callback
-        )
-        
-        self.button_thread = Thread(
-            target=self.button_handler.button_listener,
-            args=(self.main_stop_event,)
-        )
-        self.button_thread.start()
-        logger.info("Button handling initialized")
-
     def cleanup(self) -> None:
         """Cleanup all Raspberry Pi specific resources"""
         try:
             # Signal button thread to stop
-            self.main_stop_event.set()
-            if self.button_thread and self.button_thread.is_alive():
-                self.button_thread.join(timeout=2)
+            if hasattr(self, 'main_stop_event'):
+                self.main_stop_event.set()
+                if self.button_thread and self.button_thread.is_alive():
+                    self.button_thread.join(timeout=2)
             
             # Cleanup buttons
-            if self.back_button:
+            if hasattr(self, 'back_button') and self.back_button:
                 self.back_button.close()
-            if self.up_button:
+            if hasattr(self, 'up_button') and self.up_button:
                 self.up_button.close()
-            if self.down_button:
+            if hasattr(self, 'down_button') and self.down_button:
                 self.down_button.close()
-            if self.ok_button:
+            if hasattr(self, 'ok_button') and self.ok_button:
                 self.ok_button.close()
             
             # Cleanup hardware
@@ -108,7 +120,7 @@ class RaspberryPiInitializer(PlatformInitializer):
             power_manager.stop_monitoring()
             
             # Clear display
-            if self.display:
+            if hasattr(self, 'display') and self.display:
                 self.display.clear()
                 
             logger.info("Raspberry Pi cleanup completed")
@@ -123,7 +135,7 @@ class RaspberryPiInitializer(PlatformInitializer):
         Args:
             enable: True to enable utility mode, False to disable
         """
-        if enable:
+        if enable and self.button_handler:
             self.assign_menu_handlers()
         else:
             self.clear_button_handlers()
@@ -131,10 +143,11 @@ class RaspberryPiInitializer(PlatformInitializer):
     def assign_menu_handlers(self) -> None:
         """Assign button handlers for menu navigation"""
         logger.debug("Assigning menu handlers")
-        self.up_button.when_pressed = self.button_handler.navigate_up
-        self.down_button.when_pressed = self.button_handler.navigate_down
-        self.ok_button.when_pressed = self.button_handler.select_option
-        self.back_button.when_pressed = self.button_handler.exit_menu
+        if self.button_handler:
+            self.up_button.when_pressed = self.button_handler.navigate_up
+            self.down_button.when_pressed = self.button_handler.navigate_down
+            self.ok_button.when_pressed = self.button_handler.select_option
+            self.back_button.when_pressed = self.button_handler.exit_menu
 
     def clear_button_handlers(self) -> None:
         """Clear all button handlers"""

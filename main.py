@@ -50,21 +50,34 @@ class TransferBox:
         self.stop_event.set()
 
     def setup(self):
-        """Perform initial setup"""
-        try:
-            self.display.clear()
-            self.display.show_status("TransferBox Ready")
-            
-            # Special handling for Raspberry Pi
-            if self.platform == "raspberry_pi":
-                from src.platform.raspberry_pi.initializer import RaspberryPiInitializer
-                self.pi_initializer = RaspberryPiInitializer()
-                self.pi_initializer.initialize_hardware()
-            
-        except Exception as e:
-            logger.error(f"Setup failed: {e}")
-            self.display.show_error("Setup failed")
-            raise
+            """Perform initial setup"""
+            try:
+                self.display.clear()
+                self.display.show_status("TransferBox Ready")
+                
+                # Special handling for Raspberry Pi
+                if self.platform == "raspberry_pi":
+                    from src.platform.raspberry_pi.initializer import RaspberryPiInitializer
+                    self.pi_initializer = RaspberryPiInitializer()
+                    # Initialize all required components
+                    self.pi_initializer.initialize_hardware()
+                    self.pi_initializer.initialize_display()
+                    self.pi_initializer.initialize_storage()
+                    
+                    # Initialize button handling
+                    def menu_callback():
+                        self.display.show_status("Menu Mode")
+                        self.pi_initializer.handle_utility_mode(True)
+                        
+                    self.pi_initializer.initialize_buttons(
+                        self.state_manager,
+                        menu_callback
+                    )
+                
+            except Exception as e:
+                logger.error(f"Setup failed: {e}")
+                self.display.show_error("Setup failed")
+                raise
 
     def run(self):
         """Main application loop"""
@@ -133,21 +146,6 @@ class TransferBox:
     def run_embedded_mode(self):
         """Run in embedded mode (Raspberry Pi)"""
         try:
-            # Initialize Raspberry Pi specific components
-            from src.platform.raspberry_pi.initializer import RaspberryPiInitializer
-            self.pi_initializer = RaspberryPiInitializer()
-            self.pi_initializer.initialize_hardware()
-            
-            # Initialize button handling
-            def menu_callback():
-                self.display.show_status("Menu Mode")
-                self.pi_initializer.handle_utility_mode(True)
-                
-            self.pi_initializer.initialize_buttons(
-                self.state_manager,
-                menu_callback
-            )
-            
             # Main transfer loop
             while not self.stop_event.is_set():
                 try:

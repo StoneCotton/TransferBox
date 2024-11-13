@@ -6,6 +6,9 @@ from typing import Callable
 from threading import Event
 from gpiozero import Button
 from src.core.state_manager import StateManager
+from src.core.interfaces.display import DisplayInterface
+from src.core.interfaces.storage import StorageInterface
+from .menu_setup import MenuManager
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +22,9 @@ class ButtonHandler:
         up_button: Button,
         down_button: Button,
         state_manager: StateManager,
-        menu_callback: Callable[[], None]
+        menu_callback: Callable[[], None],
+        display: DisplayInterface,  # Add display parameter
+        storage: StorageInterface   # Add storage parameter
     ):
         """
         Initialize button handler.
@@ -31,6 +36,8 @@ class ButtonHandler:
             down_button: Down button GPIO instance
             state_manager: State management instance
             menu_callback: Callback function for menu activation
+            display: Display interface instance
+            storage: Storage interface instance
         """
         self.back_button = back_button
         self.ok_button = ok_button
@@ -38,10 +45,45 @@ class ButtonHandler:
         self.down_button = down_button
         self.state_manager = state_manager
         self.menu_callback = menu_callback
+        self.display = display
+        self.storage = storage
+        
+        # Initialize menu manager with required dependencies
+        self.menu_manager = MenuManager(self.display, self.storage)
         
         self.last_ok_time = 0.0
         self.ok_press_count = 0
         
+    def set_menu_manager(self, menu_manager) -> None:
+        """Set the menu manager instance for button navigation"""
+        self.menu_manager = menu_manager
+
+    def navigate_up(self) -> None:
+        """Navigate up in menu"""
+        if self.menu_manager:
+            self.menu_manager.navigate_up()
+
+    def navigate_down(self) -> None:
+        """Navigate down in menu"""
+        if self.menu_manager:
+            self.menu_manager.navigate_down()
+            
+    def select_option(self) -> None:
+        """Select current menu option"""
+        if self.menu_manager:
+            self.menu_manager.select_option(
+                self.ok_button, 
+                self.back_button,
+                self.up_button,
+                self.down_button
+            )
+            
+    def exit_menu(self) -> None:
+        """Exit menu mode"""
+        if self.menu_manager:
+            self.menu_manager.exit_menu()
+            self.state_manager.exit_utility()
+
     def button_listener(self, main_stop_event: Event) -> None:
         """
         Main button listening loop.
