@@ -104,7 +104,7 @@ class RaspberryPiStorage(StorageInterface):
 
     def unmount_drive(self, path: Path) -> bool:
         """
-        Safely unmount a drive.
+        Safely unmount a drive using system unmount command.
         
         Args:
             path: Path to the drive to unmount
@@ -113,12 +113,29 @@ class RaspberryPiStorage(StorageInterface):
             True if successful, False otherwise
         """
         try:
-            subprocess.run(['umount', str(path)], check=True)
+            # First sync to ensure all writes are complete
+            subprocess.run(['sync'], check=True)
+            
+            # Try unmounting with udisks2 first (handles cleanup better)
+            try:
+                subprocess.run(['udisksctl', 'unmount', '-b', str(path)], 
+                            check=True, 
+                            stderr=subprocess.PIPE,
+                            text=True)
+            except subprocess.CalledProcessError:
+                # Fall back to umount if udisksctl fails
+                subprocess.run(['umount', str(path)], check=True)
+            
             logger.info(f"Successfully unmounted {path}")
             return True
+            
         except subprocess.CalledProcessError as e:
-            logger.error(f"Error unmounting {path}: {e}")
-            set_led_state(LEDControl.ERROR_LED, True)
+            logger.error(f"Failed to unmount {path}: {e}")
+            if e.stderr:
+                logger.error(f"Unmount error details: {e.stderr}")
+            return False
+        except Exception as e:
+            logger.error(f"Error during unmount of {path}: {e}")
             return False
 
     def get_dump_drive(self) -> Optional[Path]:
@@ -166,7 +183,10 @@ class RaspberryPiStorage(StorageInterface):
             path: Path to the drive to monitor
         """
         try:
-            self.drive_detector.wait_for_drive_removal(str(path))
+            while path.exists() and path.is_mount():
+                logger.debug(f"Waiting for {path} to be removed...")
+                time.sleep(1)
+            logger.info(f"Drive {path} has been removed")
         except Exception as e:
             logger.error(f"Error waiting for drive removal: {e}")
 

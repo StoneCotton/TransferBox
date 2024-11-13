@@ -22,6 +22,6 @@ class TransferProgress:
     bytes_transferred: int
     total_bytes: int
     current_file_progress: float
-    overall_progress: float
+    overall_progress: float  # This will now represent files completed / total files
     status: TransferStatus
     error_message: Optional[str] = None

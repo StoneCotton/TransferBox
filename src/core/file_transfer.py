@@ -191,6 +191,7 @@ class FileTransfer:
                 logger.error(error_msg)
                 self.display.show_error(error_msg)
                 return False, error_msg
+            
     def copy_file_with_verification(
         self,
         src_path: Path,
@@ -198,65 +199,66 @@ class FileTransfer:
         file_number: int,
         file_count: int
     ) -> tuple[bool, Optional[str]]:
-        """
-        Copy a file and verify the copy using checksums.
-        
-        Args:
-            src_path: Source file path
-            dst_path: Destination file path
-            file_number: Current file number in sequence
-            file_count: Total number of files
-            
-        Returns:
-            Tuple of (success: bool, checksum: Optional[str])
-        """
+        """Copy a file and verify the copy using checksums."""
         try:
             # Get file size
             file_size = src_path.stat().st_size
             
-            # Initialize checksum calculator
-            calculator = ChecksumCalculator(self.display)
+            # Update progress for copying state
+            self._current_progress = TransferProgress(
+                current_file=src_path.name,
+                file_number=file_number,
+                total_files=file_count,
+                bytes_transferred=0,
+                total_bytes=file_size,
+                current_file_progress=0.0,
+                overall_progress=file_number / file_count,
+                status=TransferStatus.COPYING
+            )
+            self.display.show_progress(self._current_progress)
             
             # Copy file
             success, error = self.rsync_copy(src_path, dst_path, file_size, file_number, file_count)
             if not success:
                 self.display.show_error(f"Copy failed: {error}")
                 return False, None
-                
+            
+            # Update progress for checksumming state
+            self._current_progress.status = TransferStatus.CHECKSUMMING
+            self.display.show_progress(self._current_progress)
+            
             # Calculate and verify checksums
-            with self._status_context(TransferStatus.CHECKSUMMING):
-                logger.info(f"Calculating checksum for source file: {src_path}")
-                src_checksum = calculator.calculate_file_checksum(src_path)
-                
-                if src_checksum is None:
-                    self.display.show_error("Source checksum calculation failed")
-                    return False, None
-                    
-                logger.info(f"Calculating checksum for destination file: {dst_path}")
-                dst_checksum = calculator.calculate_file_checksum(dst_path)
-                
-                if dst_checksum is None:
-                    self.display.show_error("Destination checksum calculation failed")
-                    return False, None
-                
-                if src_checksum != dst_checksum:
-                    error_msg = (
-                        f"Checksum mismatch for {src_path.name}\n"
-                        f"Source: {src_checksum}\n"
-                        f"Destination: {dst_checksum}"
-                    )
-                    logger.warning(error_msg)
-                    self.display.show_error("Checksum verification failed")
-                    return False, None
-                    
-            logger.info(f"File {src_path.name} copied and verified successfully")
-            logger.info(f"Checksum: {src_checksum}")
+            calculator = ChecksumCalculator(self.display)
+            
+            logger.info(f"Calculating checksum for source file: {src_path}")
+            src_checksum = calculator.calculate_file_checksum(src_path)
+            
+            if src_checksum is None:
+                self.display.show_error("Source checksum calculation failed")
+                return False, None
+            
+            logger.info(f"Calculating checksum for destination file: {dst_path}")
+            dst_checksum = calculator.calculate_file_checksum(dst_path)
+            
+            if dst_checksum is None:
+                self.display.show_error("Destination checksum calculation failed")
+                return False, None
+            
+            if src_checksum != dst_checksum:
+                error_msg = (
+                    f"Checksum mismatch for {src_path.name}\n"
+                    f"Source: {src_checksum}\n"
+                    f"Destination: {dst_checksum}"
+                )
+                logger.warning(error_msg)
+                self.display.show_error("Checksum verification failed")
+                return False, None
+            
             return True, src_checksum
             
         except Exception as e:
-            error_msg = f"Error during copy and verification: {e}"
-            logger.error(error_msg)
-            self.display.show_error(error_msg)
+            logger.error(f"Error during copy and verification: {e}")
+            self.display.show_error(str(e))
             return False, None
         
     def copy_sd_to_dump(
@@ -291,10 +293,6 @@ class FileTransfer:
         """Validate all preconditions before starting transfer."""
         if destination_path is None:
             self.display.show_error("Destination drive not found")
-            return False
-
-        if not self.state_manager.is_standby():
-            self.display.show_error("System not in standby state")
             return False
 
         return True

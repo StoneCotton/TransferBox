@@ -4,6 +4,7 @@ import os
 import logging
 import signal
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 from threading import Event
@@ -155,41 +156,69 @@ class TransferBox:
                     while not dump_drive and not self.stop_event.is_set():
                         self.display.show_status("Waiting for storage")
                         dump_drive = self.storage.get_dump_drive()
+                        time.sleep(1)
                     
                     if self.stop_event.is_set():
                         break
                     
-                    self.display.show_status("Ready for transfer")
-                    
-                    # Wait for source drive
-                    initial_drives = self.storage.get_available_drives()
-                    source_drive = self.storage.wait_for_new_drive(initial_drives)
-                    
-                    if not source_drive or self.stop_event.is_set():
-                        continue
-                    
-                    # Start transfer
-                    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-                    log_file = dump_drive / f"transfer_log_{timestamp}.log"
-                    
-                    success = self.file_transfer.copy_sd_to_dump(
-                        source_drive,
-                        dump_drive,
-                        log_file
-                    )
-                    
-                    if success:
-                        self.display.show_status("Insert next card")
-                    
-                    # Wait for source drive removal
-                    self.storage.wait_for_drive_removal(source_drive)
-                    
+                    # Main SD card detection and transfer loop
+                    while not self.stop_event.is_set():
+                        # Ensure we're in standby state
+                        self.state_manager.enter_standby()
+                        self.display.show_status("Ready for transfer")
+                        
+                        # Wait for source drive
+                        initial_drives = self.storage.get_available_drives()
+                        source_drive = self.storage.wait_for_new_drive(initial_drives)
+                        
+                        if not source_drive or self.stop_event.is_set():
+                            continue
+                        
+                        # Prepare for transfer
+                        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                        log_file = dump_drive / f"transfer_log_{timestamp}.log"
+                        
+                        try:
+                            # Enter transfer state
+                            self.state_manager.enter_transfer()
+                            
+                            # Perform transfer
+                            success = self.file_transfer.copy_sd_to_dump(
+                                source_drive,
+                                dump_drive,
+                                log_file
+                            )
+                            
+                            if success:
+                                self.display.show_status("Transfer complete")
+                                # Safely eject the SD card
+                                logger.info(f"Unmounting source drive: {source_drive}")
+                                if self.storage.unmount_drive(source_drive):
+                                    self.display.show_status("Safe to remove card")
+                                else:
+                                    self.display.show_error("Unmount failed")
+                            else:
+                                self.display.show_error("Transfer failed")
+                                
+                        except Exception as e:
+                            logger.error(f"Transfer error: {e}")
+                            self.display.show_error(str(e))
+                        finally:
+                            # Always wait for drive removal before continuing
+                            self.storage.wait_for_drive_removal(source_drive)
+                            time.sleep(1)  # Small delay to ensure clean state
+                            
+                            # Return to standby state
+                            self.state_manager.enter_standby()
+                            self.display.show_status("Insert next card")
+                            
                 except Exception as e:
-                    logger.error(f"Transfer error: {e}")
+                    logger.error(f"Main loop error: {e}")
                     self.display.show_error(str(e))
+                    time.sleep(2)
+                    self.state_manager.enter_standby()
                     
         finally:
-            # Ensure proper cleanup
             if hasattr(self, 'pi_initializer'):
                 self.pi_initializer.cleanup()
 

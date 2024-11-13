@@ -35,68 +35,90 @@ class RaspberryPiDisplay(DisplayInterface):
             raise
 
     def show_status(self, message: str, line: int = 0) -> None:
-        """
-        Display a status message on the LCD display
-        
-        Args:
-            message: The message to display
-            line: The line number (0 or 1) to display the message on
-        """
+        """Display a status message on the LCD display"""
         with self.display_lock:
             try:
-                # Ensure line is within bounds
-                line = max(0, min(1, line))
+                # Clear the display first to prevent residual characters
+                lcd_display.clear()
                 
-                # Truncate message to fit 16 character display if needed
-                if len(message) > 16:
-                    message = lcd_display.shorten_filename(message, 16)
+                # Handle specific status messages
+                if message.lower().startswith(("standby", "ready")):
+                    lcd_display.write(0, 0, "Standby")
+                    lcd_display.write(0, 1, "Input Card")
+                elif message.lower().startswith("waiting for storage"):
+                    lcd_display.write(0, 0, "Waiting for")
+                    lcd_display.write(0, 1, "Storage")
+                elif message.lower().startswith("safe to remove"):
+                    lcd_display.write(0, 0, "Remove Card")
+                elif message.lower().startswith("transfer complete"):
+                    lcd_display.write(0, 0, "Transfer Done")
+                else:
+                    # Keep messages to 16 chars
+                    lcd_display.write(0, 0, message[:16])
                 
-                lcd_display.write(0, line, message)
                 logger.debug(f"Displayed status on line {line}: {message}")
             except Exception as e:
                 logger.error(f"Error displaying status message: {e}")
 
     def show_progress(self, progress: TransferProgress) -> None:
+        """Update both LCD display and LED indicators with transfer progress"""
         with self.display_lock:
             try:
-                # Update LCD with current file info
-                filename = lcd_display.shorten_filename(progress.current_file, 16)
-                lcd_display.write(0, 0, filename)
+                # Clear display first
+                lcd_display.clear()
                 
-                # Show file count on second line
-                lcd_display.write(0, 1, f"{progress.file_number}/{progress.total_files}")
+                if progress.current_file:
+                    # Truncate filename if needed
+                    filename = progress.current_file
+                    if len(filename) > 16:
+                        name_parts = filename.rsplit('.', 1)
+                        if len(name_parts) == 2:
+                            name, ext = name_parts
+                            # Keep extension and add ellipsis
+                            trunc_length = 16 - len(ext) - 4  # Space for "...", "." and extension
+                            truncated = f"{name[:trunc_length]}...{ext}"
+                        else:
+                            truncated = f"{filename[:13]}..."
+                    else:
+                        truncated = filename
+                    
+                    # Display filename on top line
+                    lcd_display.write(0, 0, truncated)
+                    
+                    # Display queue counter centered on bottom line
+                    queue_text = f"({progress.file_number}/{progress.total_files})"
+                    # Center the queue text
+                    padding = (16 - len(queue_text)) // 2
+                    lcd_display.write(padding, 1, queue_text)
                 
                 # Update LED indicators based on status
                 self._update_leds(progress)
                 
-                # Update progress bar LEDs with overall progress
-                if progress.overall_progress > 0:
-                    set_bar_graph(int(progress.overall_progress * 100))
-                
+                # Update bar graph during COPYING status
+                if progress.status == TransferStatus.COPYING:
+                    files_progress = (progress.file_number - 1) / progress.total_files * 100
+                    set_bar_graph(files_progress)
+                    
             except Exception as e:
                 logger.error(f"Error updating progress display: {e}")
 
     def show_error(self, message: str) -> None:
+        """Display error message on LCD"""
         with self.display_lock:
             try:
                 lcd_display.clear()
-                if len(message) > 16:
-                    lcd_display.write(0, 0, message[:16])
-                    lcd_display.write(0, 1, message[16:32])
-                else:
-                    lcd_display.write(0, 0, message)
-                
-                # Error state: only ERROR_LED on
+                lcd_display.write(0, 0, "Error:")
+                lcd_display.write(0, 1, message[:16])  # Truncate to 16 chars
                 led_manager.all_leds_off_except(LEDControl.ERROR_LED)
                 logger.error(f"Error displayed: {message}")
             except Exception as e:
                 logger.error(f"Error showing error message: {e}")
 
     def clear(self) -> None:
+        """Clear both LCD and LEDs"""
         with self.display_lock:
             try:
                 lcd_display.clear()
-                # Turn off all LEDs and stop any blinking
                 led_manager.all_leds_off_except(None)
                 set_bar_graph(0)
                 logger.debug("Display and LEDs cleared")

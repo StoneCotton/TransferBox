@@ -49,14 +49,10 @@ class StateManager:
         logger.info("Entering standby state")
         
     def enter_transfer(self) -> None:
-        """
-        Enter transfer state.
-        
-        Raises:
-            ValueError: If not in standby state
-        """
+        """Enter transfer state."""
+        # Always transition through standby state
         if self.current_state != SystemState.STANDBY:
-            raise ValueError("Can only enter transfer state from standby state")
+            self.enter_standby()
             
         self.current_state = SystemState.TRANSFER
         self.transfer_start_time = time.time()
@@ -77,10 +73,9 @@ class StateManager:
             logger.info(f"Transfer duration: {self.format_time(transfer_duration)}")
             logger.info(f"Total transfer time: {self.format_time(self.total_transfer_time)}")
             
-        self.current_state = SystemState.STANDBY
+        # Return to standby state
+        self.enter_standby()
         self.transfer_start_time = None
-        self.display.show_status("Transfer Complete")
-        logger.info("Exiting transfer state")
         
     def enter_utility(self) -> None:
         """
