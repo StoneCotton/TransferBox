@@ -9,8 +9,7 @@ from src.platform.raspberry_pi.lcd_display import lcd_display  # Import the exis
 from src.platform.raspberry_pi.led_control import (
     LEDControl, 
     set_led_state, 
-    set_led_bar_graph, 
-    blink_led
+    set_bar_graph 
 )
 
 logger = logging.getLogger(__name__)
@@ -78,7 +77,7 @@ class RaspberryPiDisplay(DisplayInterface):
                 
                 # Update progress bar LEDs
                 if progress.overall_progress > 0:
-                    set_led_bar_graph(int(progress.overall_progress * 100))
+                    set_bar_graph(int(progress.overall_progress * 100))
                 
             except Exception as e:
                 logger.error(f"Error updating progress display: {e}")
@@ -116,7 +115,7 @@ class RaspberryPiDisplay(DisplayInterface):
                 set_led_state(LEDControl.ERROR_LED, False)
                 set_led_state(LEDControl.PROGRESS_LED, False)
                 set_led_state(LEDControl.CHECKSUM_LED, False)
-                set_led_bar_graph(0)
+                set_bar_graph(0)
                 logger.debug("Display and LEDs cleared")
             except Exception as e:
                 logger.error(f"Error clearing display: {e}")
