@@ -1,195 +1,212 @@
 import os
-import time
+import logging
+import signal
+import sys
 from datetime import datetime
-from threading import Thread, Event
+from pathlib import Path
+from threading import Event
 
-from gpiozero import Button
-from src.pi74HC595 import pi74HC595
+from src.core.platform_manager import PlatformManager
+from src.core.interfaces.display import DisplayInterface
+from src.core.interfaces.storage import StorageInterface
+from src.core.state_manager import StateManager
+from src.core.file_transfer import FileTransfer
+from src.core.logger_setup import setup_logging
 
-from src.logger_setup import setup_logging
-from src.drive_detection import DriveDetection
-from src.mhl_handler import initialize_mhl_file, add_file_to_mhl
-from src.file_transfer import FileTransfer
-from src.lcd_display import lcd_display, setup_lcd
-from src.led_control import LEDControl, setup_leds, set_led_state, set_led_bar_graph, blink_led, cleanup_leds
-from src.system_utils import get_dump_drive_mountpoint, unmount_drive
-from src.menu_setup import navigate_up, navigate_down, select_option, display_menu
-from src.button_handler import ButtonHandler
-from src.state_manager import StateManager
-from src.power_management import power_manager
-
+# Initialize logging
 logger = setup_logging()
-drive_detector = DriveDetection()
-DUMP_DRIVE_MOUNTPOINT = None  # Initialize to None
 
-shift_register = pi74HC595(DS=7, ST=13, SH=19, daisy_chain=2)
+class TransferBox:
+    """Main application class for TransferBox"""
+    
+    def __init__(self):
+        self.stop_event = Event()
+        self.platform = PlatformManager.get_platform()
+        logger.info(f"Initializing TransferBox on {self.platform} platform")
+        
+        # Initialize platform-specific components
+        self.display: DisplayInterface = PlatformManager.create_display()
+        self.storage: StorageInterface = PlatformManager.create_storage()
+        
+        # Initialize core components
+        self.state_manager = StateManager(self.display)
+        self.file_transfer = FileTransfer(
+            state_manager=self.state_manager,
+            display=self.display,
+            storage=self.storage
+        )
+        
+        # Setup signal handlers
+        signal.signal(signal.SIGINT, self.handle_shutdown)
+        signal.signal(signal.SIGTERM, self.handle_shutdown)
 
-# GPIO pins for buttons
-BACK_BUTTON_PIN = 10
-UP_BUTTON_PIN = 9
-DOWN_BUTTON_PIN = 11
-OK_BUTTON_PIN = 8
+    def handle_shutdown(self, signum, frame):
+        """Handle shutdown signals gracefully"""
+        logger.info("Shutdown signal received")
+        self.display.show_status("Shutting down...")
+        self.stop_event.set()
 
-# Initialize buttons
-back_button = Button(BACK_BUTTON_PIN)
-up_button = Button(UP_BUTTON_PIN)
-down_button = Button(DOWN_BUTTON_PIN)
-ok_button = Button(OK_BUTTON_PIN)
+    def setup(self):
+        """Perform initial setup"""
+        try:
+            self.display.clear()
+            self.display.show_status("TransferBox Ready")
+            
+            # Special handling for Raspberry Pi
+            if self.platform == "raspberry_pi":
+                from src.platform.raspberry_pi.initializer import RaspberryPiInitializer
+                self.pi_initializer = RaspberryPiInitializer()
+                self.pi_initializer.initialize_hardware()
+            
+        except Exception as e:
+            logger.error(f"Setup failed: {e}")
+            self.display.show_error("Setup failed")
+            raise
 
-# Event to signal threads to stop
-main_stop_event = Event()
+    def run(self):
+        """Main application loop"""
+        try:
+            self.setup()
+            
+            if self.platform in ["darwin", "windows"]:  # macOS or Windows
+                self.run_desktop_mode()
+            else:  # Raspberry Pi
+                self.run_embedded_mode()
+                
+        except Exception as e:
+            logger.error(f"Runtime error: {e}")
+            self.display.show_error(f"Error: {str(e)}")
+        finally:
+            self.cleanup()
 
-# Initialize StateManager
-state_manager = StateManager()
-file_transfer = FileTransfer(state_manager)
+    def run_desktop_mode(self):
+        """Run in desktop mode (macOS/Windows)"""
+        while not self.stop_event.is_set():
+            try:
+                # Get destination path from user
+                self.display.show_status("Enter destination path:")
+                destination = input("Enter destination path for transfers: ").strip()
+                destination_path = Path(destination)
+                
+                if not destination_path.exists():
+                    self.display.show_error("Destination path does not exist")
+                    continue
+                    
+                self.storage.set_dump_drive(destination_path)
+                
+                # Wait for source drive
+                self.display.show_status("Waiting for source drive...")
+                initial_drives = self.storage.get_available_drives()
+                
+                source_drive = self.storage.wait_for_new_drive(initial_drives)
+                if not source_drive or self.stop_event.is_set():
+                    continue
+                
+                # Start transfer
+                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                log_file = destination_path / f"transfer_log_{timestamp}.log"
+                
+                success = self.file_transfer.copy_sd_to_dump(
+                    source_drive,
+                    destination_path,
+                    log_file
+                )
+                
+                if success:
+                    self.display.show_status("Transfer complete")
+                else:
+                    self.display.show_error("Transfer failed")
+                
+                # Wait for source drive removal
+                self.storage.wait_for_drive_removal(source_drive)
+                
+            except KeyboardInterrupt:
+                logger.info("Transfer interrupted by user")
+                self.stop_event.set()
+            except Exception as e:
+                logger.error(f"Transfer error: {e}")
+                self.display.show_error(str(e))
 
-def update_dump_drive_mountpoint():
-    global DUMP_DRIVE_MOUNTPOINT
-    DUMP_DRIVE_MOUNTPOINT = get_dump_drive_mountpoint()
-    if DUMP_DRIVE_MOUNTPOINT is None:
-        logger.warning("DUMP_DRIVE not found")
-    else:
-        logger.info(f"DUMP_DRIVE found at {DUMP_DRIVE_MOUNTPOINT}")
+    def run_embedded_mode(self):
+        """Run in embedded mode (Raspberry Pi)"""
+        try:
+            # Initialize Raspberry Pi specific components
+            from src.platform.raspberry_pi.initializer import RaspberryPiInitializer
+            self.pi_initializer = RaspberryPiInitializer()
+            self.pi_initializer.initialize_hardware()
+            
+            # Initialize button handling
+            def menu_callback():
+                self.display.show_status("Menu Mode")
+                self.pi_initializer.handle_utility_mode(True)
+                
+            self.pi_initializer.initialize_buttons(
+                self.state_manager,
+                menu_callback
+            )
+            
+            # Main transfer loop
+            while not self.stop_event.is_set():
+                try:
+                    # Wait for dump drive
+                    dump_drive = self.storage.get_dump_drive()
+                    while not dump_drive and not self.stop_event.is_set():
+                        self.display.show_status("Waiting for storage")
+                        dump_drive = self.storage.get_dump_drive()
+                    
+                    if self.stop_event.is_set():
+                        break
+                    
+                    self.display.show_status("Ready for transfer")
+                    
+                    # Wait for source drive
+                    initial_drives = self.storage.get_available_drives()
+                    source_drive = self.storage.wait_for_new_drive(initial_drives)
+                    
+                    if not source_drive or self.stop_event.is_set():
+                        continue
+                    
+                    # Start transfer
+                    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                    log_file = dump_drive / f"transfer_log_{timestamp}.log"
+                    
+                    success = self.file_transfer.copy_sd_to_dump(
+                        source_drive,
+                        dump_drive,
+                        log_file
+                    )
+                    
+                    if success:
+                        self.display.show_status("Insert next card")
+                    
+                    # Wait for source drive removal
+                    self.storage.wait_for_drive_removal(source_drive)
+                    
+                except Exception as e:
+                    logger.error(f"Transfer error: {e}")
+                    self.display.show_error(str(e))
+                    
+        finally:
+            # Ensure proper cleanup
+            if hasattr(self, 'pi_initializer'):
+                self.pi_initializer.cleanup()
 
-def assign_menu_handlers():
-    logger.debug("Assigning menu handlers from main.py.")
-    up_button.when_pressed = navigate_up
-    down_button.when_pressed = navigate_down
-    ok_button.when_pressed = lambda: select_option(ok_button, back_button, up_button, down_button, exit_menu_to_standby, clear_button_handlers, assign_menu_handlers)
-    back_button.when_pressed = exit_menu_to_standby
-
-def clear_button_handlers():
-    logger.debug("Clearing button handlers to prevent unintended actions from main.py.")
-    up_button.when_pressed = None
-    down_button.when_pressed = None
-    ok_button.when_pressed = None
-    back_button.when_pressed = None
-
-def exit_menu_to_standby():
-    logger.info("Exiting utility menu, returning to standby mode from main.py.")
-    state_manager.exit_utility()
-    lcd_display.clear()
-    lcd_display.write(0, 0, "Returning to")
-    lcd_display.write(0, 1, "Standby Mode")
-    time.sleep(1)
-    clear_button_handlers()
-    display_standby_mode_screen()
-
-def display_standby_mode_screen():
-    lcd_display.clear()
-    update_dump_drive_mountpoint()
-    if DUMP_DRIVE_MOUNTPOINT is None or not os.path.ismount(DUMP_DRIVE_MOUNTPOINT):
-        lcd_display.write(0, 0, "Storage Missing")
-    else:
-        lcd_display.write(0, 0, "Storage Detected")
-        lcd_display.write(0, 1, "Load Media")
-
-def menu_callback():
-    display_menu()
-    assign_menu_handlers()
+    def cleanup(self):
+        """Cleanup resources"""
+        logger.info("Cleaning up resources")
+        self.display.clear()
+        
+        if self.platform == "raspberry_pi":
+            self.pi_initializer.cleanup()
 
 def main():
-    setup_leds()
-    setup_lcd()
-    lcd_display.clear()
-    lcd_display.write(0, 0, "Storage Missing")
-
-    button_handler = ButtonHandler(back_button, ok_button, up_button, down_button, state_manager, menu_callback)
-    button_thread = Thread(target=button_handler.button_listener, args=(main_stop_event,))
-    button_thread.start()
-
-    # Start power monitoring
-    power_manager.start_monitoring()
-
+    """Main entry point"""
     try:
-        while True:
-            update_dump_drive_mountpoint()
-            if DUMP_DRIVE_MOUNTPOINT is not None and os.path.ismount(DUMP_DRIVE_MOUNTPOINT):
-                break
-            time.sleep(2)
-
-        display_standby_mode_screen()
-
-        # This LED state resetting should only happen on program startup
-        set_led_state(LEDControl.SUCCESS_LED, False)
-        set_led_state(LEDControl.ERROR_LED, False)
-        set_led_state(LEDControl.PROGRESS_LED, False)
-
-        while not main_stop_event.is_set():
-            update_dump_drive_mountpoint()
-            if DUMP_DRIVE_MOUNTPOINT is None:
-                lcd_display.clear()
-                lcd_display.write(0, 0, "Storage Missing")
-                time.sleep(5)
-                continue
-
-            logger.debug(f"Current state: {state_manager.get_current_state()}")
-
-            if state_manager.is_standby():
-                initial_drives = drive_detector.get_mounted_drives_lsblk()
-                logger.info("Waiting for SD card to be plugged in...")
-
-                sd_mountpoint = drive_detector.detect_new_drive(initial_drives)
-                if sd_mountpoint:
-                    logger.info(f"SD card detected at {sd_mountpoint}")
-
-                    # Reset LEDs
-                    set_led_state(LEDControl.SUCCESS_LED, False)
-                    set_led_state(LEDControl.ERROR_LED, False)
-                    set_led_bar_graph(0)
-
-                    # Prepare for transfer
-                    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-                    target_dir = file_transfer.create_timestamped_dir(DUMP_DRIVE_MOUNTPOINT, timestamp)
-                    log_file = os.path.join(target_dir, f"transfer_log_{timestamp}.log")
-
-                    # Perform transfer
-                    success = file_transfer.copy_sd_to_dump(sd_mountpoint, DUMP_DRIVE_MOUNTPOINT, log_file)
-                    if success:
-                        set_led_state(LEDControl.SUCCESS_LED, True)
-                        lcd_display.clear()
-                        lcd_display.write(0, 0, "Transfer Done")
-                        lcd_display.write(0, 1, "Load New Media")
-                    else:
-                        set_led_state(LEDControl.ERROR_LED, True)
-
-                    # Unmount and wait for card removal
-                    unmount_drive(sd_mountpoint)
-                    drive_detector.wait_for_drive_removal(sd_mountpoint)
-
-                    # Return to standby mode
-                    logger.info("Returning to standby mode")
-                    state_manager.enter_standby()
-                    display_standby_mode_screen()
-
-            elif state_manager.is_utility():
-                time.sleep(0.1)
-            else:
-                logger.debug("System in transfer mode, waiting for completion")
-                time.sleep(0.1)
-
-    except KeyboardInterrupt:
-        logger.info("Keyboard interrupt received. Exiting...")
+        app = TransferBox()
+        app.run()
     except Exception as e:
-        logger.error(f"An error occurred: {e}")
-        set_led_state(LEDControl.ERROR_LED, True)
-    finally:
-        # Signal all threads to stop
-        main_stop_event.set()
-        button_thread.join()
-
-        # Stop power monitoring
-        power_manager.stop_monitoring()
-
-        # Cleanup and turn off all LEDs when the program exits
-        try:
-            cleanup_leds()  # This will handle turning off all LEDs
-            lcd_display.clear()
-            lcd_display.set_backlight(False)
-        except Exception as e:
-            logger.error(f"Error during final cleanup: {e}")
-
-        logger.info("Exiting program.")
+        logger.critical(f"Application failed: {e}")
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()

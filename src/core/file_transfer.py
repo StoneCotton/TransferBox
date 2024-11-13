@@ -1,0 +1,457 @@
+# src/core/file_transfer.py
+
+import logging
+import platform
+import re
+import subprocess
+import sys
+from datetime import datetime
+from pathlib import Path
+from typing import Optional
+from contextlib import contextmanager
+from threading import Event, Thread
+from .interfaces.display import DisplayInterface
+from .interfaces.storage import StorageInterface
+from .interfaces.types import TransferStatus, TransferProgress
+from .checksum import ChecksumCalculator
+from mhl_handler import initialize_mhl_file, add_file_to_mhl
+
+logger = logging.getLogger(__name__)
+
+class FileTransfer:
+    def __init__(self, state_manager, display: DisplayInterface, storage: StorageInterface):
+        self.state_manager = state_manager
+        self.display = display
+        self.storage = storage
+        self._current_progress: Optional[TransferProgress] = None
+
+    @contextmanager
+    def _status_context(self, status: TransferStatus, message: Optional[str] = None):
+        if self._current_progress is None:
+            self._current_progress = TransferProgress(
+                current_file="",
+                file_number=0,
+                total_files=0,
+                bytes_transferred=0,
+                total_bytes=0,
+                current_file_progress=0.0,
+                overall_progress=0.0,
+                status=status
+            )
+        
+        previous_status = self._current_progress.status
+        self._current_progress.status = status
+        
+        if message:
+            self.display.show_status(message)
+        
+        try:
+            yield
+        finally:
+            self._current_progress.status = previous_status
+            self.display.show_progress(self._current_progress)
+
+    def create_timestamped_dir(self, base_path: Path, timestamp: Optional[str] = None) -> Path:
+        """
+        Create a timestamped directory for file transfers.
+        
+        Args:
+            base_path: The base directory where the timestamped directory should be created
+            timestamp: Optional timestamp string. If None, current timestamp will be used
+            
+        Returns:
+            Path to the created directory
+            
+        Raises:
+            OSError: If directory creation fails
+        """
+        try:
+            # Use provided timestamp or generate new one
+            if timestamp is None:
+                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            
+            # Convert string path to Path object if needed
+            if isinstance(base_path, str):
+                base_path = Path(base_path)
+            
+            # Create the target directory
+            target_dir = base_path / timestamp
+            target_dir.mkdir(parents=True, exist_ok=True)
+            
+            logger.info(f"Created timestamped directory: {target_dir}")
+            return target_dir
+            
+        except Exception as e:
+            error_msg = f"Failed to create timestamped directory: {e}"
+            logger.error(error_msg)
+            self.display.show_error(error_msg)
+            raise OSError(error_msg) from e
+    def rsync_dry_run(self, source: Path, destination: Path) -> tuple[int, int]:
+        """
+        Perform a dry run with rsync to get transfer information.
+        
+        Args:
+            source: Source directory path
+            destination: Destination directory path
+            
+        Returns:
+            Tuple of (file_count, total_size)
+        """
+        try:
+            rsync_command = ['rsync', '-a', '--dry-run', '--stats']
+            
+            if platform.system() == 'Windows':
+                rsync_command[0] = 'C:\\Program Files\\rsync\\rsync.exe'
+                
+            process = subprocess.run(
+                [*rsync_command, str(source), str(destination)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                check=True
+            )
+            
+            output = process.stdout
+            file_count = int(re.search(r'Number of regular files transferred: (\d+)', output).group(1))
+            total_size = int(re.search(r'Total transferred file size: ([\d,]+)', output).group(1).replace(',', ''))
+            
+            logger.debug(f"Dry run info - Files: {file_count}, Size: {total_size} bytes")
+            return file_count, total_size
+            
+        except Exception as e:
+            error_msg = f"Error during rsync dry run: {e}"
+            logger.error(error_msg)
+            self.display.show_error(error_msg)
+            return 0, 0
+    def rsync_copy(self, source: Path, destination: Path, file_size: int, file_number: int, file_count: int) -> tuple[bool, str]:
+        """
+        Copy files using rsync with progress monitoring.
+        
+        Args:
+            source: Source path
+            destination: Destination path
+            file_size: Total size of files to copy in bytes
+            file_number: Current file number in sequence
+            file_count: Total number of files
+            
+        Returns:
+            Tuple of (success: bool, error_message: str)
+        """
+        with self._status_context(TransferStatus.COPYING, "Copying files..."):
+            try:
+                rsync_command = ['rsync', '-a', '--info=progress2']
+                
+                if platform.system() == 'Windows':
+                    rsync_command[0] = 'C:\\Program Files\\rsync\\rsync.exe'
+                
+                process = subprocess.Popen(
+                    [*rsync_command, str(source), str(destination)],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True
+                )
+                
+                transferred = 0
+                last_percent = 0
+                
+                for line in process.stdout:
+                    sys.stdout.write(line)
+                    sys.stdout.flush()
+                    
+                    # Update progress information
+                    if match := re.search(r'(\d+)%', line):
+                        percent = int(match.group(1))
+                        if percent - last_percent >= 10:
+                            last_percent = percent
+                            self._current_progress.current_file_progress = percent / 100.0
+                    
+                    if match := re.search(r'(\d+) bytes/sec', line):
+                        bytes_transferred = int(match.group(1))
+                        transferred += bytes_transferred
+                        overall_progress = transferred / file_size
+                        
+                        # Update progress object
+                        self._current_progress.bytes_transferred = transferred
+                        self._current_progress.total_bytes = file_size
+                        self._current_progress.file_number = file_number
+                        self._current_progress.total_files = file_count
+                        self._current_progress.overall_progress = min(overall_progress, 1.0)
+                        
+                        # Update display
+                        self.display.show_progress(self._current_progress)
+                
+                process.wait()
+                if process.returncode != 0:
+                    raise subprocess.CalledProcessError(process.returncode, process.args)
+                    
+                return True, ""
+                
+            except Exception as e:
+                error_msg = f"Error during rsync: {e}"
+                logger.error(error_msg)
+                self.display.show_error(error_msg)
+                return False, error_msg
+    def copy_file_with_verification(
+        self,
+        src_path: Path,
+        dst_path: Path,
+        file_number: int,
+        file_count: int
+    ) -> tuple[bool, Optional[str]]:
+        """
+        Copy a file and verify the copy using checksums.
+        
+        Args:
+            src_path: Source file path
+            dst_path: Destination file path
+            file_number: Current file number in sequence
+            file_count: Total number of files
+            
+        Returns:
+            Tuple of (success: bool, checksum: Optional[str])
+        """
+        try:
+            # Get file size
+            file_size = src_path.stat().st_size
+            
+            # Initialize checksum calculator
+            calculator = ChecksumCalculator(self.display)
+            
+            # Copy file
+            success, error = self.rsync_copy(src_path, dst_path, file_size, file_number, file_count)
+            if not success:
+                self.display.show_error(f"Copy failed: {error}")
+                return False, None
+                
+            # Calculate and verify checksums
+            with self._status_context(TransferStatus.CHECKSUMMING):
+                logger.info(f"Calculating checksum for source file: {src_path}")
+                src_checksum = calculator.calculate_file_checksum(src_path)
+                
+                if src_checksum is None:
+                    self.display.show_error("Source checksum calculation failed")
+                    return False, None
+                    
+                logger.info(f"Calculating checksum for destination file: {dst_path}")
+                dst_checksum = calculator.calculate_file_checksum(dst_path)
+                
+                if dst_checksum is None:
+                    self.display.show_error("Destination checksum calculation failed")
+                    return False, None
+                
+                if src_checksum != dst_checksum:
+                    error_msg = (
+                        f"Checksum mismatch for {src_path.name}\n"
+                        f"Source: {src_checksum}\n"
+                        f"Destination: {dst_checksum}"
+                    )
+                    logger.warning(error_msg)
+                    self.display.show_error("Checksum verification failed")
+                    return False, None
+                    
+            logger.info(f"File {src_path.name} copied and verified successfully")
+            logger.info(f"Checksum: {src_checksum}")
+            return True, src_checksum
+            
+        except Exception as e:
+            error_msg = f"Error during copy and verification: {e}"
+            logger.error(error_msg)
+            self.display.show_error(error_msg)
+            return False, None
+        
+    def copy_sd_to_dump(
+        self,
+        source_path: Path,
+        destination_path: Path,
+        log_file: Path
+    ) -> bool:
+        """
+        Copy files from source (SD card) to destination with verification.
+        
+        Args:
+            source_path: Source directory (SD card mount point)
+            destination_path: Destination directory (dump drive mount point)
+            log_file: Path to the transfer log file
+            
+        Returns:
+            True if transfer was successful, False otherwise
+        """
+        if not self._validate_transfer_preconditions(destination_path):
+            return False
+
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        
+        try:
+            with self._transfer_session():
+                return self._execute_transfer(source_path, destination_path, timestamp, log_file)
+        except Exception as e:
+            error_msg = f"Transfer failed: {e}"
+            logger.error(error_msg)
+            self.display.show_error(error_msg)
+            return False
+
+    def _validate_transfer_preconditions(self, destination_path: Path) -> bool:
+        """Validate all preconditions before starting transfer."""
+        if destination_path is None:
+            self.display.show_error("Destination drive not found")
+            return False
+
+        if not self.state_manager.is_standby():
+            self.display.show_error("System not in standby state")
+            return False
+
+        return True
+
+    @contextmanager
+    def _transfer_session(self):
+        """Context manager for handling transfer state."""
+        try:
+            self.state_manager.enter_transfer()
+            yield
+        finally:
+            self.state_manager.exit_transfer()
+
+    def _execute_transfer(
+        self,
+        source_path: Path,
+        destination_path: Path,
+        timestamp: str,
+        log_file: Path
+    ) -> bool:
+        """Execute the actual transfer operation."""
+        target_dir = self.create_timestamped_dir(destination_path, timestamp)
+        
+        # Initialize MHL file
+        mhl_filename, tree, hashes = initialize_mhl_file(timestamp, target_dir)
+        
+        # Check space requirements
+        if not self._check_space_requirements(source_path, target_dir):
+            return False
+        
+        # Perform the transfer
+        return self._process_files(
+            source_path,
+            target_dir,
+            log_file,
+            mhl_filename,
+            tree,
+            hashes
+        )
+
+    def _check_space_requirements(self, source_path: Path, target_dir: Path) -> bool:
+        """Check if there's enough space for the transfer."""
+        file_count, total_size = self.rsync_dry_run(source_path, target_dir)
+        logger.info(f"Transfer requirements - Files: {file_count}, Size: {total_size} bytes")
+        
+        if not self.storage.has_enough_space(target_dir, total_size):
+            self.display.show_error("Not enough space")
+            return False
+            
+        return True
+
+    def _process_files(
+        self,
+        source_path: Path,
+        target_dir: Path,
+        log_file: Path,
+        mhl_filename: Path,
+        tree,
+        hashes
+    ) -> bool:
+        """Process all files in the source directory."""
+        failures = []
+        total_files = sum(1 for _ in source_path.rglob('*') if _.is_file())
+        file_number = 0
+        
+        with open(log_file, 'a') as log:
+            for src_file in source_path.rglob('*'):
+                if not src_file.is_file():
+                    continue
+                    
+                file_number += 1
+                rel_path = src_file.relative_to(source_path)
+                dst_path = target_dir / rel_path
+                
+                if not self._process_single_file(
+                    src_file,
+                    dst_path,
+                    file_number,
+                    total_files,
+                    log,
+                    mhl_filename,
+                    tree,
+                    hashes,
+                    failures
+                ):
+                    continue
+
+        return self._handle_transfer_completion(failures)
+
+    def _process_single_file(
+        self,
+        src_file: Path,
+        dst_path: Path,
+        file_number: int,
+        total_files: int,
+        log_file,
+        mhl_filename: Path,
+        tree,
+        hashes,
+        failures: list
+    ) -> bool:
+        """Process a single file during transfer."""
+        try:
+            # Ensure destination directory exists
+            dst_path.parent.mkdir(parents=True, exist_ok=True)
+            
+            # Update display with current file
+            self.display.show_status(src_file.name)
+            
+            # Copy and verify file
+            success, checksum = self.copy_file_with_verification(
+                src_file,
+                dst_path,
+                file_number,
+                total_files
+            )
+            
+            if success:
+                self._log_successful_transfer(log_file, src_file, dst_path)
+                if checksum:
+                    add_file_to_mhl(mhl_filename, tree, hashes, dst_path, checksum, dst_path.stat().st_size)
+            else:
+                failures.append(str(src_file))
+                self._log_failed_transfer(log_file, src_file, dst_path)
+                
+            return success
+                
+        except Exception as e:
+            logger.error(f"Error processing {src_file}: {e}")
+            failures.append(str(src_file))
+            return False
+
+    def _log_successful_transfer(self, log_file, src_path: Path, dst_path: Path):
+        """Log a successful file transfer."""
+        log_file.write(f"Success: {src_path} -> {dst_path}\n")
+        log_file.flush()
+        logger.info(f"Transferred: {src_path}")
+
+    def _log_failed_transfer(self, log_file, src_path: Path, dst_path: Path):
+        """Log a failed file transfer."""
+        log_file.write(f"Failed: {src_path} -> {dst_path}\n")
+        log_file.flush()
+        logger.error(f"Failed to transfer: {src_path}")
+
+    def _handle_transfer_completion(self, failures: list) -> bool:
+        """Handle the completion of the transfer process."""
+        if failures:
+            error_msg = "Some files failed to transfer"
+            logger.error(error_msg)
+            for failure in failures:
+                logger.error(f"Failed: {failure}")
+            self.display.show_error(error_msg)
+            return False
+        
+        logger.info("Transfer completed successfully")
+        self.display.show_status("Transfer complete")
+        return True
