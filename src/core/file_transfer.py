@@ -14,7 +14,7 @@ from .interfaces.display import DisplayInterface
 from .interfaces.storage import StorageInterface
 from .interfaces.types import TransferStatus, TransferProgress
 from .checksum import ChecksumCalculator
-from mhl_handler import initialize_mhl_file, add_file_to_mhl
+from .mhl_handler import initialize_mhl_file, add_file_to_mhl
 
 logger = logging.getLogger(__name__)
 

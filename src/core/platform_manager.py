@@ -31,16 +31,17 @@ class PlatformManager:
         platform_name = cls.get_platform()
         
         if platform_name == "raspberry_pi":
+            # Needs initializer for hardware setup
             from src.platform.raspberry_pi.display import RaspberryPiDisplay
             return RaspberryPiDisplay()
         elif platform_name == "darwin":  # macOS
+            # Simple console display, no special init needed
             from src.platform.macos.display import MacOSDisplay
             return MacOSDisplay()
         elif platform_name == "windows":
+            # Simple console display, no special init needed
             from src.platform.windows.display import WindowsDisplay
             return WindowsDisplay()
-        else:
-            raise NotImplementedError(f"Platform {platform_name} is not supported")
     
     @classmethod
     def create_storage(cls) -> StorageInterface:
