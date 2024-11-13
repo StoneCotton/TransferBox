@@ -95,7 +95,7 @@ class RaspberryPiInitializer(PlatformInitializer):
         except Exception as e:
             logger.error(f"Failed to initialize buttons: {e}")
             raise
-        
+
     def cleanup(self) -> None:
         """Cleanup all Raspberry Pi specific resources"""
         try:
@@ -135,24 +135,36 @@ class RaspberryPiInitializer(PlatformInitializer):
         Args:
             enable: True to enable utility mode, False to disable
         """
-        if enable and self.button_handler:
-            self.assign_menu_handlers()
-        else:
-            self.clear_button_handlers()
+        try:
+            if enable and self.button_handler:
+                logger.debug("Assigning menu handlers")
+                self.assign_menu_handlers()
+            else:
+                logger.debug("Clearing menu handlers")
+                self.clear_button_handlers()
+        except Exception as e:
+            logger.error(f"Error handling utility mode: {e}")
 
     def assign_menu_handlers(self) -> None:
         """Assign button handlers for menu navigation"""
+        if not self.button_handler:
+            logger.error("Button handler not initialized")
+            return
+
         logger.debug("Assigning menu handlers")
-        if self.button_handler:
-            self.up_button.when_pressed = self.button_handler.navigate_up
-            self.down_button.when_pressed = self.button_handler.navigate_down
-            self.ok_button.when_pressed = self.button_handler.select_option
-            self.back_button.when_pressed = self.button_handler.exit_menu
+        self.up_button.when_pressed = self.button_handler.navigate_up
+        self.down_button.when_pressed = self.button_handler.navigate_down
+        self.ok_button.when_pressed = self.button_handler.select_option
+        self.back_button.when_pressed = self.button_handler.exit_menu
 
     def clear_button_handlers(self) -> None:
         """Clear all button handlers"""
         logger.debug("Clearing button handlers")
-        self.up_button.when_pressed = None
-        self.down_button.when_pressed = None
-        self.ok_button.when_pressed = None
-        self.back_button.when_pressed = None
+        if hasattr(self, 'up_button') and self.up_button:
+            self.up_button.when_pressed = None
+        if hasattr(self, 'down_button') and self.down_button:
+            self.down_button.when_pressed = None
+        if hasattr(self, 'ok_button') and self.ok_button:
+            self.ok_button.when_pressed = None
+        if hasattr(self, 'back_button') and self.back_button:
+            self.back_button.when_pressed = None

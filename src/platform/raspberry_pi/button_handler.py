@@ -23,8 +23,8 @@ class ButtonHandler:
         down_button: Button,
         state_manager: StateManager,
         menu_callback: Callable[[], None],
-        display: DisplayInterface,  # Add display parameter
-        storage: StorageInterface   # Add storage parameter
+        display: DisplayInterface,
+        storage: StorageInterface
     ):
         """
         Initialize button handler.
@@ -48,62 +48,52 @@ class ButtonHandler:
         self.display = display
         self.storage = storage
         
-        # Initialize menu manager with required dependencies
+        # Initialize menu manager
         self.menu_manager = MenuManager(self.display, self.storage)
         
         self.last_ok_time = 0.0
         self.ok_press_count = 0
-        
-    def set_menu_manager(self, menu_manager) -> None:
-        """Set the menu manager instance for button navigation"""
-        self.menu_manager = menu_manager
 
     def navigate_up(self) -> None:
         """Navigate up in menu"""
-        if self.menu_manager:
+        if self.menu_manager and self.state_manager.is_utility():
             self.menu_manager.navigate_up()
 
     def navigate_down(self) -> None:
         """Navigate down in menu"""
-        if self.menu_manager:
+        if self.menu_manager and self.state_manager.is_utility():
             self.menu_manager.navigate_down()
-            
+
     def select_option(self) -> None:
         """Select current menu option"""
-        if self.menu_manager:
+        if self.menu_manager and self.state_manager.is_utility():
             self.menu_manager.select_option(
-                self.ok_button, 
+                self.ok_button,
                 self.back_button,
                 self.up_button,
                 self.down_button
             )
-            
+
     def exit_menu(self) -> None:
         """Exit menu mode"""
-        if self.menu_manager:
+        if self.menu_manager and self.state_manager.is_utility():
+            logger.info("Exiting menu mode")
             self.menu_manager.exit_menu()
             self.state_manager.exit_utility()
+            self.state_manager.enter_standby()
 
     def button_listener(self, main_stop_event: Event) -> None:
-        """
-        Main button listening loop.
-        
-        Args:
-            main_stop_event: Event to signal thread stop
-        """
+        """Main button listening loop"""
         logger.info("Button listener started")
-        
         try:
             while not main_stop_event.is_set():
                 self._handle_button_presses()
-                time.sleep(0.1)  # Small delay to prevent CPU overuse
-                
+                time.sleep(0.1)
         except Exception as e:
             logger.error(f"Error in button listener: {e}")
-            
         finally:
             logger.info("Button listener stopped")
-            
+
     def _handle_button_presses(self) -> None:
         """Handle combination of button presses"""
         if self.back_button.is_pressed:
@@ -113,7 +103,6 @@ class ButtonHandler:
                 logger.debug("OK button is pressed")
                 current_time = time.time()
                 
-                # Check if press is within time window
                 if current_time - self.last_ok_time <= 2:
                     self.ok_press_count += 1
                     logger.debug(f"OK button press count: {self.ok_press_count}")
@@ -123,7 +112,6 @@ class ButtonHandler:
                     
                 self.last_ok_time = current_time
                 
-                # Check for menu activation
                 if self.ok_press_count >= 2:
                     self._try_activate_menu()
                     self.ok_press_count = 0
@@ -133,7 +121,7 @@ class ButtonHandler:
             if self.ok_press_count > 0:
                 logger.debug("Back button released, resetting count")
             self.ok_press_count = 0
-            
+
     def _try_activate_menu(self) -> None:
         """Attempt to activate the utility menu"""
         if self.state_manager.is_standby():
@@ -141,6 +129,8 @@ class ButtonHandler:
             try:
                 self.state_manager.enter_utility()
                 self.menu_callback()
+                # Display initial menu option
+                self.menu_manager.display_current_option()
             except Exception as e:
                 logger.error(f"Failed to activate menu: {e}")
         else:

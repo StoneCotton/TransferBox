@@ -2,9 +2,8 @@
 
 import time
 import logging
-import os
 import subprocess
-import shutil
+import os
 from threading import Lock
 from pathlib import Path
 from typing import Optional, Callable
@@ -46,7 +45,7 @@ class MenuManager:
             self.display_current_option()
 
     def navigate_down(self) -> None:
-        """Navigate to next menu option"""
+        """Navigate down in menu"""
         with self.option_lock:
             logger.debug("Menu: Navigate down")
             self.current_menu_index = (self.current_menu_index + 1) % len(self.menu_options)
@@ -54,34 +53,22 @@ class MenuManager:
 
     def display_current_option(self) -> None:
         """Display the current menu option"""
-        self.display.clear()
-        self.display.show_status("UTIL MENU")
-        self.display.show_status(self.menu_options[self.current_menu_index], line=1)
+        with self.option_lock:
+            self.display.clear()
+            self.display.show_status("UTIL MENU", line=0)
+            self.display.show_status(self.menu_options[self.current_menu_index], line=1)
 
     def select_option(self, ok_button: Button, back_button: Button,
                      up_button: Button, down_button: Button) -> None:
         """Execute the selected menu option"""
         with self.option_lock:
             selected_option = self.menu_options[self.current_menu_index]
-            logger.info(f"Executing menu option: {selected_option}")
-            
-            # Map options to their handler methods
-            option_handlers = {
-                "List Drives": self._list_drives,
-                "Format Drive": self._format_drive,
-                "Unmount Drives": self._unmount_drives,
-                "Test LEDs": self._test_leds,
-                "Test Screen": self._test_screen,
-                "Shutdown": self._shutdown_system,
-                "Reboot": self._reboot_system,
-                "Available Space": self._check_available_space,
-                "Version Info": self._version_info
-            }
+            logger.info(f"Selected menu option: {selected_option}")
             
             # Execute the handler if it exists
-            if selected_option in option_handlers:
+            handler = getattr(self, f"_{selected_option.lower().replace(' ', '_')}", None)
+            if handler:
                 try:
-                    handler = option_handlers[selected_option]
                     handler()
                 except Exception as e:
                     logger.error(f"Error executing {selected_option}: {e}")
@@ -92,10 +79,11 @@ class MenuManager:
 
     def exit_menu(self) -> None:
         """Exit the utility menu"""
-        logger.info("Exiting utility menu")
-        self.display.clear()
-        self.display.show_status("Exiting Menu")
-        time.sleep(1)
+        with self.option_lock:
+            logger.info("Exiting utility menu")
+            self.display.clear()
+            self.display.show_status("Exiting Menu")
+            time.sleep(1)
 
     def _list_drives(self) -> None:
         """Display list of mounted drives"""
