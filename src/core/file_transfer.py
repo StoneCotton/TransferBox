@@ -127,20 +127,9 @@ class FileTransfer:
             logger.error(error_msg)
             self.display.show_error(error_msg)
             return 0, 0
-    def rsync_copy(self, source: Path, destination: Path, file_size: int, file_number: int, file_count: int) -> tuple[bool, str]:
-        """
-        Copy files using rsync with progress monitoring.
-        
-        Args:
-            source: Source path
-            destination: Destination path
-            file_size: Total size of files to copy in bytes
-            file_number: Current file number in sequence
-            file_count: Total number of files
             
-        Returns:
-            Tuple of (success: bool, error_message: str)
-        """
+    def rsync_copy(self, source: Path, destination: Path, file_size: int, file_number: int, file_count: int) -> tuple[bool, str]:
+        """Copy files using rsync with progress monitoring."""
         with self._status_context(TransferStatus.COPYING):
             try:
                 rsync_command = ['rsync', '-a', '--info=progress2']
@@ -156,30 +145,23 @@ class FileTransfer:
                 )
                 
                 transferred = 0
-                last_percent = 0
                 
                 for line in process.stdout:
+                    if self._current_progress is None:
+                        continue
+                        
                     sys.stdout.write(line)
                     sys.stdout.flush()
                     
-                    # Update progress information
-                    if match := re.search(r'(\d+)%', line):
-                        percent = int(match.group(1))
-                        if percent - last_percent >= 10:
-                            last_percent = percent
-                            self._current_progress.current_file_progress = percent / 100.0
-                    
-                    if match := re.search(r'(\d+) bytes/sec', line):
+                    # Parse progress information
+                    if match := re.search(r'(\d+)\s+(\d+)%\s+(\d+\.\d+\w+/s)\s+', line):
                         bytes_transferred = int(match.group(1))
-                        transferred += bytes_transferred
-                        overall_progress = transferred / file_size
+                        progress_percent = float(match.group(2))
                         
-                        # Update progress object
-                        self._current_progress.bytes_transferred = transferred
-                        self._current_progress.total_bytes = file_size
-                        self._current_progress.file_number = file_number
-                        self._current_progress.total_files = file_count
-                        self._current_progress.overall_progress = min(overall_progress, 1.0)
+                        # Update progress information
+                        self._current_progress.bytes_transferred = bytes_transferred
+                        self._current_progress.current_file_progress = progress_percent / 100.0
+                        self._current_progress.overall_progress = (file_number - 1 + progress_percent / 100.0) / file_count
                         
                         # Update display
                         self.display.show_progress(self._current_progress)
@@ -195,6 +177,7 @@ class FileTransfer:
                 logger.error(error_msg)
                 self.display.show_error(error_msg)
                 return False, error_msg
+
             
     def copy_file_with_verification(
         self,
@@ -226,30 +209,39 @@ class FileTransfer:
             if not success:
                 self.display.show_error(f"Copy failed: {error}")
                 return False, None
-            
-            # Update status for checksumming while maintaining progress info
-            self._current_progress.status = TransferStatus.CHECKSUMMING
-            self.display.show_progress(self._current_progress)
-            
+
             # Calculate and verify checksums
             calculator = ChecksumCalculator(self.display)
             
+            # Update progress for checksumming state
+            self._current_progress.status = TransferStatus.CHECKSUMMING
+            self._current_progress.current_file_progress = 0.0  # Reset for checksum progress
+            self.display.show_progress(self._current_progress)
+            
+            # Calculate source checksum (will represent 0-50% of checksum progress)
             logger.info(f"Calculating checksum for source file: {src_path}")
+            def source_progress_callback(bytes_processed: int, total_bytes: int):
+                self._current_progress.current_file_progress = (bytes_processed / total_bytes) * 0.5
+                self.display.show_progress(self._current_progress)
+                
             src_checksum = calculator.calculate_file_checksum(
                 src_path,
-                progress_callback=None,
-                current_progress=self._current_progress  # Pass the current progress object
+                progress_callback=source_progress_callback
             )
             
             if src_checksum is None:
                 self.display.show_error("Source checksum failed")
                 return False, None
-            
+                
+            # Calculate destination checksum (will represent 50-100% of checksum progress)
             logger.info(f"Calculating checksum for destination file: {dst_path}")
+            def dest_progress_callback(bytes_processed: int, total_bytes: int):
+                self._current_progress.current_file_progress = 0.5 + (bytes_processed / total_bytes) * 0.5
+                self.display.show_progress(self._current_progress)
+                
             dst_checksum = calculator.calculate_file_checksum(
                 dst_path,
-                progress_callback=None,
-                current_progress=self._current_progress  # Pass the current progress object
+                progress_callback=dest_progress_callback
             )
             
             if dst_checksum is None:

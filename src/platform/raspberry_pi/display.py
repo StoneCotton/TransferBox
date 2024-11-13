@@ -91,11 +91,18 @@ class RaspberryPiDisplay(DisplayInterface):
                         
                     lcd_display.write(0, 0, truncated)
                 
-                # Always update queue counter on bottom line
-                queue_text = f"({progress.file_number}/{progress.total_files})"
-                # Center the queue text
-                padding = (16 - len(queue_text)) // 2
-                lcd_display.write(padding, 1, queue_text)
+                # Calculate available space for progress bar
+                # Format: "3/26 #######   " (16 chars total)
+                file_text = f"{progress.file_number}/{progress.total_files}"
+                available_bar_space = 16 - len(file_text) - 1  # -1 for space after numbers
+                
+                # Calculate progress bar
+                filled_chars = int(progress.current_file_progress * available_bar_space)
+                progress_bar = "#" * filled_chars + " " * (available_bar_space - filled_chars)
+                
+                # Combine number and progress bar
+                bottom_line = f"{file_text} {progress_bar}"
+                lcd_display.write(0, 1, bottom_line)
                 
                 # Update LED status without affecting display
                 self._update_led_status(progress.status)
