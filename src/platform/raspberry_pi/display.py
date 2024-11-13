@@ -23,6 +23,9 @@ class RaspberryPiDisplay(DisplayInterface):
     def __init__(self):
         self.display_lock = Lock()
         self._setup_display()
+        self._current_file = None
+        self._copying_led_started = False
+        self._checksum_led_started = False
         
     def _setup_display(self) -> None:
         """Initialize the LCD display and LED controls"""
@@ -64,41 +67,44 @@ class RaspberryPiDisplay(DisplayInterface):
         """Update both LCD display and LED indicators with transfer progress"""
         with self.display_lock:
             try:
-                # Clear display first
-                lcd_display.clear()
-                
-                if progress.current_file:
-                    # Truncate filename if needed
+                # Don't clear display every time, only when the filename changes
+                if progress.current_file != self._current_file:
+                    lcd_display.clear()
+                    self._current_file = progress.current_file
+                    
+                    # Show current file name on top line (truncated if needed)
+                    max_length = 16
                     filename = progress.current_file
-                    if len(filename) > 16:
+                    if len(filename) > max_length:
                         name_parts = filename.rsplit('.', 1)
                         if len(name_parts) == 2:
                             name, ext = name_parts
-                            # Keep extension and add ellipsis
-                            trunc_length = 16 - len(ext) - 4  # Space for "...", "." and extension
-                            truncated = f"{name[:trunc_length]}...{ext}"
+                            available_space = max_length - len(ext) - 4
+                            if available_space > 0:
+                                truncated = name[:available_space] + "..." + "." + ext
+                            else:
+                                truncated = filename[:max_length-3] + "..."
                         else:
-                            truncated = f"{filename[:13]}..."
+                            truncated = filename[:max_length-3] + "..."
                     else:
                         truncated = filename
-                    
-                    # Display filename on top line
+                        
                     lcd_display.write(0, 0, truncated)
-                    
-                    # Display queue counter centered on bottom line
-                    queue_text = f"({progress.file_number}/{progress.total_files})"
-                    # Center the queue text
-                    padding = (16 - len(queue_text)) // 2
-                    lcd_display.write(padding, 1, queue_text)
                 
-                # Update LED indicators based on status
-                self._update_leds(progress)
+                # Always update queue counter on bottom line
+                queue_text = f"({progress.file_number}/{progress.total_files})"
+                # Center the queue text
+                padding = (16 - len(queue_text)) // 2
+                lcd_display.write(padding, 1, queue_text)
+                
+                # Update LED status without affecting display
+                self._update_led_status(progress.status)
                 
                 # Update bar graph during COPYING status
                 if progress.status == TransferStatus.COPYING:
                     files_progress = (progress.file_number - 1) / progress.total_files * 100
                     set_bar_graph(files_progress)
-                    
+                
             except Exception as e:
                 logger.error(f"Error updating progress display: {e}")
 
@@ -121,30 +127,36 @@ class RaspberryPiDisplay(DisplayInterface):
                 lcd_display.clear()
                 led_manager.all_leds_off_except(None)
                 set_bar_graph(0)
+                self._current_file = None
+                self._copying_led_started = False
+                self._checksum_led_started = False
                 logger.debug("Display and LEDs cleared")
             except Exception as e:
                 logger.error(f"Error clearing display: {e}")
 
-    def _update_leds(self, progress: TransferProgress) -> None:
-        """Update LED indicators based on transfer status"""
+    def _update_led_status(self, status: TransferStatus) -> None:
+        """Update LED status without affecting display"""
         try:
-            if progress.status == TransferStatus.ERROR:
-                # Error state: only ERROR_LED on
+            if status == TransferStatus.ERROR:
                 led_manager.all_leds_off_except(LEDControl.ERROR_LED)
-                
-            elif progress.status == TransferStatus.COPYING:
-                # Copying state: blink PROGRESS_LED
-                led_manager.all_leds_off_except(None)
-                led_manager.start_led_blink(LEDControl.PROGRESS_LED)
-                
-            elif progress.status == TransferStatus.CHECKSUMMING:
-                # Checksumming state: blink CHECKSUM_LED
-                led_manager.stop_led_blink(LEDControl.PROGRESS_LED)
-                led_manager.start_led_blink(LEDControl.CHECKSUM_LED)
-                
-            elif progress.status == TransferStatus.SUCCESS:
-                # Success state: solid SUCCESS_LED
+                self._copying_led_started = False
+                self._checksum_led_started = False
+            elif status == TransferStatus.COPYING:
+                if not self._copying_led_started:
+                    led_manager.all_leds_off_except(None)
+                    led_manager.start_led_blink(LEDControl.PROGRESS_LED)
+                    self._copying_led_started = True
+                    self._checksum_led_started = False
+            elif status == TransferStatus.CHECKSUMMING:
+                if not self._checksum_led_started:
+                    led_manager.stop_led_blink(LEDControl.PROGRESS_LED)
+                    led_manager.start_led_blink(LEDControl.CHECKSUM_LED)
+                    self._copying_led_started = False
+                    self._checksum_led_started = True
+            elif status == TransferStatus.SUCCESS:
                 led_manager.all_leds_off_except(LEDControl.SUCCESS_LED)
+                self._copying_led_started = False
+                self._checksum_led_started = False
                 
         except Exception as e:
-            logger.error(f"Error updating LEDs: {e}")
+            logger.error(f"Error updating LED status: {e}")

@@ -73,13 +73,7 @@ class LEDManager:
             logger.error(f"Failed to set LED {led_index}: {e}")
 
     def start_led_blink(self, led_index: int, blink_speed: float = 0.5) -> None:
-        """
-        Start LED blinking in separate thread.
-        
-        Args:
-            led_index: LED to blink
-            blink_speed: Time between blinks in seconds
-        """
+        """Start LED blinking in separate thread."""
         # Stop any existing blink for this LED
         self.stop_led_blink(led_index)
         
@@ -88,12 +82,21 @@ class LEDManager:
         
         def blink_loop():
             while not stop_event.is_set() and not self.cleanup_performed:
-                self.set_led_state(led_index, True)
-                time.sleep(blink_speed)
-                if stop_event.is_set() or self.cleanup_performed:
+                # Only update the LED state, don't trigger display updates
+                try:
+                    # Store original state of all LEDs
+                    original_states = self.led_state.copy()
+                    self.led_state[led_index] = 1
+                    self.shift_register.set_by_list(self.led_state)
+                    time.sleep(blink_speed)
+                    if stop_event.is_set() or self.cleanup_performed:
+                        break
+                    self.led_state[led_index] = 0
+                    self.shift_register.set_by_list(self.led_state)
+                    time.sleep(blink_speed)
+                except Exception as e:
+                    logger.error(f"Error in LED blink loop: {e}")
                     break
-                self.set_led_state(led_index, False)
-                time.sleep(blink_speed)
 
         blink_thread = Thread(target=blink_loop)
         blink_thread.daemon = True
