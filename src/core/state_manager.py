@@ -46,6 +46,13 @@ class StateManager:
         
     def enter_transfer(self) -> None:
         """Enter transfer state."""
+        logger.info(f"Transfer state requested while in {self.current_state}")
+        
+        # Block transfers during utility mode
+        if self.current_state == SystemState.UTILITY:
+            logger.info("Transfer blocked - system in utility mode")
+            return
+            
         # Always transition through standby state
         if self.current_state != SystemState.STANDBY:
             self.enter_standby()

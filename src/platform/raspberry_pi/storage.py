@@ -11,6 +11,7 @@ from pathlib import Path
 from src.core.interfaces.storage import StorageInterface
 from src.platform.raspberry_pi.led_control import LEDControl, set_led_state
 
+
 logger = logging.getLogger(__name__)
 
 class RaspberryPiStorage(StorageInterface):
@@ -108,7 +109,7 @@ class RaspberryPiStorage(StorageInterface):
         
         Args:
             path: Path to the drive to unmount
-            
+                
         Returns:
             True if successful, False otherwise
         """
@@ -118,20 +119,25 @@ class RaspberryPiStorage(StorageInterface):
             
             # Try unmounting with udisks2 first (handles cleanup better)
             try:
-                subprocess.run(['udisksctl', 'unmount', '-b', str(path)], 
-                            check=True, 
-                            stderr=subprocess.PIPE,
-                            text=True)
+                subprocess.run(
+                    ['udisksctl', 'unmount', '-b', str(path)], 
+                    check=True, 
+                    stderr=subprocess.PIPE,
+                    text=True
+                )
             except subprocess.CalledProcessError:
                 # Fall back to umount if udisksctl fails
                 subprocess.run(['umount', str(path)], check=True)
             
+            # Wait a moment to ensure unmount is complete
+            time.sleep(1)
+            
             logger.info(f"Successfully unmounted {path}")
             return True
-            
+                
         except subprocess.CalledProcessError as e:
             logger.error(f"Failed to unmount {path}: {e}")
-            if e.stderr:
+            if hasattr(e, 'stderr') and e.stderr:
                 logger.error(f"Unmount error details: {e.stderr}")
             return False
         except Exception as e:
@@ -152,11 +158,10 @@ class RaspberryPiStorage(StorageInterface):
     def wait_for_new_drive(self, initial_drives: List[Path]) -> Optional[Path]:
         """
         Wait for a new drive to be connected and return its mountpoint.
-        Now uses direct lsblk checking instead of DriveDetection class.
         
         Args:
             initial_drives: List of initially mounted drives
-            
+                
         Returns:
             Path to the new drive if detected, None if timeout or error
         """

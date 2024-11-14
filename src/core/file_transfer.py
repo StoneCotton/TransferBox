@@ -268,8 +268,21 @@ class FileTransfer:
     ) -> bool:
         """Copy files from source (SD card) to destination with verification."""
         if not self._validate_transfer_preconditions(destination_path):
-            self.display.show_error("Transfer preconditions failed")
-            return False
+            if self.state_manager.is_utility():
+                # If in utility mode, just unmount the drive
+                logger.info("System in utility mode - unmounting drive without transfer")
+                try:
+                    if self.storage.unmount_drive(source_path):
+                        self.display.show_status("Safe to remove SD")
+                    else:
+                        self.display.show_error("Unmount failed")
+                except Exception as e:
+                    logger.error(f"Error unmounting drive: {e}")
+                    self.display.show_error("Unmount error")
+                return False
+            else:
+                self.display.show_error("Transfer preconditions failed")
+                return False
 
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         
@@ -277,28 +290,30 @@ class FileTransfer:
             with self._transfer_session():
                 success = self._execute_transfer(source_path, destination_path, timestamp, log_file)
                 if success:
-                    # Update progress to success state
                     self._current_progress.status = TransferStatus.SUCCESS
                     self.display.show_progress(self._current_progress)
                 return success
         except Exception as e:
             error_msg = f"Transfer failed: {e}"
             logger.error(error_msg)
-            self._current_progress.status = TransferStatus.ERROR
-            self.display.show_progress(self._current_progress)
+            if self._current_progress:
+                self._current_progress.status = TransferStatus.ERROR
+                self.display.show_progress(self._current_progress)
+            else:
+                self.display.show_error("Transfer error")
             return False
 
     def _validate_transfer_preconditions(self, destination_path: Path) -> bool:
         """Validate all preconditions before starting transfer."""
         if destination_path is None:
-            self.display.show_error("Destination drive not found")
+            self.display.show_error("Destination not found")
             return False
             
-        # Add state validation
+        # Block transfers during utility mode
         if self.state_manager.is_utility():
             logger.info("Transfer blocked - system in utility mode")
             return False
-
+            
         return True
     
     def _transfer_session(self):
