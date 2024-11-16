@@ -69,30 +69,6 @@ class MenuManager:
             self.display.show_status("Exiting Menu")
             time.sleep(1)
 
-    def _test_screen(self) -> None:
-        """Test LCD screen functionality"""
-        self.display.clear()
-        self.display.show_status("Screen Test")
-        time.sleep(1)
-        
-        # Test patterns
-        patterns = [
-            "----------------",
-            "################",
-            "0123456789",
-            "ABCDEFGHIJKLMNO",
-            "abcdefghijklmno"
-        ]
-        
-        for pattern in patterns:
-            self.display.clear()
-            self.display.show_status(pattern)
-            self.display.show_status(pattern, line=1)
-            time.sleep(1)
-            
-        self.display.clear()
-        self.display.show_status("Screen Test Done")
-        time.sleep(1)
 
     def _unmount_drives(self) -> None:
         """Safely unmount all removable drives"""

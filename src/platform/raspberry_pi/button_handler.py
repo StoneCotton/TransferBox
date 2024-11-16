@@ -248,6 +248,32 @@ class ButtonHandler:
         time.sleep(2)
         self._display_menu()
 
+    def _test_screen(self) -> None:
+        """Test LCD screen functionality"""
+        self.display.clear()
+        self.display.show_status("Screen Test")
+        time.sleep(1)
+        
+        # Test patterns
+        patterns = [
+            "----------------",  # Full line
+            "################",  # Full blocks
+            "0123456789ABCDEF",  # Numbers and letters
+            "Test Line 1",       # Text
+            "Test Line 2"        # Text
+        ]
+        
+        for pattern in patterns:
+            self.display.clear()
+            self.display.show_status(pattern, line=0)
+            self.display.show_status(pattern, line=1)
+            time.sleep(1)
+        
+        self.display.clear()
+        self.display.show_status("Screen Test Done")
+        time.sleep(2)
+        self._display_menu()
+
     def select_option(self) -> None:
         """Execute the selected menu option"""
         with self.lock:
