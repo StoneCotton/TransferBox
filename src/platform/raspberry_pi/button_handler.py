@@ -8,6 +8,8 @@ from gpiozero import Button
 from src.core.state_manager import StateManager
 from src.core.interfaces.display import DisplayInterface
 from src.core.interfaces.storage import StorageInterface
+from .led_control import LEDControl, led_manager
+from .power_management import power_manager
 
 logger = logging.getLogger(__name__)
 
@@ -222,3 +224,50 @@ class ButtonHandler:
         logger.info("Cleaning up button handler")
         for button in [self.back_button, self.ok_button, self.up_button, self.down_button]:
             button.close()
+
+    def _test_leds(self) -> None:
+        """Test all LED indicators"""
+        self.display.clear()
+        self.display.show_status("Testing LEDs")
+        
+        # Test individual status LEDs
+        for led in [LEDControl.PROGRESS_LED, LEDControl.CHECKSUM_LED, 
+                    LEDControl.SUCCESS_LED, LEDControl.ERROR_LED]:
+            led_manager.all_leds_off_except(led)
+            time.sleep(0.5)
+        
+        # Test progress bar
+        led_manager.all_leds_off_except(None)
+        for progress in range(0, 101, 10):
+            led_manager.set_bar_graph(progress)
+            time.sleep(0.2)
+        
+        # Reset all LEDs
+        led_manager.all_leds_off_except(None)
+        self.display.show_status("LED Test Done")
+        time.sleep(2)
+        self._display_menu()
+
+    def select_option(self) -> None:
+        """Execute the selected menu option"""
+        with self.lock:
+            selected_option = self.menu_options[self.menu_index]
+            logger.info(f"Selected menu option: {selected_option}")
+            
+            # Execute the handler if it exists
+            handler_name = f"_{selected_option.lower().replace(' ', '_')}"
+            handler = getattr(self, handler_name, None)
+            
+            if handler:
+                try:
+                    handler()
+                except Exception as e:
+                    logger.error(f"Error executing menu option {selected_option}: {e}")
+                    self.display.show_error("Option Failed")
+                    time.sleep(2)
+                finally:
+                    self._display_menu()
+            else:
+                logger.error(f"No handler found for menu option: {selected_option}")
+                self.display.show_error("Invalid Option")
+                time.sleep(2)

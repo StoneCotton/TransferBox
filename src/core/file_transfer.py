@@ -318,11 +318,17 @@ class FileTransfer:
     
     def _transfer_session(self):
         """Context manager for handling transfer state."""
-        try:
-            self.state_manager.enter_transfer()
-            yield
-        finally:
-            self.state_manager.exit_transfer()
+        class TransferSessionManager:
+            def __init__(self, file_transfer):
+                self.file_transfer = file_transfer
+                
+            def __enter__(self):
+                self.file_transfer.state_manager.enter_transfer()
+                
+            def __exit__(self, exc_type, exc_val, exc_tb):
+                self.file_transfer.state_manager.exit_transfer()
+                
+        return TransferSessionManager(self)
 
     def _execute_transfer(
         self,
