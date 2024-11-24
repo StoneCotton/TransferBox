@@ -41,23 +41,24 @@ class RaspberryPiDisplay(DisplayInterface):
         """Display a status message on the LCD display"""
         with self.display_lock:
             try:
-                # Clear the display first to prevent residual characters
-                lcd_display.clear()
-                
-                # Handle specific status messages
+                # Handle specific status messages that need both lines
                 if message.lower().startswith(("standby", "ready")):
+                    lcd_display.clear()
                     lcd_display.write(0, 0, "Standby")
                     lcd_display.write(0, 1, "Input Card")
                 elif message.lower().startswith("waiting for storage"):
+                    lcd_display.clear()
                     lcd_display.write(0, 0, "Waiting for")
                     lcd_display.write(0, 1, "Storage")
                 elif message.lower().startswith("safe to remove"):
+                    lcd_display.clear()
                     lcd_display.write(0, 0, "Remove Card")
                 elif message.lower().startswith("transfer complete"):
+                    lcd_display.clear()
                     lcd_display.write(0, 0, "Transfer Done")
                 else:
-                    # Keep messages to 16 chars
-                    lcd_display.write(0, 0, message[:16])
+                    # For single line updates, don't clear the display
+                    lcd_display.write(0, line, message[:16])
                 
                 logger.debug(f"Displayed status on line {line}: {message}")
             except Exception as e:

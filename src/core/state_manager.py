@@ -40,70 +40,125 @@ class StateManager:
         
     def enter_standby(self) -> None:
         """Enter standby state."""
-        self.current_state = SystemState.STANDBY
-        self.display.show_status("Standby Mode")
-        logger.info("Entering standby state")
+        try:
+            prev_state = self.current_state
+            self.current_state = SystemState.STANDBY
+            
+            # Only update display if we weren't already in standby
+            if prev_state != SystemState.STANDBY:
+                self.display.show_status("Standby")
+                time.sleep(0.05)  # Small delay between lines
+                self.display.show_status("Input Card", line=1)
+                
+            logger.info(f"Entering standby state from {prev_state}")
+            
+        except Exception as e:
+            logger.error(f"Error entering standby state: {e}")
         
     def enter_transfer(self) -> None:
         """Enter transfer state."""
-        logger.info(f"Transfer state requested while in {self.current_state}")
-        
-        # Block transfers during utility mode
-        if self.current_state == SystemState.UTILITY:
-            logger.info("Transfer blocked - system in utility mode")
-            return
+        try:
+            logger.info(f"Transfer state requested while in {self.current_state}")
             
-        # Always transition through standby state
-        if self.current_state != SystemState.STANDBY:
-            self.enter_standby()
+            # Block transfers during utility mode
+            if self.current_state == SystemState.UTILITY:
+                logger.info("Transfer blocked - system in utility mode")
+                return
+                
+            # Always transition through standby state
+            if self.current_state != SystemState.STANDBY:
+                self.enter_standby()
+                
+            self.current_state = SystemState.TRANSFER
+            self.transfer_start_time = time.time()
+            self.display.show_status("Transfer Mode")
+            logger.info("Entering transfer state")
             
-        self.current_state = SystemState.TRANSFER
-        self.transfer_start_time = time.time()
-        self.display.show_status("Transfer Mode")
-        logger.info("Entering transfer state")
+        except Exception as e:
+            logger.error(f"Error entering transfer state: {e}")
+            self.enter_standby()  # Fallback to standby on error
         
     def exit_transfer(self) -> None:
         """Exit transfer state and update timing information."""
-        if self.current_state != SystemState.TRANSFER:
-            logger.warning("Attempting to exit transfer state when not in transfer state")
-            return
-            
-        if self.transfer_start_time is not None:
-            end_time = time.time()
-            transfer_duration = end_time - self.transfer_start_time
-            self.total_transfer_time += transfer_duration
-            
-            logger.info(f"Transfer duration: {self.format_time(transfer_duration)}")
-            logger.info(f"Total transfer time: {self.format_time(self.total_transfer_time)}")
-            
-        # Return to standby state
-        self.enter_standby()
-        self.transfer_start_time = None
-        
-    def enter_utility(self) -> None:
-        """Enter utility state (Raspberry Pi only)."""
-        logger.info(f"Attempting to enter utility state from current state: {self.current_state}")
-        
-        # First ensure we're in standby
-        if self.current_state != SystemState.STANDBY:
-            logger.info("Forcing standby state before entering utility")
+        try:
+            if self.current_state != SystemState.TRANSFER:
+                logger.warning("Attempting to exit transfer state when not in transfer state")
+                return
+                
+            if self.transfer_start_time is not None:
+                end_time = time.time()
+                transfer_duration = end_time - self.transfer_start_time
+                self.total_transfer_time += transfer_duration
+                
+                logger.info(f"Transfer duration: {self.format_time(transfer_duration)}")
+                logger.info(f"Total transfer time: {self.format_time(self.total_transfer_time)}")
+                
+            # Return to standby state
             self.enter_standby()
+            self.transfer_start_time = None
             
-        self.current_state = SystemState.UTILITY
-        self.display.show_status("Utility Mode")
-        logger.info("Successfully entered utility state")
-        return True
-
-    def exit_utility(self) -> None:
-        """Exit utility state (Raspberry Pi only)."""
-        logger.info(f"Attempting to exit utility state from current state: {self.current_state}")
-        if self.current_state != SystemState.UTILITY:
-            logger.warning("Not in utility state, cannot exit")
+        except Exception as e:
+            logger.error(f"Error exiting transfer state: {e}")
+            self.enter_standby()  # Ensure we return to standby even on error
+        
+    def enter_utility(self) -> bool:
+        """
+        Enter utility state (Raspberry Pi only).
+        Returns:
+            bool: True if successfully entered utility state, False otherwise
+        """
+        try:
+            logger.info(f"Attempting to enter utility state from current state: {self.current_state}")
+            
+            # First ensure we're in standby
+            if self.current_state != SystemState.STANDBY:
+                logger.info("Forcing standby state before entering utility")
+                self.enter_standby()
+                
+            # Change state before updating display
+            self.current_state = SystemState.UTILITY
+            
+            # Don't show status here - let the menu handler handle the display
+            logger.info("Successfully entered utility state")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to enter utility state: {e}")
+            self.enter_standby()  # Fallback to standby on error
             return False
+
+    def exit_utility(self) -> bool:
+        """
+        Exit utility state (Raspberry Pi only).
+        Returns:
+            bool: True if successfully exited utility state, False otherwise
+        """
+        try:
+            logger.info(f"Attempting to exit utility state from current state: {self.current_state}")
             
-        self.enter_standby()
-        logger.info("Successfully exited utility state")
-        return True
+            if self.current_state != SystemState.UTILITY:
+                logger.warning("Not in utility state, cannot exit")
+                return False
+                
+            # First change state
+            self.current_state = SystemState.STANDBY
+            
+            # Then update display with both lines
+            self.display.show_status("Standby")
+            time.sleep(0.05)  # Small delay between lines
+            self.display.show_status("Input Card", line=1)
+            
+            logger.info("Successfully exited utility state")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to exit utility state: {e}")
+            # Force standby state on error
+            self.current_state = SystemState.STANDBY
+            self.display.show_status("Standby")
+            time.sleep(0.05)
+            self.display.show_status("Input Card", line=1)
+            return False
 
     def is_utility(self) -> bool:
         """Check if system is in utility state."""

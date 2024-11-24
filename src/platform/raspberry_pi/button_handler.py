@@ -10,6 +10,7 @@ from src.core.interfaces.display import DisplayInterface
 from src.core.interfaces.storage import StorageInterface
 from .led_control import LEDControl, led_manager
 from .power_management import power_manager
+from .lcd_display import lcd_display
 
 logger = logging.getLogger(__name__)
 
@@ -54,29 +55,55 @@ class ButtonHandler:
     
     def _setup_button_handlers(self) -> None:
         """Set up initial button handlers"""
-        # Clear any existing handlers
+        logger.debug("Setting up initial button handlers")
+        
+        # Clear existing handlers
         for button in [self.back_button, self.ok_button, self.up_button, self.down_button]:
             button.when_pressed = None
-            button.when_released = None
         
-        # Set up menu entry sequence detection
+        # Reset menu state
         self.menu_sequence_active = False
         self.ok_press_count = 0
         self.last_ok_time = 0
         
-        # Initial button handlers for menu entry
-        self.back_button.when_pressed = self._handle_back_press
-        self.ok_button.when_pressed = self._handle_ok_press
+        # Define button callbacks with logging
+        def back_pressed():
+            logger.debug("BACK button pressed (initial handler)")
+            self._handle_back_press()
+            
+        def ok_pressed():
+            logger.debug("OK button pressed (initial handler)")
+            self._handle_ok_press()
         
-        logger.info("Button handlers initialized")
+        # Set initial handlers
+        self.back_button.when_pressed = back_pressed
+        self.ok_button.when_pressed = ok_pressed
+        
+        logger.info("Initial button handlers set up")
     
     def _handle_back_press(self) -> None:
         """Handle back button press"""
         with self.lock:
             if self.state_manager.is_utility():
-                # If in menu, exit menu
                 logger.info("Back pressed in menu - exiting menu")
-                self._exit_menu()
+                # Clear existing handlers
+                self.up_button.when_pressed = None
+                self.down_button.when_pressed = None
+                self.ok_button.when_pressed = None
+                self.back_button.when_pressed = None
+                time.sleep(0.05)
+                
+                # Exit utility mode
+                self.state_manager.exit_utility()
+                
+                # Reset menu state
+                self.menu_sequence_active = False
+                self.ok_press_count = 0
+                
+                # Restore initial button handlers
+                self._setup_button_handlers()
+                
+                logger.info("Exited menu mode")
             else:
                 # Start menu entry sequence
                 self.menu_sequence_active = True
@@ -113,65 +140,130 @@ class ButtonHandler:
         """Enter menu mode"""
         logger.info("Entering menu mode")
         try:
-            # Enter utility state
-            self.state_manager.enter_utility()
-            
             # Reset menu index
             self.menu_index = 0
             
-            # Update button handlers for menu navigation
-            self.up_button.when_pressed = self._menu_up
-            self.down_button.when_pressed = self._menu_down
-            self.ok_button.when_pressed = self._handle_ok_press
-            self.back_button.when_pressed = self._handle_back_press
+            # Enter utility state
+            if not self.state_manager.enter_utility():
+                logger.error("Failed to enter utility state")
+                return
+                
+            # First, clear the display
+            lcd_display.clear()
+            time.sleep(0.05)
             
-            # Display menu
-            self._display_menu()
+            # Write full lines with padding
+            lcd_display.write(0, 0, "UTIL MENU" + " " * 8)  # Pad to 16 chars
+            time.sleep(0.05)
+            lcd_display.write(0, 1, self.menu_options[self.menu_index] + " " * (16 - len(self.menu_options[self.menu_index])))
             
-            logger.info("Menu mode entered successfully")
+            logger.info(f"Displaying menu - Top: UTIL MENU, Bottom: {self.menu_options[self.menu_index]}")
             
+            # Define button callbacks with proper logging
+            def up_pressed():
+                logger.debug("UP button pressed")
+                self._menu_up()
+                
+            def down_pressed():
+                logger.debug("DOWN button pressed")
+                self._menu_down()
+                
+            def ok_pressed():
+                logger.debug("OK button pressed")
+                self._execute_menu_option()
+                
+            def back_pressed():
+                logger.debug("BACK button pressed")
+                self._handle_back_press()
+            
+            # Set button handlers
+            self.up_button.when_pressed = up_pressed
+            self.down_button.when_pressed = down_pressed
+            self.ok_button.when_pressed = ok_pressed
+            self.back_button.when_pressed = back_pressed
+            
+            logger.info("Menu mode initialized with button handlers")
+                
         except Exception as e:
             logger.error(f"Error entering menu mode: {e}")
             self.state_manager.enter_standby()
     
     def _exit_menu(self) -> None:
         """Exit menu mode"""
-        logger.info("Exiting menu mode")
-        try:
+        with self.lock:
+            logger.info("Exiting menu mode")
+            
             # Reset button handlers
             self._setup_button_handlers()
             
-            # Exit utility state
+            # Exit utility state (this will trigger standby mode)
             self.state_manager.exit_utility()
             
-            logger.info("Menu mode exited successfully")
+            # Clear display
+            self.display.clear()
+            time.sleep(0.05)
             
-        except Exception as e:
-            logger.error(f"Error exiting menu mode: {e}")
-            self.state_manager.enter_standby()
+            # Show standby status
+            self.display.show_status("Standby", line=0)
+            time.sleep(0.05)
+            self.display.show_status("Input Card", line=1)
+            
+            logger.info("Menu mode exited successfully")
     
     def _menu_up(self) -> None:
         """Handle up button in menu"""
         with self.lock:
+            logger.debug("Menu up handler called")
             if self.state_manager.is_utility():
                 self.menu_index = (self.menu_index - 1) % len(self.menu_options)
-                self._display_menu()
-                logger.debug(f"Menu navigated up to: {self.menu_options[self.menu_index]}")
-    
+                
+                # Direct LCD update with full line clearing
+                lcd_display.write(0, 0, "UTIL MENU" + " " * 8)  # Pad to 16 chars
+                time.sleep(0.05)
+                lcd_display.write(0, 1, self.menu_options[self.menu_index] + " " * (16 - len(self.menu_options[self.menu_index])))
+                
+                logger.info(f"Menu navigated up to: {self.menu_options[self.menu_index]}")
+
     def _menu_down(self) -> None:
         """Handle down button in menu"""
         with self.lock:
+            logger.debug("Menu down handler called")
             if self.state_manager.is_utility():
                 self.menu_index = (self.menu_index + 1) % len(self.menu_options)
-                self._display_menu()
-                logger.debug(f"Menu navigated down to: {self.menu_options[self.menu_index]}")
-    
+                
+                # Direct LCD update with full line clearing
+                lcd_display.write(0, 0, "UTIL MENU" + " " * 8)  # Pad to 16 chars
+                time.sleep(0.05)
+                lcd_display.write(0, 1, self.menu_options[self.menu_index] + " " * (16 - len(self.menu_options[self.menu_index])))
+                
+                logger.info(f"Menu navigated down to: {self.menu_options[self.menu_index]}")
+
     def _display_menu(self) -> None:
         """Display current menu option"""
-        self.display.clear()
-        self.display.show_status("UTIL MENU", line=0)
-        self.display.show_status(self.menu_options[self.menu_index], line=1)
-        logger.debug(f"Displayed menu option: {self.menu_options[self.menu_index]}")
+        with self.lock:
+            try:
+                if not self.state_manager.is_utility():
+                    logger.warning("Attempting to display menu while not in utility state")
+                    return
+                    
+                lcd_display.clear()
+                time.sleep(0.05)  # Short delay after clear
+                
+                # Write UTIL MENU directly to top line
+                lcd_display.write(0, 0, "UTIL MENU")
+                time.sleep(0.05)  # Small delay between lines
+                
+                # Write current option directly to bottom line
+                current_option = self.menu_options[self.menu_index]
+                lcd_display.write(0, 1, current_option[:16])
+                
+                logger.debug(
+                    f"Menu display updated - Top: UTIL MENU, "
+                    f"Bottom: {current_option}"
+                )
+                
+            except Exception as e:
+                logger.error(f"Error displaying menu: {e}")
     
     def _execute_menu_option(self) -> None:
         """Execute selected menu option"""
@@ -244,6 +336,7 @@ class ButtonHandler:
         
         # Reset all LEDs
         led_manager.all_leds_off_except(None)
+        led_manager.set_bar_graph(0)
         self.display.show_status("LED Test Done")
         time.sleep(2)
         self._display_menu()
