@@ -15,31 +15,96 @@ class SystemState(Enum):
     TRANSFER = auto()
     UTILITY = auto()  # Only used for Raspberry Pi
 
+class StateTransitionError(Exception):
+    """Exception raised for invalid state transitions"""
+    pass
+
 class StateManager:
     """
-    Manages system state and timing across all platforms
+    Manages system state and timing across all platforms with strict state transition rules:
+    - STANDBY is the default state
+    - UTILITY can only be entered from STANDBY
+    - TRANSFER can only be entered from STANDBY
+    - TRANSFER can only exit to STANDBY
+    - UTILITY can only exit to STANDBY
     """
     
     def __init__(self, display: DisplayInterface):
+        """
+        Initialize state manager.
+        
+        Args:
+            display: Display interface for showing status messages
+        """
         self.display = display
         self.current_state = SystemState.STANDBY
         self.transfer_start_time: Optional[float] = None
         self.total_transfer_time: float = 0.0
+        logger.info("State manager initialized in STANDBY state")
         
     def get_current_state(self) -> SystemState:
-        """Get the current system state."""
+        """
+        Get the current system state.
+        
+        Returns:
+            Current SystemState enum value
+        """
         return self.current_state
         
     def is_standby(self) -> bool:
-        """Check if system is in standby state."""
+        """
+        Check if system is in standby state.
+        
+        Returns:
+            True if in STANDBY state, False otherwise
+        """
         return self.current_state == SystemState.STANDBY
         
     def is_transfer(self) -> bool:
-        """Check if system is in transfer state."""
+        """
+        Check if system is in transfer state.
+        
+        Returns:
+            True if in TRANSFER state, False otherwise
+        """
         return self.current_state == SystemState.TRANSFER
         
+    def is_utility(self) -> bool:
+        """
+        Check if system is in utility state.
+        
+        Returns:
+            True if in UTILITY state, False otherwise
+        """
+        is_util = self.current_state == SystemState.UTILITY
+        logger.debug(f"Checking utility state: {is_util}")
+        return is_util
+
+    def _can_enter_utility(self) -> bool:
+        """
+        Check if system can enter utility state.
+        Only allowed from STANDBY state.
+        
+        Returns:
+            True if transition is allowed, False otherwise
+        """
+        return self.current_state == SystemState.STANDBY
+
+    def _can_enter_transfer(self) -> bool:
+        """
+        Check if system can enter transfer state.
+        Only allowed from STANDBY state.
+        
+        Returns:
+            True if transition is allowed, False otherwise
+        """
+        return self.current_state == SystemState.STANDBY
+
     def enter_standby(self) -> None:
-        """Enter standby state."""
+        """
+        Enter standby state.
+        Always allowed from any state.
+        """
         try:
             prev_state = self.current_state
             self.current_state = SystemState.STANDBY
@@ -56,18 +121,20 @@ class StateManager:
             logger.error(f"Error entering standby state: {e}")
         
     def enter_transfer(self) -> None:
-        """Enter transfer state."""
+        """
+        Enter transfer state.
+        Only allowed from STANDBY state.
+        
+        Raises:
+            StateTransitionError: If transition is not allowed
+        """
         try:
             logger.info(f"Transfer state requested while in {self.current_state}")
             
-            # Block transfers during utility mode
-            if self.current_state == SystemState.UTILITY:
-                logger.info("Transfer blocked - system in utility mode")
-                return
-                
-            # Always transition through standby state
-            if self.current_state != SystemState.STANDBY:
-                self.enter_standby()
+            if not self._can_enter_transfer():
+                msg = f"Cannot enter transfer state from {self.current_state}"
+                logger.warning(msg)
+                raise StateTransitionError(msg)
                 
             self.current_state = SystemState.TRANSFER
             self.transfer_start_time = time.time()
@@ -76,10 +143,15 @@ class StateManager:
             
         except Exception as e:
             logger.error(f"Error entering transfer state: {e}")
-            self.enter_standby()  # Fallback to standby on error
+            if not isinstance(e, StateTransitionError):
+                self.enter_standby()  # Only fallback on non-state errors
         
     def exit_transfer(self) -> None:
-        """Exit transfer state and update timing information."""
+        """
+        Exit transfer state and update timing information.
+        Only valid when in TRANSFER state.
+        Always returns to STANDBY state.
+        """
         try:
             if self.current_state != SystemState.TRANSFER:
                 logger.warning("Attempting to exit transfer state when not in transfer state")
@@ -103,17 +175,18 @@ class StateManager:
         
     def enter_utility(self) -> bool:
         """
-        Enter utility state (Raspberry Pi only).
+        Enter utility state.
+        Only allowed from STANDBY state.
+        
         Returns:
             bool: True if successfully entered utility state, False otherwise
         """
         try:
             logger.info(f"Attempting to enter utility state from current state: {self.current_state}")
             
-            # First ensure we're in standby
-            if self.current_state != SystemState.STANDBY:
-                logger.info("Forcing standby state before entering utility")
-                self.enter_standby()
+            if not self._can_enter_utility():
+                logger.warning("Cannot enter utility state from current state")
+                return False
                 
             # Change state before updating display
             self.current_state = SystemState.UTILITY
@@ -129,7 +202,10 @@ class StateManager:
 
     def exit_utility(self) -> bool:
         """
-        Exit utility state (Raspberry Pi only).
+        Exit utility state.
+        Only valid when in UTILITY state.
+        Always returns to STANDBY state.
+        
         Returns:
             bool: True if successfully exited utility state, False otherwise
         """
@@ -160,12 +236,6 @@ class StateManager:
             self.display.show_status("Input Card", line=1)
             return False
 
-    def is_utility(self) -> bool:
-        """Check if system is in utility state."""
-        is_util = self.current_state == SystemState.UTILITY
-        logger.debug(f"Checking utility state: {is_util}")
-        return is_util
-        
     def get_current_transfer_time(self) -> float:
         """
         Get the duration of the current transfer.
