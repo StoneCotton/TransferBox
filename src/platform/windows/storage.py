@@ -30,25 +30,32 @@ class WindowsStorage(StorageInterface):
 
     def get_drive_info(self, path: Path) -> Dict[str, int]:
         """Get storage information for a drive"""
-        total, used, free = ctypes.c_ulonglong(), ctypes.c_ulonglong(), ctypes.c_ulonglong()
-        ret = ctypes.windll.kernel32.GetDiskFreeSpaceExW(
-            str(path),
-            ctypes.byref(free),
-            ctypes.byref(total),
-            None
-        )
-        if ret == 0:
-            raise OSError("Failed to get drive information")
-        return {
-            'total': total.value,
-            'free': free.value,
-            'used': total.value - free.value
-        }
+        try:
+            # Get the root drive of the given path
+            root_drive = Path(os.path.splitdrive(path)[0] + '\\')
+            total, used, free = ctypes.c_ulonglong(), ctypes.c_ulonglong(), ctypes.c_ulonglong()
+            ret = ctypes.windll.kernel32.GetDiskFreeSpaceExW(
+                str(root_drive),
+                ctypes.byref(free),
+                ctypes.byref(total),
+                None
+            )
+            if ret == 0:
+                raise OSError("Failed to get drive information")
+            return {
+                'total': total.value,
+                'free': free.value,
+                'used': total.value - free.value
+            }
+        except Exception as e:
+            logger.error(f"Error getting drive info for {path}: {e}")
+            raise
 
     def is_drive_mounted(self, path: Path) -> bool:
         """Check if drive is mounted"""
         try:
-            return path.exists() and path.is_mount()
+            root_drive = Path(os.path.splitdrive(path)[0] + '\\')
+            return root_drive.exists()
         except Exception:
             return False
 
@@ -59,8 +66,9 @@ class WindowsStorage(StorageInterface):
         but we can eject removable drives
         """
         try:
+            root_drive = Path(os.path.splitdrive(path)[0] + '\\')
             # Using built-in 'mountvol' command to unmount
-            subprocess.run(['mountvol', str(path), '/P'], check=True)
+            subprocess.run(['mountvol', str(root_drive), '/P'], check=True)
             logger.info(f"Successfully unmounted {path}")
             return True
         except subprocess.CalledProcessError as e:
@@ -73,10 +81,23 @@ class WindowsStorage(StorageInterface):
 
     def set_dump_drive(self, path: Path) -> None:
         """Set the dump drive location"""
-        if not self.is_drive_mounted(path):
-            raise ValueError(f"Path {path} is not a valid drive")
-        self.dump_drive_mountpoint = path
-        logger.info(f"Set dump drive to {path}")
+        try:
+            path = Path(path)
+            if not path.exists():
+                raise ValueError(f"Path {path} does not exist")
+            if not path.is_dir():
+                raise ValueError(f"Path {path} is not a directory")
+            
+            # Verify the drive is accessible
+            root_drive = Path(os.path.splitdrive(path)[0] + '\\')
+            if not root_drive.exists():
+                raise ValueError(f"Drive {root_drive} is not accessible")
+                
+            self.dump_drive_mountpoint = path
+            logger.info(f"Set dump drive to {path}")
+        except Exception as e:
+            logger.error(f"Error setting dump drive: {e}")
+            raise ValueError(str(e))
 
     @staticmethod
     def get_drive_type(path: Path) -> str:
