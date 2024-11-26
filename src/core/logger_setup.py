@@ -13,34 +13,17 @@ def setup_logging(
     log_format: str = '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     console_level: Optional[int] = None
 ) -> logging.Logger:
-    """
-    Set up logging configuration for the application.
-    
-    Args:
-        log_dir: Directory for log files. Defaults to current working directory
-        log_level: Logging level for file handler
-        log_format: Format string for log messages
-        console_level: Console output level. If None, uses log_level
-        
-    Returns:
-        Configured logger instance
-    """
+    """Setup logging configuration."""
     try:
-        # Get the root logger
         logger = logging.getLogger()
         logger.setLevel(log_level)
-        
-        # Clear any existing handlers
         logger.handlers.clear()
         
-        # Create formatter
         formatter = logging.Formatter(log_format)
         
-        # Use current working directory if log_dir not specified
         if log_dir is None:
             log_dir = Path.cwd()
             
-        # Create log filename with timestamp
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         log_file = log_dir / f'transferbox_{timestamp}.log'
         
@@ -49,21 +32,29 @@ def setup_logging(
         file_handler.setFormatter(formatter)
         logger.addHandler(file_handler)
         
-        # Set up console handler
-        console_handler = logging.StreamHandler(sys.stdout)
+        # Create a custom console handler that can be enabled/disabled
+        class TransferConsoleHandler(logging.StreamHandler):
+            def __init__(self):
+                super().__init__(sys.stdout)
+                self.transfer_mode = False
+                
+            def emit(self, record):
+                if not self.transfer_mode:
+                    super().emit(record)
+        
+        console_handler = TransferConsoleHandler()
         console_handler.setLevel(console_level if console_level is not None else log_level)
         console_handler.setFormatter(formatter)
         logger.addHandler(console_handler)
         
-        # Log initial setup information
+        # Store handler reference for mode switching
+        logger.console_handler = console_handler
+        
         logger.info(f"Log file created at: {log_file}")
         logger.info(f"Logging level: {logging.getLevelName(log_level)}")
         logger.info(f"Python version: {sys.version}")
         logger.info(f"Platform: {sys.platform}")
         
-        if os.environ.get('USER'):
-            logger.info(f"User: {os.environ['USER']}")
-            
         return logger
         
     except Exception as e:
