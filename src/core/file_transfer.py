@@ -5,6 +5,9 @@ import platform
 import re
 import subprocess
 import sys
+import os
+import shutil
+from typing import Tuple
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -17,6 +20,196 @@ from .checksum import ChecksumCalculator
 from .mhl_handler import initialize_mhl_file, add_file_to_mhl
 
 logger = logging.getLogger(__name__)
+
+class TransferStrategy:
+    """Abstract base class for platform-specific transfer strategies"""
+    def dry_run(self, source: Path, destination: Path) -> Tuple[int, int]:
+        raise NotImplementedError
+        
+    def copy_file(self, source: Path, destination: Path) -> bool:
+        raise NotImplementedError
+    
+class RsyncStrategy(TransferStrategy):
+    """Unix-like systems transfer strategy using rsync"""
+    def dry_run(self, source: Path, destination: Path) -> Tuple[int, int]:
+        try:
+            process = subprocess.run(
+                ['rsync', '-a', '--dry-run', '--stats', str(source), str(destination)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                check=True
+            )
+            
+            output = process.stdout
+            file_count = int(re.search(r'Number of regular files transferred: (\d+)', output).group(1))
+            total_size = int(re.search(r'Total transferred file size: ([\d,]+)', output).group(1).replace(',', ''))
+            
+            return file_count, total_size
+            
+        except Exception as e:
+            logger.error(f"Rsync dry run failed: {e}")
+            raise
+
+    def copy_file(self, source: Path, destination: Path) -> bool:
+        try:
+            result = subprocess.run(
+                ['rsync', '-av', '--progress', str(source), str(destination)],
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True
+            )
+            return True
+        except Exception as e:
+            logger.error(f"Rsync copy failed: {e}")
+            raise
+
+class WSLRsyncStrategy(TransferStrategy):
+    """Windows transfer strategy using WSL rsync"""
+    def _convert_to_wsl_path(self, path: Path) -> str:
+        """Convert Windows path to WSL path format"""
+        wsl_path = str(path).replace('\\', '/').replace(':', '')
+        return f"/mnt/{wsl_path.lower()}"
+
+    def dry_run(self, source: Path, destination: Path) -> Tuple[int, int]:
+        try:
+            wsl_source = self._convert_to_wsl_path(source)
+            wsl_dest = self._convert_to_wsl_path(destination)
+            
+            # Test WSL path accessibility
+            subprocess.run(['wsl', 'test', '-e', wsl_source], check=True)
+            
+            process = subprocess.run(
+                ['wsl', 'rsync', '-av', '--dry-run', '--stats', wsl_source, wsl_dest],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                check=True
+            )
+            
+            output = process.stdout
+            if not output:
+                return 0, 0
+                
+            logger.debug(f"WSL rsync output: {output}")
+            file_count = int(re.search(r'Number of files: (\d+)', output).group(1))
+            total_size = int(re.search(r'Total file size: (\d+)', output).group(1))
+            
+            return file_count, total_size
+            
+        except subprocess.CalledProcessError as e:
+            logger.error(f"WSL rsync dry run failed: {e.stderr}")
+            raise
+        except Exception as e:
+            logger.error(f"WSL dry run error: {e}")
+            raise
+
+    def copy_file(self, source: Path, destination: Path) -> bool:
+        try:
+            wsl_source = self._convert_to_wsl_path(source)
+            wsl_dest = self._convert_to_wsl_path(destination)
+            
+            # Ensure destination directory exists
+            os.makedirs(destination.parent, exist_ok=True)
+            
+            result = subprocess.run(
+                ['wsl', 'rsync', '-av', '--progress', wsl_source, wsl_dest],
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True
+            )
+            
+            logger.debug(f"WSL rsync output: {result.stdout}")
+            if result.stderr:
+                logger.debug(f"WSL rsync stderr: {result.stderr}")
+                
+            return True
+            
+        except subprocess.CalledProcessError as e:
+            logger.error(f"WSL rsync copy failed: {e.stderr}")
+            raise
+        except Exception as e:
+            logger.error(f"WSL copy error: {e}")
+            raise
+
+class WindowsFallbackStrategy(TransferStrategy):
+    """Windows native transfer strategy using robocopy/shutil"""
+    def dry_run(self, source: Path, destination: Path) -> Tuple[int, int]:
+        try:
+            file_count = 0
+            total_size = 0
+            for item in source.rglob('*'):
+                if item.is_file():
+                    file_count += 1
+                    total_size += item.stat().st_size
+            logger.debug(f"Windows dry run found {file_count} files, total size {total_size} bytes")
+            return file_count, total_size
+        except Exception as e:
+            logger.error(f"Windows dry run failed: {e}")
+            raise
+
+    def copy_file(self, source: Path, destination: Path) -> bool:
+        try:
+            # Ensure destination directory exists
+            os.makedirs(destination.parent, exist_ok=True)
+            
+            # Use robocopy for files larger than 1GB, shutil for smaller files
+            file_size = source.stat().st_size
+            if file_size > 1_000_000_000:  # 1GB
+                # Use robocopy for large files
+                source_dir = str(source.parent)
+                dest_dir = str(destination.parent)
+                filename = source.name
+                
+                result = subprocess.run(
+                    ['robocopy', source_dir, dest_dir, filename, 
+                     '/Z',  # Restartable mode
+                     '/W:1',  # Wait time between retries
+                     '/R:2',  # Number of retries
+                     '/J',  # Unbuffered I/O (faster for large files)
+                     '/NDL',  # No directory list
+                     '/NP'  # No progress
+                    ],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True
+                )
+                
+                # Robocopy returns specific codes, 0-7 are successful
+                if result.returncode > 7:
+                    raise subprocess.CalledProcessError(
+                        result.returncode, result.args, result.stdout, result.stderr
+                    )
+            else:
+                # Use shutil for smaller files
+                shutil.copy2(str(source), str(destination))
+            
+            # Verify the copy
+            if not destination.exists():
+                raise IOError(f"Destination file {destination} was not created")
+            if destination.stat().st_size != file_size:
+                raise IOError(f"Destination file size mismatch for {destination}")
+                
+            return True
+            
+        except Exception as e:
+            logger.error(f"Windows copy failed: {e}")
+            raise
+
+def get_transfer_strategy() -> TransferStrategy:
+    """Factory function to get appropriate transfer strategy"""
+    system = platform.system().lower()
+    
+    if system == "linux":
+        return RsyncStrategy()
+    elif system == "windows":
+        # For Windows, always use native strategy for removable drives
+        return WindowsFallbackStrategy()
+    else:  # Darwin/macOS
+        return RsyncStrategy()
+
 
 class FileTransfer:
     def __init__(self, state_manager, display: DisplayInterface, storage: StorageInterface):
@@ -90,91 +283,34 @@ class FileTransfer:
             logger.error(error_msg)
             self.display.show_error(error_msg)
             raise OSError(error_msg) from e
-    def rsync_dry_run(self, source: Path, destination: Path) -> tuple[int, int]:
-        """
-        Perform a dry run with rsync to get transfer information.
         
-        Args:
-            source: Source directory path
-            destination: Destination directory path
-            
-        Returns:
-            Tuple of (file_count, total_size)
-        """
+    def rsync_dry_run(self, source: Path, destination: Path) -> tuple[int, int]:
+        """Platform-agnostic dry run implementation"""
         try:
-            rsync_command = ['rsync', '-a', '--dry-run', '--stats']
-            
-            if platform.system() == 'Windows':
-                rsync_command[0] = 'C:\\Program Files\\rsync\\rsync.exe'
-                
-            process = subprocess.run(
-                [*rsync_command, str(source), str(destination)],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                check=True
-            )
-            
-            output = process.stdout
-            file_count = int(re.search(r'Number of regular files transferred: (\d+)', output).group(1))
-            total_size = int(re.search(r'Total transferred file size: ([\d,]+)', output).group(1).replace(',', ''))
-            
-            logger.debug(f"Dry run info - Files: {file_count}, Size: {total_size} bytes")
-            return file_count, total_size
-            
+            strategy = get_transfer_strategy()
+            return strategy.dry_run(source, destination)
         except Exception as e:
-            error_msg = f"Error during rsync dry run: {e}"
-            logger.error(error_msg)
-            self.display.show_error(error_msg)
+            logger.error(f"Dry run failed: {e}")
             return 0, 0
-            
+    
     def rsync_copy(self, source: Path, destination: Path, file_size: int, file_number: int, file_count: int) -> tuple[bool, str]:
-        """Copy files using rsync with progress monitoring."""
+        """Platform-agnostic copy implementation"""
         with self._status_context(TransferStatus.COPYING):
             try:
-                rsync_command = ['rsync', '-a', '--info=progress2']
+                strategy = get_transfer_strategy()
+                success = strategy.copy_file(source, destination)
                 
-                if platform.system() == 'Windows':
-                    rsync_command[0] = 'C:\\Program Files\\rsync\\rsync.exe'
-                
-                process = subprocess.Popen(
-                    [*rsync_command, str(source), str(destination)],
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True
-                )
-                
-                transferred = 0
-                
-                for line in process.stdout:
-                    if self._current_progress is None:
-                        continue
-                        
-                    sys.stdout.write(line)
-                    sys.stdout.flush()
+                if success and self._current_progress is not None:
+                    self._current_progress.bytes_transferred = file_size
+                    self._current_progress.current_file_progress = 1.0
+                    self._current_progress.overall_progress = file_number / file_count
+                    self.display.show_progress(self._current_progress)
                     
-                    # Parse progress information
-                    if match := re.search(r'(\d+)\s+(\d+)%\s+(\d+\.\d+\w+/s)\s+', line):
-                        bytes_transferred = int(match.group(1))
-                        progress_percent = float(match.group(2))
-                        
-                        # Update progress information
-                        self._current_progress.bytes_transferred = bytes_transferred
-                        self._current_progress.current_file_progress = progress_percent / 100.0
-                        self._current_progress.overall_progress = (file_number - 1 + progress_percent / 100.0) / file_count
-                        
-                        # Update display
-                        self.display.show_progress(self._current_progress)
-                
-                process.wait()
-                if process.returncode != 0:
-                    raise subprocess.CalledProcessError(process.returncode, process.args)
-                    
-                return True, ""
+                return success, ""
                 
             except Exception as e:
-                error_msg = f"Error during rsync: {e}"
-                logger.error(error_msg)
+                error_msg = str(e)
+                logger.error(f"Copy failed: {error_msg}")
                 self.display.show_error(error_msg)
                 return False, error_msg
 
