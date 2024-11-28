@@ -34,11 +34,27 @@ class MacOSStorage(StorageInterface):
     def unmount_drive(self, path: Path) -> bool:
         """Unmount a drive using diskutil"""
         try:
-            subprocess.run(['diskutil', 'unmount', str(path)], check=True)
+            # First sync to ensure all writes are complete
+            subprocess.run(['sync'], check=True)
+            
+            # Try unmounting with diskutil
+            subprocess.run(
+                ['diskutil', 'unmount', str(path)], 
+                check=True,
+                capture_output=True,
+                text=True
+            )
+            
+            # Wait a moment to ensure unmount is complete
+            time.sleep(1)
+            
             logger.info(f"Successfully unmounted {path}")
             return True
         except subprocess.CalledProcessError as e:
-            logger.error(f"Failed to unmount {path}: {e}")
+            logger.error(f"Failed to unmount {path}: {e.stderr}")
+            return False
+        except Exception as e:
+            logger.error(f"Error during unmount of {path}: {e}")
             return False
 
     def get_dump_drive(self) -> Optional[Path]:
@@ -47,10 +63,22 @@ class MacOSStorage(StorageInterface):
 
     def set_dump_drive(self, path: Path) -> None:
         """Set the dump drive location"""
-        if not path.is_mount():
-            raise ValueError(f"Path {path} is not a mount point")
-        self.dump_drive_mountpoint = path
-        logger.info(f"Set dump drive to {path}")
+        try:
+            path = Path(path)
+            if not path.exists():
+                raise ValueError(f"Path {path} does not exist")
+            if not path.is_dir():
+                raise ValueError(f"Path {path} is not a directory")
+                
+            # Verify the directory is writable
+            if not os.access(path, os.W_OK):
+                raise ValueError(f"Path {path} is not writable")
+                    
+            self.dump_drive_mountpoint = path
+            logger.info(f"Set dump drive to {path}")
+        except Exception as e:
+            logger.error(f"Error setting dump drive: {e}")
+            raise ValueError(str(e))
 
     def wait_for_new_drive(self, initial_drives: List[Path]) -> Optional[Path]:
         """

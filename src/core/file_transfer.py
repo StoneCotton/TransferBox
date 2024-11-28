@@ -30,7 +30,6 @@ class TransferStrategy:
         raise NotImplementedError
     
 class RsyncStrategy(TransferStrategy):
-    """Unix-like systems transfer strategy using rsync"""
     def dry_run(self, source: Path, destination: Path) -> Tuple[int, int]:
         try:
             process = subprocess.run(
@@ -49,21 +48,35 @@ class RsyncStrategy(TransferStrategy):
             
         except Exception as e:
             logger.error(f"Rsync dry run failed: {e}")
-            raise
+            return 0, 0
 
     def copy_file(self, source: Path, destination: Path) -> bool:
         try:
-            result = subprocess.run(
-                ['rsync', '-av', '--progress', str(source), str(destination)],
-                check=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True
-            )
+            # Get file size for progress tracking
+            file_size = source.stat().st_size
+            bytes_copied = 0
+            
+            # Create destination directory if it doesn't exist
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            
+            # Manual copy with progress tracking
+            with open(source, 'rb') as src, open(destination, 'wb') as dst:
+                while chunk := src.read(8192 * 1024):  # 8MB chunks
+                    dst.write(chunk)
+                    bytes_copied += len(chunk)
+                    
+                    # Calculate progress
+                    progress = bytes_copied / file_size
+                    
+                    # Update progress through callback if available
+                    if hasattr(self, '_progress_callback'):
+                        self._progress_callback(bytes_copied, file_size)
+            
             return True
+            
         except Exception as e:
-            logger.error(f"Rsync copy failed: {e}")
-            raise
+            logger.error(f"Copy failed: {e}")
+            return False
 
 class WSLRsyncStrategy(TransferStrategy):
     """Windows transfer strategy using WSL rsync"""
@@ -318,8 +331,19 @@ class FileTransfer:
                                 self._current_progress.current_file_progress = bytes_copied / file_size
                                 self._current_progress.overall_progress = (file_number - 1 + (bytes_copied / file_size)) / file_count
                                 self.display.show_progress(self._current_progress)
+                
+                # For macOS and Linux/RPi
                 else:
-                    success = strategy.copy_file(source, destination)
+                    bytes_copied = 0
+                    with open(source, 'rb') as src, open(destination, 'wb') as dst:
+                        while chunk := src.read(8192 * 1024):  # 8MB chunks
+                            dst.write(chunk)
+                            bytes_copied += len(chunk)
+                            if self._current_progress is not None:
+                                self._current_progress.bytes_transferred = bytes_copied
+                                self._current_progress.current_file_progress = bytes_copied / file_size
+                                self._current_progress.overall_progress = (file_number - 1 + (bytes_copied / file_size)) / file_count
+                                self.display.show_progress(self._current_progress)
                 
                 # Update progress to show completion
                 if self._current_progress is not None:
@@ -327,9 +351,9 @@ class FileTransfer:
                     self._current_progress.current_file_progress = 1.0
                     self._current_progress.overall_progress = file_number / file_count
                     self.display.show_progress(self._current_progress)
-                    
+                        
                 return True, ""
-                
+                    
             except Exception as e:
                 error_msg = str(e)
                 logger.error(f"Copy failed: {error_msg}")
@@ -348,7 +372,7 @@ class FileTransfer:
             # Get file size
             file_size = src_path.stat().st_size
             
-            # Update progress for copying state
+            # Initialize progress tracking
             self._current_progress = TransferProgress(
                 current_file=src_path.name,
                 file_number=file_number,
@@ -356,13 +380,22 @@ class FileTransfer:
                 bytes_transferred=0,
                 total_bytes=file_size,
                 current_file_progress=0.0,
-                overall_progress=file_number / file_count,
+                overall_progress=(file_number - 1) / file_count,
                 status=TransferStatus.COPYING
             )
-            self.display.show_progress(self._current_progress)
+            
+            # Ensure destination directory exists
+            dst_path.parent.mkdir(parents=True, exist_ok=True)
             
             # Copy file
-            success, error = self.rsync_copy(src_path, dst_path, file_size, file_number, file_count)
+            success, error = self.rsync_copy(
+                src_path, 
+                dst_path, 
+                file_size, 
+                file_number, 
+                file_count
+            )
+            
             if not success:
                 self.display.show_error(f"Copy failed: {error}")
                 return False, None
@@ -447,12 +480,24 @@ class FileTransfer:
             with self._transfer_session():
                 success = self._execute_transfer(source_path, destination_path, timestamp, log_file)
                 if success:
+                    logger.debug("Transfer successful, preparing to unmount...")
                     self._current_progress.status = TransferStatus.SUCCESS
                     self.display.show_progress(self._current_progress)
+                    # Attempt unmount
+                    logger.debug(f"Attempting to unmount source drive: {source_path}")
+                    if self.storage.unmount_drive(source_path):
+                        logger.debug("Unmount successful")
+                        self.display.show_status("Safe to remove card")
+                    else:
+                        logger.debug("Unmount failed")
+                        self.display.show_error("Unmount failed")
+                else:
+                    logger.debug("Transfer failed, skipping unmount")
                 return success
         except Exception as e:
             error_msg = f"Transfer failed: {e}"
             logger.error(error_msg)
+            logger.debug(f"Exception details: {str(e)}")
             if self._current_progress:
                 self._current_progress.status = TransferStatus.ERROR
                 self.display.show_progress(self._current_progress)
@@ -627,8 +672,4 @@ class FileTransfer:
         
         logger.info("Transfer completed successfully")
         # Don't show status message here as it will be handled by state management
-        return True
-        
-        logger.info("Transfer completed successfully")
-        self.display.show_status("Transfer complete")
         return True

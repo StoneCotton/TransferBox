@@ -15,10 +15,10 @@ logger = logging.getLogger(__name__)
 class MacOSDisplay(DisplayInterface):
     """
     macOS implementation of DisplayInterface using terminal output with
-    native terminal colors and Unicode characters for better rendering.
+    native terminal colors and advanced progress display.
     """
     
-    # ANSI color codes - macOS Terminal supports these natively
+    # ANSI color codes for macOS Terminal
     COLORS = {
         'RESET': '\033[0m',
         'BLACK': '\033[30m',
@@ -41,160 +41,223 @@ class MacOSDisplay(DisplayInterface):
     
     def __init__(self):
         """Initialize macOS terminal display"""
-        # Get terminal size
         self.terminal_width = shutil.get_terminal_size().columns
+        self.progress_bar_width = min(50, self.terminal_width - 30)
         
         # Track current display state
         self.current_status: Optional[str] = None
         self.current_progress: Optional[TransferProgress] = None
         self._last_update = 0
+        self._update_interval = 0.01  # Match Windows refresh rate
         
-        # Minimum time between updates (seconds)
-        self._update_interval = 0.1
+        # Track display mode
+        self.in_transfer_mode = False
         
-        # Check if running in Terminal.app or iTerm
-        self.is_iterm = 'ITERM_SESSION_ID' in os.environ
+        # Progress display layout
+        self.STATUS_LINE = 0
+        self.TOTAL_PROGRESS_LINE = 1
+        self.FILE_INFO_LINE = 2
+        self.COPY_PROGRESS_LINE = 3
+        self.CHECKSUM_PROGRESS_LINE = 4
+        self.TOTAL_LINES = 5
         
-        # Use prettier Unicode blocks in iTerm
-        self.block_char = '▇' if self.is_iterm else '█'
-        self.empty_char = '▁' if self.is_iterm else '░'
+        # Track operation progress
+        self.copy_progress = 0.0
+        self.checksum_progress = 0.0
         
-        logger.info(f"macOS display initialized ({'iTerm' if self.is_iterm else 'Terminal.app'})")
+        logger.info(f"macOS display initialized ({'iTerm' if 'ITERM_SESSION_ID' in os.environ else 'Terminal.app'})")
+
+    def _create_progress_bar(self, progress: float, width: int = None) -> str:
+        """Create a progress bar string"""
+        if width is None:
+            width = self.progress_bar_width
+        filled = int(progress * width)
+        # Use Unicode blocks for better-looking progress bars
+        return '█' * filled + '░' * (width - filled)
+
+    def _clear_screen(self):
+        """Clear entire screen and reset cursor"""
+        sys.stdout.write('\033[2J\033[H')
+        sys.stdout.flush()
+
+    def _move_to_line(self, line: int):
+        """Move cursor to specific line"""
+        sys.stdout.write(f'\033[{line + 1};0H')
+
+    def _clear_line(self):
+        """Clear current line"""
+        sys.stdout.write('\033[2K\r')
+
+    def _enter_transfer_mode(self):
+        """Enter transfer display mode"""
+        if not self.in_transfer_mode:
+            self.in_transfer_mode = True
+            self._clear_screen()
+            # Disable console logging during transfer
+            logging.getLogger().console_handler.transfer_mode = True
+            # Initialize progress display
+            sys.stdout.write('\n' * self.TOTAL_LINES)
+            self.copy_progress = 0.0
+            self.checksum_progress = 0.0
+
+    def _exit_transfer_mode(self):
+        """Exit transfer display mode"""
+        if self.in_transfer_mode:
+            self.in_transfer_mode = False
+            self._clear_screen()
+            # Re-enable console logging
+            logging.getLogger().console_handler.transfer_mode = False
+            self.copy_progress = 0.0
+            self.checksum_progress = 0.0
+
+    def enter_standby(self):
+        """Handle entering standby state"""
+        if self.in_transfer_mode:
+            self._exit_transfer_mode()
+        # Show standby status on clean screen
+        timestamp = datetime.now().strftime('%H:%M:%S')
+        print(f"{self.COLORS['CYAN']}[{timestamp}]{self.COLORS['WHITE']} Standby{self.COLORS['RESET']}")
 
     def _can_update(self) -> bool:
-        """Check if enough time has passed for a new update"""
+        """Check if enough time has passed for update"""
         current_time = time.time()
         if current_time - self._last_update >= self._update_interval:
             self._last_update = current_time
             return True
         return False
 
-    def _format_size(self, size_bytes: int) -> str:
-        """Format byte size to human readable string"""
-        for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
-            if size_bytes < 1024:
-                return f"{size_bytes:.1f}{unit}"
-            size_bytes /= 1024
-        return f"{size_bytes:.1f}PB"
-
     def show_status(self, message: str, line: int = 0) -> None:
-        """
-        Display a status message in the terminal.
-        
-        Args:
-            message: Message to display
-            line: Line number (ignored in terminal output)
-        """
+        """Display status message"""
         if not self._can_update():
             return
             
-        self.current_status = message
         timestamp = datetime.now().strftime('%H:%M:%S')
         
-        # Clear line and print status
-        sys.stdout.write('\r' + ' ' * self.terminal_width + '\r')
-        sys.stdout.write(
-            f"{self.COLORS['CYAN']}[{timestamp}] "
-            f"{self.COLORS['WHITE']}{message}"
-            f"{self.COLORS['RESET']}\n"
-        )
+        # If entering standby from transfer mode, handle state transition
+        if message.lower() in ["standby", "input card"] and self.in_transfer_mode:
+            self.enter_standby()
+            
+        elif self.in_transfer_mode:
+            # During transfer, only update the status line in the progress display
+            self._move_to_line(self.STATUS_LINE)
+            self._clear_line()
+            sys.stdout.write(
+                f"{self.COLORS['CYAN']}[{timestamp}] "
+                f"{self.COLORS['WHITE']}{message}"
+                f"{self.COLORS['RESET']}"
+            )
+        else:
+            # Outside transfer, print normally
+            print(
+                f"{self.COLORS['CYAN']}[{timestamp}]"
+                f"{self.COLORS['WHITE']} {message}"
+                f"{self.COLORS['RESET']}"
+            )
+            
         sys.stdout.flush()
-        
         logger.debug(f"Status: {message}")
 
     def show_progress(self, progress: TransferProgress) -> None:
-        """
-        Display transfer progress in the terminal.
-        
-        Args:
-            progress: Transfer progress information
-        """
+        """Display transfer progress with consistent progress bars"""
         if not self._can_update():
             return
-            
-        self.current_progress = progress
-        
-        # Calculate progress bar width
-        bar_width = min(50, self.terminal_width - 30)
-        filled = int(progress.overall_progress * bar_width)
-        
-        # Create progress bar
-        bar = (self.block_char * filled + self.empty_char * (bar_width - filled))
-        
-        # Status-specific formatting
-        status_colors = {
-            TransferStatus.COPYING: self.COLORS['BLUE'],
-            TransferStatus.CHECKSUMMING: self.COLORS['YELLOW'],
-            TransferStatus.SUCCESS: self.COLORS['GREEN'],
-            TransferStatus.ERROR: self.COLORS['RED'],
-            TransferStatus.VERIFYING: self.COLORS['MAGENTA']
-        }
-        color = status_colors.get(progress.status, self.COLORS['WHITE'])
-        
-        # Clear previous lines if showing file progress
-        if progress.current_file:
-            sys.stdout.write('\033[2K\033[1A\033[2K\r')
-        else:
-            sys.stdout.write('\r' + ' ' * self.terminal_width + '\r')
-        
-        # Show current operation and progress bar
+
+        self._enter_transfer_mode()
+
+        # Check if transfer is complete
+        if progress.status == TransferStatus.SUCCESS:
+            self._exit_transfer_mode()
+            return
+
+        # Update total progress
+        self._move_to_line(self.TOTAL_PROGRESS_LINE)
+        self._clear_line()
+        total_bar = self._create_progress_bar(progress.overall_progress)
         sys.stdout.write(
-            f"{color}{progress.status.name}: "
-            f"{bar} {progress.overall_progress * 100:3.1f}%"
-            f"{self.COLORS['RESET']}"
-        )
-        
-        # Show file progress on next line
-        if progress.current_file:
-            transfer_rate = progress.bytes_transferred / max(time.time() - self._last_update, 0.1)
-            sys.stdout.write(
-                f"\n{self.COLORS['CYAN']}File {progress.file_number}/{progress.total_files}: "
-                f"{progress.current_file} "
-                f"({self._format_size(progress.bytes_transferred)}/"
-                f"{self._format_size(progress.total_bytes)}) "
-                f"[{self._format_size(transfer_rate)}/s]"
-                f"{self.COLORS['RESET']}"
-            )
-        
-        sys.stdout.flush()
-        
-        logger.debug(
-            f"Progress update: {progress.overall_progress:.1%} - "
-            f"File {progress.file_number}/{progress.total_files}"
+            f"Total Progress: {total_bar} "
+            f"{progress.overall_progress * 100:3.1f}%"
         )
 
+        # Update file info
+        self._move_to_line(self.FILE_INFO_LINE)
+        self._clear_line()
+        if progress.current_file:
+            size_mb = progress.total_bytes / (1024 * 1024)
+            progress_mb = progress.bytes_transferred / (1024 * 1024)
+            sys.stdout.write(
+                f"File {progress.file_number}/{progress.total_files}: "
+                f"{progress.current_file} ({progress_mb:.1f}MB/{size_mb:.1f}MB)"
+            )
+
+        # Update operation progress bars based on current state
+        if progress.status == TransferStatus.COPYING:
+            self.copy_progress = progress.current_file_progress
+            # Reset checksum progress when starting new copy
+            self.checksum_progress = 0.0
+        elif progress.status == TransferStatus.CHECKSUMMING:
+            # Keep copy progress at 100% during checksumming
+            self.copy_progress = 1.0
+            if progress.current_file_progress <= 0.5:
+                checksum_message = "Source"
+                self.checksum_progress = progress.current_file_progress * 2
+            else:
+                checksum_message = "Destination"
+                self.checksum_progress = (progress.current_file_progress - 0.5) * 2
+
+        # Show copy progress
+        self._move_to_line(self.COPY_PROGRESS_LINE)
+        self._clear_line()
+        copy_bar = self._create_progress_bar(self.copy_progress)
+        sys.stdout.write(
+            f"{self.COLORS['BLUE']}Copying: {copy_bar} "
+            f"{self.copy_progress * 100:3.1f}%{self.COLORS['RESET']}"
+        )
+
+        # Show checksum progress
+        self._move_to_line(self.CHECKSUM_PROGRESS_LINE)
+        self._clear_line()
+        checksum_bar = self._create_progress_bar(self.checksum_progress)
+        if progress.status == TransferStatus.CHECKSUMMING:
+            sys.stdout.write(
+                f"{self.COLORS['YELLOW']}Checksumming ({checksum_message}): {checksum_bar} "
+                f"{self.checksum_progress * 100:3.1f}%{self.COLORS['RESET']}"
+            )
+        else:
+            sys.stdout.write(
+                f"{self.COLORS['YELLOW']}Checksumming: {checksum_bar} "
+                f"{self.checksum_progress * 100:3.1f}%{self.COLORS['RESET']}"
+            )
+
+        sys.stdout.flush()
+
     def show_error(self, message: str) -> None:
-        """
-        Display an error message in the terminal.
-        
-        Args:
-            message: Error message to display
-        """
+        """Display error message"""
         if not self._can_update():
             return
-            
+
         timestamp = datetime.now().strftime('%H:%M:%S')
         
-        # Clear line and print error
-        sys.stdout.write('\r' + ' ' * self.terminal_width + '\r')
-        sys.stdout.write(
-            f"{self.COLORS['RED']}[{timestamp}] ⚠️  ERROR: {message}"
-            f"{self.COLORS['RESET']}\n"
-        )
+        if self.in_transfer_mode:
+            self._move_to_line(self.STATUS_LINE)
+            self._clear_line()
+            sys.stdout.write(
+                f"{self.COLORS['RED']}[{timestamp}] ERROR: {message}"
+                f"{self.COLORS['RESET']}"
+            )
+        else:
+            print(
+                f"{self.COLORS['RED']}[{timestamp}] ERROR: {message}"
+                f"{self.COLORS['RESET']}"
+            )
+            
         sys.stdout.flush()
-        
         logger.error(f"Display error: {message}")
 
     def clear(self) -> None:
-        """Clear the terminal display"""
-        if not self._can_update():
-            return
-            
-        # Use ANSI escape codes to clear screen
-        sys.stdout.write('\033[2J\033[H')
-        sys.stdout.flush()
-        
+        """Clear display and exit transfer mode"""
+        self._exit_transfer_mode()
         self.current_status = None
         self.current_progress = None
-        
+        self.copy_progress = 0.0
+        self.checksum_progress = 0.0
         logger.debug("Display cleared")
