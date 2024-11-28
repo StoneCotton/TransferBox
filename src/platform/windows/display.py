@@ -82,10 +82,16 @@ class WindowsDisplay(DisplayInterface):
             self._clear_screen()
             # Re-enable console logging
             logging.getLogger().console_handler.transfer_mode = False
-            # Show final status
-            if self.current_status:
-                print(f"{Fore.CYAN}[{datetime.now().strftime('%H:%M:%S')}]{Fore.WHITE} "
-                      f"Transfer complete{Style.RESET_ALL}")
+            self.copy_progress = 0.0
+            self.checksum_progress = 0.0
+
+    def enter_standby(self):
+        """Handle entering standby state"""
+        if self.in_transfer_mode:
+            self._exit_transfer_mode()
+        # Show standby status on clean screen
+        timestamp = datetime.now().strftime('%H:%M:%S')
+        print(f"{Fore.CYAN}[{timestamp}]{Fore.WHITE} Standby{Style.RESET_ALL}")
 
     def _can_update(self) -> bool:
         """Check if enough time has passed for update"""
@@ -102,7 +108,11 @@ class WindowsDisplay(DisplayInterface):
             
         timestamp = datetime.now().strftime('%H:%M:%S')
         
-        if self.in_transfer_mode:
+        # If entering standby from transfer mode, handle state transition
+        if message.lower() in ["standby", "input card"] and self.in_transfer_mode:
+            self.enter_standby()
+            
+        elif self.in_transfer_mode:
             # During transfer, only update the status line in the progress display
             self._move_to_line(self.STATUS_LINE)
             self._clear_line()
@@ -148,13 +158,25 @@ class WindowsDisplay(DisplayInterface):
 
         # Update operation progress bars based on current state
         if progress.status == TransferStatus.COPYING:
+            # Use actual copy progress
             self.copy_progress = progress.current_file_progress
             self.checksum_progress = 0.0
         elif progress.status == TransferStatus.CHECKSUMMING:
+            # Keep copy at 100% during checksum
             self.copy_progress = 1.0
-            self.checksum_progress = progress.current_file_progress
+            # Scale checksum progress: 0-0.5 for source, 0.5-1.0 for destination
+            if progress.current_file_progress <= 0.5:
+                checksum_message = "Source"
+                # Scale 0-0.5 to 0-1.0
+                self.checksum_progress = progress.current_file_progress * 2
+            else:
+                checksum_message = "Destination"
+                # Scale 0.5-1.0 to 0-1.0
+                self.checksum_progress = (progress.current_file_progress - 0.5) * 2
+        else:
+            checksum_message = ""
 
-        # Always show copy progress
+        # Show copy progress
         self._move_to_line(self.COPY_PROGRESS_LINE)
         self._clear_line()
         copy_bar = self._create_progress_bar(self.copy_progress)
@@ -163,14 +185,20 @@ class WindowsDisplay(DisplayInterface):
             f"{self.copy_progress * 100:3.1f}%{Style.RESET_ALL}"
         )
 
-        # Always show checksum progress
+        # Show checksum progress with source/destination indicator
         self._move_to_line(self.CHECKSUM_PROGRESS_LINE)
         self._clear_line()
         checksum_bar = self._create_progress_bar(self.checksum_progress)
-        sys.stdout.write(
-            f"{Fore.YELLOW}Checksumming: {checksum_bar} "
-            f"{self.checksum_progress * 100:3.1f}%{Style.RESET_ALL}"
-        )
+        if progress.status == TransferStatus.CHECKSUMMING:
+            sys.stdout.write(
+                f"{Fore.YELLOW}Checksumming ({checksum_message}): {checksum_bar} "
+                f"{self.checksum_progress * 100:3.1f}%{Style.RESET_ALL}"
+            )
+        else:
+            sys.stdout.write(
+                f"{Fore.YELLOW}Checksumming: {checksum_bar} "
+                f"{self.checksum_progress * 100:3.1f}%{Style.RESET_ALL}"
+            )
 
         sys.stdout.flush()
 

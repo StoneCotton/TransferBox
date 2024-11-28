@@ -298,22 +298,43 @@ class FileTransfer:
         with self._status_context(TransferStatus.COPYING):
             try:
                 strategy = get_transfer_strategy()
-                success = strategy.copy_file(source, destination)
                 
-                if success and self._current_progress is not None:
+                # Reset progress for new file
+                if self._current_progress is not None:
+                    self._current_progress.bytes_transferred = 0
+                    self._current_progress.current_file_progress = 0.0
+                    self._current_progress.overall_progress = (file_number - 1) / file_count
+                    self.display.show_progress(self._current_progress)
+                
+                # For Windows, monitor copy progress
+                if isinstance(strategy, WindowsFallbackStrategy):
+                    bytes_copied = 0
+                    with open(source, 'rb') as src, open(destination, 'wb') as dst:
+                        while chunk := src.read(8192 * 1024):  # 8MB chunks
+                            dst.write(chunk)
+                            bytes_copied += len(chunk)
+                            if self._current_progress is not None:
+                                self._current_progress.bytes_transferred = bytes_copied
+                                self._current_progress.current_file_progress = bytes_copied / file_size
+                                self._current_progress.overall_progress = (file_number - 1 + (bytes_copied / file_size)) / file_count
+                                self.display.show_progress(self._current_progress)
+                else:
+                    success = strategy.copy_file(source, destination)
+                
+                # Update progress to show completion
+                if self._current_progress is not None:
                     self._current_progress.bytes_transferred = file_size
                     self._current_progress.current_file_progress = 1.0
                     self._current_progress.overall_progress = file_number / file_count
                     self.display.show_progress(self._current_progress)
                     
-                return success, ""
+                return True, ""
                 
             except Exception as e:
                 error_msg = str(e)
                 logger.error(f"Copy failed: {error_msg}")
                 self.display.show_error(error_msg)
                 return False, error_msg
-
             
     def copy_file_with_verification(
         self,
