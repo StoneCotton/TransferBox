@@ -61,18 +61,94 @@ class WindowsStorage(StorageInterface):
 
     def unmount_drive(self, path: Path) -> bool:
         """
-        Unmount a drive using Windows API
-        Note: On Windows, drives can't be "unmounted" like in Unix,
-        but we can eject removable drives
+        Safely eject a drive in Windows using direct Windows API calls.
+        
+        Args:
+            path: Path to the drive to eject
+                
+        Returns:
+            True if successful, False otherwise
         """
         try:
-            root_drive = Path(os.path.splitdrive(path)[0] + '\\')
-            # Using built-in 'mountvol' command to unmount
-            subprocess.run(['mountvol', str(root_drive), '/P'], check=True)
-            logger.info(f"Successfully unmounted {path}")
-            return True
-        except subprocess.CalledProcessError as e:
-            logger.error(f"Failed to unmount {path}: {e}")
+            # First sync to ensure all writes are complete
+            subprocess.run(['fsutil', 'volume', 'flush', str(path)], check=True, capture_output=True)
+            
+            # Allow system time to complete flush
+            time.sleep(2)  # Increased from 1 to 2 seconds
+            
+            # Get volume name (e.g., "F:" from "F:\" or "F:/")
+            volume_name = str(path.drive).rstrip(':\\/')
+            
+            # Use Windows API directly through ctypes
+            import ctypes
+            import ctypes.wintypes
+            
+            # Define necessary Windows API constants
+            GENERIC_READ = 0x80000000
+            GENERIC_WRITE = 0x40000000
+            FILE_SHARE_READ = 0x1
+            FILE_SHARE_WRITE = 0x2
+            OPEN_EXISTING = 0x3
+            IOCTL_STORAGE_EJECT_MEDIA = 0x2D4808
+
+            # Create device path
+            device_path = f"\\\\.\\{volume_name}:"
+
+            # Open device
+            h_device = ctypes.windll.kernel32.CreateFileW(
+                device_path,
+                GENERIC_READ | GENERIC_WRITE,
+                FILE_SHARE_READ | FILE_SHARE_WRITE,
+                None,
+                OPEN_EXISTING,
+                0,
+                None
+            )
+
+            if h_device == -1:
+                logger.error(f"Failed to open device {device_path}")
+                return False
+
+            try:
+                # Send eject command
+                bytes_returned = ctypes.wintypes.DWORD()
+                result = ctypes.windll.kernel32.DeviceIoControl(
+                    h_device,
+                    IOCTL_STORAGE_EJECT_MEDIA,
+                    None,
+                    0,
+                    None,
+                    0,
+                    ctypes.byref(bytes_returned),
+                    None
+                )
+
+                if result == 0:
+                    error = ctypes.get_last_error()
+                    logger.error(f"DeviceIoControl failed with error {error}")
+                    return False
+
+                # Give the system more time to process the eject command
+                time.sleep(3)  # Increased from 2 to 3 seconds
+
+                # Multiple verification attempts with longer delays
+                max_attempts = 5  # Increased from 3 to 5 attempts
+                for attempt in range(max_attempts):
+                    if not self.is_drive_mounted(path):
+                        logger.info(f"Successfully ejected {path} on attempt {attempt + 1}")
+                        return True
+                    logger.debug(f"Eject verification attempt {attempt + 1} of {max_attempts}")
+                    time.sleep(1.5)  # Increased from 1 to 1.5 seconds between checks
+
+                logger.error(f"Drive {path} still accessible after {max_attempts} verification attempts")
+                return False
+
+            finally:
+                # Always close the device handle
+                ctypes.windll.kernel32.CloseHandle(h_device)
+
+        except Exception as e:
+            logger.error(f"Error during ejection of {path}: {e}")
             return False
 
     def get_dump_drive(self) -> Optional[Path]:
@@ -148,17 +224,23 @@ class WindowsStorage(StorageInterface):
 
     def wait_for_drive_removal(self, path: Path) -> None:
         """
-        Wait for a drive letter to be removed.
+        Wait for a drive to be removed, with proper Windows path handling.
         
         Args:
             path: Path to the drive to monitor
         """
         try:
-            while path.exists() and self.is_drive_mounted(path):
-                logger.debug(f"Waiting for {path} to be removed...")
-                time.sleep(5)
+            # Get just the drive letter part (e.g., "F:")
+            drive_letter = str(path.drive).rstrip('\\/')
+            
+            while True:
+                # Check if drive is in list of available drives
+                if drive_letter not in [d.drive for d in self.get_available_drives()]:
+                    logger.info(f"Drive {drive_letter} has been removed")
+                    break
                 
-            logger.info(f"Drive {path} has been removed")
+                logger.debug(f"Waiting for {drive_letter} to be removed...")
+                time.sleep(5)
                 
         except Exception as e:
             logger.error(f"Error monitoring drive removal: {e}")
