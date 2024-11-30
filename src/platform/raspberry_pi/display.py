@@ -105,11 +105,33 @@ class RaspberryPiDisplay(DisplayInterface):
                 bottom_line = f"{file_text} {progress_bar}"
                 lcd_display.write(0, 1, bottom_line)
                 
-                # Update LED status without affecting display
-                self._update_led_status(progress.status)
-                
-                # Update bar graph during COPYING status
-                if progress.status == TransferStatus.COPYING:
+                # Update LED status based on transfer state
+                if progress.status == TransferStatus.ERROR:
+                    led_manager.all_leds_off_except(LEDControl.ERROR_LED)
+                    self._copying_led_started = False
+                    self._checksum_led_started = False
+                elif progress.status == TransferStatus.COPYING:
+                    if not self._copying_led_started:
+                        led_manager.all_leds_off_except(None)
+                        led_manager.start_led_blink(LEDControl.PROGRESS_LED)
+                        self._copying_led_started = True
+                        self._checksum_led_started = False
+                elif progress.status == TransferStatus.CHECKSUMMING:
+                    if not self._checksum_led_started:
+                        led_manager.stop_led_blink(LEDControl.PROGRESS_LED)
+                        led_manager.start_led_blink(LEDControl.CHECKSUM_LED)
+                        self._copying_led_started = False
+                        self._checksum_led_started = True
+                elif progress.status == TransferStatus.SUCCESS:
+                    # Stop all blinking LEDs
+                    led_manager.stop_led_blink(LEDControl.PROGRESS_LED)
+                    led_manager.stop_led_blink(LEDControl.CHECKSUM_LED)
+                    led_manager.all_leds_off_except(LEDControl.SUCCESS_LED)
+                    self._copying_led_started = False
+                    self._checksum_led_started = False
+                    
+                # Update bar graph during active transfer states
+                if progress.status in (TransferStatus.COPYING, TransferStatus.CHECKSUMMING):
                     files_progress = (progress.file_number - 1) / progress.total_files * 100
                     set_bar_graph(files_progress)
                 
@@ -133,6 +155,9 @@ class RaspberryPiDisplay(DisplayInterface):
         with self.display_lock:
             try:
                 lcd_display.clear()
+                # Stop any blinking LEDs
+                for led in [LEDControl.PROGRESS_LED, LEDControl.CHECKSUM_LED]:
+                    led_manager.stop_led_blink(led)
                 led_manager.all_leds_off_except(None)
                 set_bar_graph(0)
                 self._current_file = None
@@ -141,6 +166,7 @@ class RaspberryPiDisplay(DisplayInterface):
                 logger.debug("Display and LEDs cleared")
             except Exception as e:
                 logger.error(f"Error clearing display: {e}")
+
 
     def _update_led_status(self, status: TransferStatus) -> None:
         """Update LED status without affecting display"""

@@ -111,35 +111,119 @@ class RaspberryPiStorage(StorageInterface):
             path: Path to the drive to unmount
                 
         Returns:
-            True if successful, False otherwise
+            True if successful or already unmounted, False if unmount fails
         """
         try:
-            # First sync to ensure all writes are complete
-            subprocess.run(['sync'], check=True)
+            # Check if already unmounted
+            if not path.exists() or not path.is_mount():
+                logger.info(f"Drive {path} is already unmounted")
+                return True
+
+            # First sync multiple times to ensure all writes are complete
+            for _ in range(3):
+                subprocess.run(['sync'], check=True)
+                time.sleep(0.5)
             
-            # Try unmounting with udisks2 first (handles cleanup better)
+            # Find processes using the mount point
             try:
-                subprocess.run(
-                    ['udisksctl', 'unmount', '-b', str(path)], 
-                    check=True, 
-                    stderr=subprocess.PIPE,
+                lsof_output = subprocess.run(
+                    ['lsof', str(path)],
+                    capture_output=True,
                     text=True
                 )
-            except subprocess.CalledProcessError:
-                # Fall back to umount if udisksctl fails
-                subprocess.run(['umount', str(path)], check=True)
+                if lsof_output.returncode == 0:  # Found processes using the mount
+                    logger.warning(f"Found processes using {path}, attempting to terminate")
+                    # Extract PIDs from lsof output and kill processes
+                    pids = set()
+                    for line in lsof_output.stdout.splitlines()[1:]:  # Skip header
+                        try:
+                            pids.add(int(line.split()[1]))
+                        except (IndexError, ValueError):
+                            continue
+                    
+                    for pid in pids:
+                        try:
+                            subprocess.run(['kill', str(pid)], check=False)
+                        except Exception as e:
+                            logger.warning(f"Failed to kill process {pid}: {e}")
+                    
+                    time.sleep(1)  # Give processes time to terminate
+            except Exception as e:
+                logger.warning(f"Error checking for processes using mount: {e}")
+
+            # Get the device name from mount output
+            try:
+                mount_output = subprocess.check_output(['mount'], text=True)
+                device_name = None
+                for line in mount_output.split('\n'):
+                    if str(path) in line:
+                        device_name = line.split()[0]
+                        break
+            except Exception as e:
+                logger.warning(f"Error getting device name: {e}")
+                device_name = None
             
-            # Wait a moment to ensure unmount is complete
-            time.sleep(1)
+            # Try unmounting with udisks2 first
+            max_attempts = 3
+            for attempt in range(max_attempts):
+                try:
+                    # Try udisksctl first if we have the device name
+                    if device_name:
+                        udisks_result = subprocess.run(
+                            ['udisksctl', 'unmount', '-b', device_name],
+                            capture_output=True,
+                            text=True,
+                            check=False
+                        )
+                        
+                        if udisks_result.returncode == 0:
+                            logger.info(f"Successfully unmounted {path} with udisksctl")
+                            time.sleep(1)
+                            return True
+                    
+                    # If udisksctl fails or we don't have device name, try umount
+                    umount_result = subprocess.run(
+                        ['umount', str(path)],
+                        capture_output=True,
+                        text=True,
+                        check=False
+                    )
+                    
+                    if umount_result.returncode == 0:
+                        logger.info(f"Successfully unmounted {path} with umount")
+                        time.sleep(1)
+                        return True
+                    
+                    # If both fail, log the error and try again
+                    logger.warning(
+                        f"Unmount attempt {attempt + 1} failed:\n"
+                        f"udisksctl error: {udisks_result.stderr if device_name else 'Not attempted'}\n"
+                        f"umount error: {umount_result.stderr}"
+                    )
+                    
+                    # Check if the drive is actually unmounted despite the error
+                    if not path.exists() or not path.is_mount():
+                        logger.info(f"Drive {path} is now unmounted despite command failure")
+                        return True
+                    
+                    if attempt < max_attempts - 1:
+                        logger.info("Waiting before retry...")
+                        subprocess.run(['sync'], check=False)
+                        time.sleep(2)
+                    
+                except Exception as e:
+                    logger.error(f"Error during unmount attempt {attempt + 1}: {e}")
+                    if attempt < max_attempts - 1:
+                        time.sleep(2)
             
-            logger.info(f"Successfully unmounted {path}")
-            return True
+            # Final check if the drive is actually unmounted
+            if not path.exists() or not path.is_mount():
+                logger.info(f"Drive {path} is now unmounted after all attempts")
+                return True
                 
-        except subprocess.CalledProcessError as e:
-            logger.error(f"Failed to unmount {path}: {e}")
-            if hasattr(e, 'stderr') and e.stderr:
-                logger.error(f"Unmount error details: {e.stderr}")
+            logger.error(f"Failed to unmount {path} after {max_attempts} attempts")
             return False
+                    
         except Exception as e:
             logger.error(f"Error during unmount of {path}: {e}")
             return False

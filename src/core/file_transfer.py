@@ -95,13 +95,15 @@ class FileTransfer:
         return True
 
     def copy_sd_to_dump(self, source_path: Path, destination_path: Path, 
-                       log_file: Path) -> bool:
+                        log_file: Path) -> bool:
         """Copy files from source to destination with verification."""
         if not self._validate_transfer_preconditions(destination_path):
             return False
 
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         target_dir = self._create_target_directory(destination_path, timestamp)
+        unmount_success = False
+        transfer_success = False
         
         try:
             # Initialize MHL handling
@@ -117,28 +119,49 @@ class FileTransfer:
 
             # Initialize transfer state
             self.state_manager.enter_transfer()
-            success = self._process_files(
+            transfer_success = self._process_files(
                 source_path, target_dir, file_list,
                 log_file, mhl_filename, tree, hashes
             )
 
             # Handle completion
-            if success:
+            if transfer_success:
                 logger.info("Transfer completed successfully")
-                if self.storage.unmount_drive(source_path):
-                    self.display.show_status("Safe to remove card")
+                
+                # Update progress to success state before unmounting
+                if self._current_progress:
+                    self._current_progress.status = TransferStatus.SUCCESS
+                    self.display.show_progress(self._current_progress)
+                
+                # Only try to unmount if the drive is still mounted
+                if self.storage.is_drive_mounted(source_path):
+                    if self.storage.unmount_drive(source_path):
+                        unmount_success = True
+                        self.display.show_status("Safe to remove card")
+                    else:
+                        self.display.show_error("Unmount failed")
                 else:
-                    self.display.show_error("Unmount failed")
+                    # Drive is already unmounted
+                    unmount_success = True
+                    self.display.show_status("Safe to remove card")
             
-            return success
+            return transfer_success
 
         except Exception as e:
             logger.error(f"Transfer failed: {e}")
-            self.display.show_error("Transfer Error")
+            if self._current_progress:
+                self._current_progress.status = TransferStatus.ERROR
+                self.display.show_progress(self._current_progress)
+            else:
+                self.display.show_error("Transfer Error")
             return False
             
         finally:
-            self.state_manager.exit_transfer()
+            # Pass unmount status to state manager
+            self.state_manager.exit_transfer(source_path if not unmount_success else None)
+            # Show final status only if we haven't already shown it
+            if transfer_success and not unmount_success:
+                self.display.show_status("Transfer complete")
 
     def _create_target_directory(self, base_path: Path, timestamp: str) -> Path:
         """Create timestamped directory for transfer."""

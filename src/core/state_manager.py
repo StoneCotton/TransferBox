@@ -5,6 +5,7 @@ import logging
 from enum import Enum, auto
 from datetime import timedelta
 from typing import Optional
+from pathlib import Path
 from .interfaces.display import DisplayInterface
 
 logger = logging.getLogger(__name__)
@@ -40,6 +41,7 @@ class StateManager:
         self.current_state = SystemState.STANDBY
         self.transfer_start_time: Optional[float] = None
         self.total_transfer_time: float = 0.0
+        self.pending_unmount: Optional[Path] = None
         logger.info("State manager initialized in STANDBY state")
         
     def get_current_state(self) -> SystemState:
@@ -146,11 +148,12 @@ class StateManager:
             if not isinstance(e, StateTransitionError):
                 self.enter_standby()  # Only fallback on non-state errors
         
-    def exit_transfer(self) -> None:
+    def exit_transfer(self, pending_unmount: Optional[Path] = None) -> None:
         """
         Exit transfer state and update timing information.
-        Only valid when in TRANSFER state.
-        Always returns to STANDBY state.
+        
+        Args:
+            pending_unmount: Optional path to drive that still needs unmounting
         """
         try:
             if self.current_state != SystemState.TRANSFER:
@@ -164,14 +167,17 @@ class StateManager:
                 
                 logger.info(f"Transfer duration: {self.format_time(transfer_duration)}")
                 logger.info(f"Total transfer time: {self.format_time(self.total_transfer_time)}")
-                
+            
+            # Store pending unmount if provided
+            self.pending_unmount = pending_unmount
+            
             # Return to standby state
             self.enter_standby()
             self.transfer_start_time = None
             
         except Exception as e:
             logger.error(f"Error exiting transfer state: {e}")
-            self.enter_standby()  # Ensure we return to standby even on error
+            self.enter_standby()
         
     def enter_utility(self) -> bool:
         """
