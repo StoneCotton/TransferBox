@@ -1,15 +1,13 @@
 # src/core/checksum.py
 
 import logging
+import xxhash
 from pathlib import Path
 from typing import Optional, Callable, Iterator
-import xxhash
 from .interfaces.types import TransferProgress, TransferStatus
 from .interfaces.display import DisplayInterface
 
 logger = logging.getLogger(__name__)
-
-CHUNK_SIZE = 32 * 1024 * 1024  # 32MB chunks
 
 class ChecksumCalculator:
     """Handles file checksum calculations with progress monitoring"""
@@ -17,11 +15,15 @@ class ChecksumCalculator:
     def __init__(self, display: DisplayInterface):
         self.display = display
 
+    def create_hash(self) -> xxhash.xxh64:
+        """Create a new xxhash object for checksum calculation."""
+        return xxhash.xxh64()
+
     def calculate_file_checksum(
         self, 
         file_path: Path, 
         progress_callback: Optional[Callable[[int, int], None]] = None,
-        current_progress: Optional[TransferProgress] = None  # Add current_progress parameter
+        current_progress: Optional[TransferProgress] = None
     ) -> Optional[str]:
         """Calculate XXH64 checksum for a file with progress monitoring."""
         try:
@@ -42,17 +44,15 @@ class ChecksumCalculator:
             )
 
             with open(file_path, 'rb') as f:
-                for chunk in self._read_chunks(f):
+                while chunk := f.read(32 * 1024 * 1024):  # 32MB chunks
                     hash_obj.update(chunk)
                     bytes_processed += len(chunk)
                     
-                    # Update only the bytes progress, maintain other values
-                    progress.bytes_transferred = bytes_processed
-                    progress.current_file_progress = bytes_processed / file_size
-                    # Don't update overall_progress as it's managed by the main process
-                    
-                    # Only show progress if we're using the main progress object
                     if current_progress:
+                        progress.bytes_transferred = bytes_processed
+                        # Scale progress to 0-50% for first checksum, 50-100% for verification
+                        if progress.status == TransferStatus.CHECKSUMMING:
+                            progress.current_file_progress = (bytes_processed / file_size)
                         self.display.show_progress(progress)
 
                     if progress_callback:
@@ -63,7 +63,7 @@ class ChecksumCalculator:
             return checksum
 
         except Exception as e:
-            error_msg = f"Error: Checksum"
+            error_msg = f"Error calculating checksum"
             logger.error(f"Error calculating checksum for {file_path}: {e}")
             self.display.show_error(error_msg)
             return None
@@ -72,59 +72,35 @@ class ChecksumCalculator:
         self, 
         file_path: Path, 
         expected_checksum: str,
-        progress_callback: Optional[Callable[[int, int], None]] = None,
-        current_progress: Optional[TransferProgress] = None  # Add current_progress parameter
+        current_progress: Optional[TransferProgress] = None
     ) -> bool:
         """Verify a file's checksum against an expected value."""
-        actual_checksum = self.calculate_file_checksum(
-            file_path, 
-            progress_callback,
-            current_progress
-        )
-        
-        if actual_checksum is None:
-            return False
+        try:
+            # Reset progress for verification phase
+            if current_progress:
+                current_progress.bytes_transferred = 0
+                current_progress.current_file_progress = 0.0
             
-        matches = actual_checksum.lower() == expected_checksum.lower()
-        
-        if not matches:
-            logger.warning(
-                f"Checksum mismatch for {file_path}:\n"
-                f"Expected: {expected_checksum}\n"
-                f"Actual  : {actual_checksum}"
+            actual_checksum = self.calculate_file_checksum(
+                file_path,
+                current_progress=current_progress
             )
-            self.display.show_error("Verify Failed")
             
-        return matches
-
-    @staticmethod
-    def _read_chunks(file_obj) -> Iterator[bytes]:
-        """Generator to read file in chunks"""
-        return iter(lambda: file_obj.read(CHUNK_SIZE), b'')
-
-    def batch_verify_checksums(
-        self, 
-        files_with_checksums: list[tuple[Path, str]],
-        progress_callback: Optional[Callable[[int, int], None]] = None
-    ) -> list[tuple[Path, bool]]:
-        """
-        Verify checksums for multiple files.
-        
-        Args:
-            files_with_checksums: List of (file_path, expected_checksum) tuples
-            progress_callback: Optional callback function(files_processed, total_files)
-            
-        Returns:
-            List of (file_path, verification_success) tuples
-        """
-        results = []
-        total_files = len(files_with_checksums)
-
-        for idx, (file_path, expected_checksum) in enumerate(files_with_checksums, 1):
-            if progress_callback:
-                progress_callback(idx, total_files)
+            if actual_checksum is None:
+                return False
                 
-            verification_result = self.verify_checksum(file_path, expected_checksum)
-            results.append((file_path, verification_result))
-
-        return results
+            matches = actual_checksum.lower() == expected_checksum.lower()
+            
+            if not matches:
+                logger.warning(
+                    f"Checksum mismatch for {file_path}:\n"
+                    f"Expected: {expected_checksum}\n"
+                    f"Actual  : {actual_checksum}"
+                )
+                self.display.show_error("Verify Failed")
+                
+            return matches
+            
+        except Exception as e:
+            logger.error(f"Error verifying checksum: {e}")
+            return False
