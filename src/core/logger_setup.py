@@ -21,8 +21,13 @@ def setup_logging(
         
         formatter = logging.Formatter(log_format)
         
+        # Create logs directory in project root
         if log_dir is None:
-            log_dir = Path.cwd()
+            project_dir = Path(__file__).parent.parent  # Go up two levels from core/
+            log_dir = project_dir / 'logs'
+        
+        # Create logs directory if it doesn't exist
+        log_dir.mkdir(parents=True, exist_ok=True)
             
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         log_file = log_dir / f'transferbox_{timestamp}.log'
