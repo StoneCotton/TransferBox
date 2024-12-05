@@ -15,6 +15,7 @@ from src.core.interfaces.storage import StorageInterface
 from src.core.state_manager import StateManager
 from src.core.file_transfer import FileTransfer
 from src.core.logger_setup import setup_logging
+from src.core.sound_manager import SoundManager
 
 # Initialize logging
 logger = setup_logging()
@@ -23,26 +24,28 @@ class TransferBox:
     """Main application class for TransferBox"""
     
     def __init__(self):
-
         # Initialize config manager first
         self.config_manager = ConfigManager()
         self.config = self.config_manager.load_config()
-
+        
+        # Initialize sound manager
+        self.sound_manager = SoundManager(self.config)
+        
+        # Initialize other components
         self.stop_event = Event()
         self.platform = PlatformManager.get_platform()
         logger.info(f"Initializing TransferBox on {self.platform} platform")
         
-        # Initialize platform-specific components
-        self.display: DisplayInterface = PlatformManager.create_display()
-        self.storage: StorageInterface = PlatformManager.create_storage()
-        
-        # Initialize core components
+        # Pass config and sound_manager to components that need them
+        self.display = PlatformManager.create_display()
+        self.storage = PlatformManager.create_storage()
         self.state_manager = StateManager(self.display)
         self.file_transfer = FileTransfer(
             state_manager=self.state_manager,
             display=self.display,
             storage=self.storage,
-            config=self.config
+            config=self.config,
+            sound_manager=self.sound_manager
         )
         
         # Setup signal handlers
@@ -230,6 +233,7 @@ class TransferBox:
         """Cleanup resources"""
         logger.info("Cleaning up resources")
         self.display.clear()
+        self.sound_manager.cleanup()
         
         if self.platform == "raspberry_pi":
             self.pi_initializer.cleanup()

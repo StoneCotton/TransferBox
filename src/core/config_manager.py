@@ -55,6 +55,12 @@ class TransferConfig:
     led_brightness: int = 100      # 0-100
     progress_update_interval: float = 0.5  # seconds
 
+    # Sound settings
+    enable_sounds: bool = True
+    sound_volume: int = 50  # 0-100
+    success_sound_path: str = "sounds/success.mp3"
+    error_sound_path: str = "sounds/error.mp3"
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert config to dictionary with enum handling"""
         config_dict = asdict(self)

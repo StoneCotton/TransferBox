@@ -13,6 +13,7 @@ from .interfaces.storage import StorageInterface
 from .interfaces.types import TransferStatus, TransferProgress
 from .checksum import ChecksumCalculator
 from .mhl_handler import initialize_mhl_file, add_file_to_mhl
+from .sound_manager import SoundManager
 
 logger = logging.getLogger(__name__)
 
@@ -23,11 +24,13 @@ class FileTransferError(Exception):
     pass
 
 class FileTransfer:
-    def __init__(self, state_manager, display: DisplayInterface, storage: StorageInterface, config: Optional[TransferConfig] = None):
+    def __init__(self, state_manager, display: DisplayInterface, storage: StorageInterface, 
+                config: Optional[TransferConfig] = None, sound_manager = None):
         self.state_manager = state_manager
         self.display = display
         self.storage = storage
-        self.config = config or TransferConfig()  # Use provided config or create default
+        self.config = config or TransferConfig()
+        self.sound_manager = sound_manager
         self._current_progress: Optional[TransferProgress] = None
         self.checksum_calculator = ChecksumCalculator(display)
 
@@ -89,6 +92,7 @@ class FileTransfer:
             return True, xxh64_hash.hexdigest()
             
         except Exception as e:
+            self._play_sound(success=False)
             logger.error(f"Error copying file {src_path}: {e}")
             return False, None
 
@@ -108,6 +112,7 @@ class FileTransfer:
                         log_file: Path) -> bool:
         """Copy files from source to destination with verification."""
         if not self._validate_transfer_preconditions(destination_path):
+            self._play_sound(success=False)  # Play error sound for validation failure
             return False
 
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -182,11 +187,12 @@ class FileTransfer:
                 
                 if transfer_success:
                     logger.info("Transfer completed successfully")
+                    self._play_sound(success=True)  # Play success sound for successful transfer
                     
                     # Update progress to success state before unmounting
-                    if self._current_progress:
-                        self._current_progress.status = TransferStatus.SUCCESS
-                        self.display.show_progress(self._current_progress)
+                if self._current_progress:
+                    self._current_progress.status = TransferStatus.SUCCESS
+                    self.display.show_progress(self._current_progress)
                     
                     # Only try to unmount if the drive is still mounted
                     if self.storage.is_drive_mounted(source_path):
@@ -198,13 +204,21 @@ class FileTransfer:
                     else:
                         # Drive is already unmounted
                         unmount_success = True
+                        self._play_sound(success=False)  # Play error sound for transfer failure
                         self.display.show_status("Safe to remove card")
                 
                 return transfer_success
                 
             except Exception as e:
-                logger.error(f"Error processing files: {e}")
+                logger.error(f"Transfer failed: {e}")
+                self._play_sound(success=False)  # Play error sound for exceptions
+                if self._current_progress:
+                    self._current_progress.status = TransferStatus.ERROR
+                    self.display.show_progress(self._current_progress)
+                else:
+                    self.display.show_error("Transfer Error")
                 return False
+
                 
         except Exception as e:
             logger.error(f"Transfer failed: {e}")
@@ -395,3 +409,21 @@ class FileTransfer:
         log_file.write(f"Failed: {src_path} -> {dst_path}\n")
         log_file.flush()
         logger.error(f"Failed to transfer: {src_path}")
+
+    def _play_sound(self, success: bool = True) -> None:
+        """
+        Safely play a sound effect.
+        
+        Args:
+            success: True to play success sound, False to play error sound
+        """
+        if not hasattr(self, 'sound_manager') or self.sound_manager is None:
+            return
+            
+        try:
+            if success:
+                self.sound_manager.play_success()
+            else:
+                self.sound_manager.play_error()
+        except Exception as e:
+            logger.error(f"Error playing sound effect: {e}")
