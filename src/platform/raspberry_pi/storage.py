@@ -5,7 +5,11 @@ import subprocess
 import logging
 import subprocess
 import time
-from typing import List, Dict, Optional
+import pwd
+import grp
+import stat
+from xattr import xattr
+from typing import List, Dict, Optional, Any
 from pathlib import Path
 
 from src.core.interfaces.storage import StorageInterface
@@ -316,3 +320,197 @@ class RaspberryPiStorage(StorageInterface):
         except subprocess.CalledProcessError as e:
             logger.error(f"Error running lsblk: {e}")
             return []
+
+    def get_file_metadata(self, path: Path) -> Dict[str, Any]:
+        """
+        Get file metadata optimized for exFAT filesystem commonly used on SD cards.
+        
+        Args:
+            path: Path to the file
+            
+        Returns:
+            Dictionary containing available metadata
+        """
+        try:
+            stat_info = os.stat(path, follow_symlinks=False)
+            fs_type = self._get_filesystem_type(path)
+            
+            # Base metadata that exFAT supports
+            metadata = {
+                'filesystem': fs_type,
+                'filename': path.name,  # exFAT supports long filenames up to 255 chars
+                
+                # exFAT has better timestamp resolution than FAT32
+                # It supports timestamps from 1980 to 2116 with 10ms precision
+                'created_time': self._get_creation_time(path),
+                'modified_time': stat_info.st_mtime,
+                'accessed_time': stat_info.st_atime,
+                
+                # exFAT supports these basic attributes
+                'is_readonly': bool(stat_info.st_mode & stat.S_IREAD),
+                'is_hidden': path.name.startswith('.'),
+                'is_system': False,  # Rarely used on Linux
+                'is_directory': path.is_dir()
+            }
+            
+            # Get exFAT-specific attributes using fstools if available
+            try:
+                exfat_attrs = self._get_exfat_attributes(path)
+                if exfat_attrs:
+                    metadata.update(exfat_attrs)
+            except Exception as e:
+                logger.debug(f"Could not get exFAT-specific attributes: {e}")
+            
+            # If we're copying from a non-exFAT source, store additional metadata
+            # that we might want to preserve in alternate ways
+            if fs_type != 'exfat':
+                metadata['original_mode'] = stat_info.st_mode
+                metadata['original_uid'] = stat_info.st_uid
+                metadata['original_gid'] = stat_info.st_gid
+                
+                # Store ownership information by name (more portable)
+                try:
+                    metadata['original_owner'] = pwd.getpwuid(stat_info.st_uid).pw_name
+                    metadata['original_group'] = grp.getgrgid(stat_info.st_gid).gr_name
+                except KeyError:
+                    pass
+                    
+                # If source has extended attributes, store them for potential alternate preservation
+                try:
+                    import xattr
+                    attrs = xattr.xattr(str(path))
+                    if attrs:
+                        metadata['original_xattrs'] = {name: attrs[name] for name in attrs}
+                except ImportError:
+                    pass
+            
+            return metadata
+            
+        except Exception as e:
+            logger.error(f"Error getting metadata for {path}: {e}")
+            return {}
+    
+    def set_file_metadata(self, path: Path, metadata: Dict[str, Any]) -> bool:
+        """
+        Set file metadata with optimized handling for exFAT filesystem.
+        
+        Args:
+            path: Path to the file
+            metadata: Dictionary of metadata to apply
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            current_fs = self._get_filesystem_type(path)
+            
+            if current_fs == 'exfat':
+                # Set timestamps - exFAT has good timestamp precision
+                os.utime(path, (
+                    metadata['accessed_time'],
+                    metadata['modified_time']
+                ))
+                
+                # Set creation time if possible
+                if metadata['created_time']:
+                    self._set_creation_time(path, metadata['created_time'])
+                
+                # Set basic attributes
+                if metadata['is_readonly']:
+                    current_mode = os.stat(path).st_mode
+                    os.chmod(path, current_mode & ~stat.S_IWRITE)
+                
+                # Set exFAT-specific attributes if we have them
+                if any(key.startswith('exfat_') for key in metadata):
+                    self._set_exfat_attributes(path, metadata)
+                
+            else:
+                # We're copying to a non-exFAT filesystem
+                # Try to preserve as much original metadata as possible
+                if 'original_mode' in metadata:
+                    try:
+                        os.chmod(path, metadata['original_mode'])
+                    except PermissionError:
+                        logger.warning("Could not set exact permissions - insufficient privileges")
+                
+                # Try to restore ownership if we have it
+                if 'original_owner' in metadata and 'original_group' in metadata:
+                    try:
+                        uid = pwd.getpwnam(metadata['original_owner']).pw_uid
+                        gid = grp.getgrnam(metadata['original_group']).gr_gid
+                        os.chown(path, uid, gid)
+                    except (KeyError, PermissionError):
+                        logger.warning("Could not restore original ownership")
+                
+                # Restore extended attributes if supported
+                if current_fs in ('ext4', 'xfs') and 'original_xattrs' in metadata:
+                    try:
+                        import xattr
+                        attrs = xattr.xattr(str(path))
+                        for name, value in metadata['original_xattrs'].items():
+                            try:
+                                attrs[name] = value
+                            except OSError:
+                                logger.debug(f"Could not set xattr {name}")
+                    except ImportError:
+                        pass
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error setting metadata for {path}: {e}")
+            return False
+    
+    def _get_creation_time(self, path: Path) -> Optional[float]:
+        """Get creation time using platform-specific methods."""
+        try:
+            # Try using statx if available (Linux 4.11+)
+            statx_output = subprocess.check_output(
+                ['stat', '--format=%W', str(path)],
+                stderr=subprocess.PIPE,
+                text=True
+            )
+            return float(statx_output.strip())
+        except (subprocess.CalledProcessError, ValueError):
+            return None
+    
+    def _set_creation_time(self, path: Path, timestamp: float) -> bool:
+        """Set creation time if possible."""
+        try:
+            # Attempt to set creation time using available tools
+            subprocess.run(
+                ['setctime', str(path), str(int(timestamp))],
+                check=True,
+                capture_output=True
+            )
+            return True
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            logger.debug("Could not set creation time - tool not available")
+            return False
+            
+    def _get_exfat_attributes(self, path: Path) -> Dict[str, Any]:
+        """Get exFAT-specific attributes using exfatprogs tools."""
+        try:
+            result = subprocess.run(
+                ['exfatfsck', '--verbose', str(path)],
+                capture_output=True,
+                text=True
+            )
+            
+            attrs = {}
+            # Parse output for exFAT-specific attributes
+            # This is a placeholder - actual parsing would depend on tool output
+            return attrs
+            
+        except FileNotFoundError:
+            logger.debug("exfatprogs tools not installed")
+            return {}
+            
+    def _set_exfat_attributes(self, path: Path, metadata: Dict[str, Any]) -> None:
+        """Set exFAT-specific attributes using exfatprogs tools."""
+        try:
+            # Use exfatprogs tools to set attributes
+            # This is a placeholder - actual implementation would depend on available tools
+            pass
+        except FileNotFoundError:
+            logger.debug("exfatprogs tools not installed")
