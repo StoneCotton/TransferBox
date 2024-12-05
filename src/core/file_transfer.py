@@ -117,16 +117,37 @@ class FileTransfer:
             # Initialize MHL handling
             mhl_filename, tree, hashes = initialize_mhl_file(timestamp, target_dir)
             
-            # Get file list and validate space
+            # Get file list
             file_list = list(source_path.rglob('*'))
             total_size = sum(f.stat().st_size for f in file_list if f.is_file())
             
-            if not self.storage.has_enough_space(target_dir, total_size):
-                self.display.show_error("Not enough space")
+            # Add 10% buffer for temporary files and overhead
+            required_space = int(total_size * 1.1)
+            
+            logger.info(f"Required space: {required_space / (1024*1024*1024):.2f} GB")
+            
+            # Check available space with detailed logging
+            try:
+                drive_info = self.storage.get_drive_info(target_dir)
+                available_space = drive_info['free']
+                logger.info(f"Available space: {available_space / (1024*1024*1024):.2f} GB")
+                
+                if available_space < required_space:
+                    space_needed = (required_space - available_space) / (1024*1024*1024)
+                    error_msg = f"Insufficient space. Need {space_needed:.2f} GB more"
+                    logger.error(error_msg)
+                    self.display.show_error(error_msg)
+                    return False
+                    
+            except Exception as e:
+                logger.error(f"Error checking space: {e}")
+                self.display.show_error(f"Space check failed: {str(e)}")
                 return False
 
-            # Initialize transfer state
+            # Initialize transfer state before starting work
             self.state_manager.enter_transfer()
+            
+            # Perform transfer
             transfer_success = self._process_files(
                 source_path, target_dir, file_list,
                 log_file, mhl_filename, tree, hashes
@@ -165,8 +186,9 @@ class FileTransfer:
             return False
             
         finally:
-            # Pass unmount status to state manager
-            self.state_manager.exit_transfer(source_path if not unmount_success else None)
+            # Only exit transfer state if we entered it
+            if self.state_manager.is_transfer():
+                self.state_manager.exit_transfer(source_path if not unmount_success else None)
             # Show final status only if we haven't already shown it
             if transfer_success and not unmount_success:
                 self.display.show_status("Transfer complete")

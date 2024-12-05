@@ -23,12 +23,72 @@ class MacOSStorage(StorageInterface):
         return [p for p in volumes.iterdir() if p.is_mount()]
 
     def get_drive_info(self, path: Path) -> Dict[str, int]:
-        """Get storage information for a path"""
-        st = os.statvfs(path)
-        total = st.f_blocks * st.f_frsize
-        free = st.f_bfree * st.f_frsize
-        used = total - free
-        return {'total': total, 'used': used, 'free': free}
+        """
+        Get storage information with improved NAS support for macOS.
+        
+        On macOS, we use 'df -k' which reports sizes in 1024-byte (1K) blocks,
+        then convert to bytes for consistency with the rest of the system.
+        
+        Args:
+            path: Path to check space on
+            
+        Returns:
+            Dictionary containing total, used, and free space in bytes
+        """
+        try:
+            # First try using df command - on macOS we use -k for 1K blocks
+            result = subprocess.run(
+                ['df', '-k', str(path)],
+                capture_output=True,
+                text=True,
+                check=True
+            )
+            
+            # Parse df output - last line has our data
+            # Format is: Filesystem 1K-blocks Used Available Capacity Mounted on
+            lines = result.stdout.strip().split('\n')
+            if len(lines) >= 2:  # Header + data line
+                fields = lines[-1].split()
+                if len(fields) >= 4:
+                    # Convert from 1K blocks to bytes
+                    total = int(fields[1]) * 1024
+                    used = int(fields[2]) * 1024
+                    free = int(fields[3]) * 1024
+                    
+                    # Log the space information in a human-readable format
+                    logger.info(f"Space check for {path}:")
+                    logger.info(f"Total: {total / (1024**3):.2f} GB")
+                    logger.info(f"Used: {used / (1024**3):.2f} GB")
+                    logger.info(f"Free: {free / (1024**3):.2f} GB")
+                    
+                    return {
+                        'total': total,
+                        'used': used,
+                        'free': free
+                    }
+            
+            # Fallback to statvfs if df parsing fails
+            logger.warning("Falling back to statvfs for space check")
+            st = os.statvfs(path)
+            total = st.f_blocks * st.f_frsize
+            free = st.f_bfree * st.f_frsize
+            used = total - free
+            
+            return {'total': total, 'used': used, 'free': free}
+            
+        except subprocess.CalledProcessError as e:
+            logger.error(f"Error running df command: {e}")
+            # Try one more time with the parent directory if the target directory doesn't exist yet
+            try:
+                parent_path = path.parent
+                logger.info(f"Retrying space check with parent directory: {parent_path}")
+                return self.get_drive_info(parent_path)
+            except Exception as parent_error:
+                logger.error(f"Error checking parent directory space: {parent_error}")
+                raise
+        except Exception as e:
+            logger.error(f"Error checking space on {path}: {e}")
+            raise
 
     def is_drive_mounted(self, path: Path) -> bool:
         """Check if path is a mount point"""
@@ -128,10 +188,10 @@ class MacOSStorage(StorageInterface):
 
     def has_enough_space(self, path: Path, required_size: int) -> bool:
         """
-        Check if a drive has enough free space.
+        Check if a path has enough free space with improved error handling.
         
         Args:
-            path: Path to the drive
+            path: Path to check
             required_size: Required space in bytes
             
         Returns:
@@ -139,10 +199,28 @@ class MacOSStorage(StorageInterface):
         """
         try:
             drive_info = self.get_drive_info(path)
-            return drive_info['free'] >= required_size
+            free_space = drive_info['free']
+            
+            # Log space requirements
+            logger.info(f"Space check results for {path}:")
+            logger.info(f"Required: {required_size / (1024**3):.2f} GB")
+            logger.info(f"Available: {free_space / (1024**3):.2f} GB")
+            
+            # Add 5% safety margin for filesystem overhead
+            required_with_margin = int(required_size * 1.05)
+            
+            has_space = free_space >= required_with_margin
+            if not has_space:
+                needed = (required_with_margin - free_space) / (1024**3)
+                logger.warning(f"Insufficient space - needs {needed:.2f} GB more")
+            
+            return has_space
+            
         except Exception as e:
-            logger.error(f"Error checking available space: {e}")
-            return False
+            logger.error(f"Error checking space on {path}: {e}")
+            # If we can't check space reliably, we should warn but allow transfer
+            logger.warning("Unable to verify space - proceeding with transfer")
+            return True
         
     def get_file_metadata(self, path: Path) -> Dict[str, Any]:
         """Get file metadata using macOS native APIs"""
