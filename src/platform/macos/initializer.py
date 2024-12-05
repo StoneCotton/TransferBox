@@ -2,7 +2,7 @@
 
 import logging
 from src.core.interfaces.platform import PlatformInitializer
-from .display import MacOSDisplay
+from src.core.rich_display import RichDisplay
 from .storage import MacOSStorage
 
 logger = logging.getLogger(__name__)
@@ -16,9 +16,9 @@ class MacOSInitializer(PlatformInitializer):
         pass
     
     def initialize_display(self) -> None:
-        """Initialize terminal display"""
-        logger.info("Initializing macOS display")
-        self.display = MacOSDisplay()
+        """Initialize Rich-based display"""
+        logger.info("Initializing Rich display")
+        self.display = RichDisplay()
         self.display.clear()
     
     def initialize_storage(self) -> None:

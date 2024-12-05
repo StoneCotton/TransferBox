@@ -2,7 +2,7 @@
 
 import logging
 from src.core.interfaces.platform import PlatformInitializer
-from .display import WindowsDisplay
+from src.core.rich_display import RichDisplay
 from .storage import WindowsStorage
 
 logger = logging.getLogger(__name__)
@@ -16,9 +16,9 @@ class WindowsInitializer(PlatformInitializer):
         pass
     
     def initialize_display(self) -> None:
-        """Initialize console display"""
-        logger.info("Initializing Windows display")
-        self.display = WindowsDisplay()
+        """Initialize Rich-based display"""
+        logger.info("Initializing Rich display")
+        self.display = RichDisplay()
         self.display.clear()
     
     def initialize_storage(self) -> None:

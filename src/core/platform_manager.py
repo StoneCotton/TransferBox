@@ -31,16 +31,13 @@ class PlatformManager:
         platform_name = cls.get_platform()
         
         if platform_name == "raspberry_pi":
+            # Raspberry Pi still needs its hardware-specific implementation
             from src.platform.raspberry_pi.display import RaspberryPiDisplay
             return RaspberryPiDisplay()
-        elif platform_name == "darwin":
-            from src.platform.macos.display import MacOSDisplay
-            return MacOSDisplay()
-        elif platform_name == "windows":
-            from src.platform.windows.display import WindowsDisplay
-            return WindowsDisplay()
         else:
-            raise NotImplementedError(f"Platform {platform_name} is not supported")
+            # All other platforms use the new Rich-based display
+            from src.core.rich_display import RichDisplay
+            return RichDisplay()
     
     @classmethod
     def create_storage(cls) -> StorageInterface:
