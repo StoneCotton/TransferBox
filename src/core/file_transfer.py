@@ -176,10 +176,55 @@ class FileTransfer:
         target_dir = base_path / timestamp
         target_dir.mkdir(parents=True, exist_ok=True)
         return target_dir
+    
+    def _get_timestamp_filename(self, original_path: Path) -> str:
+        """
+        Create a new filename that includes the file's creation timestamp.
+        
+        For example, transforms:
+            MVI_3045.MP4 (created 2024-11-21 09:23:08)
+        into:
+            MVI_3045_2024112109-23-08.MP4
+        
+        Args:
+            original_path: Path to the original file
+            
+        Returns:
+            New filename with embedded timestamp
+        """
+        try:
+            # Get file creation time - we'll look for multiple possible timestamps
+            # and use the earliest one as the true creation time
+            stat_info = original_path.stat()
+            possible_times = [
+                stat_info.st_ctime,  # Creation time (Windows) / Status change time (Unix)
+                stat_info.st_mtime,  # Modification time
+                stat_info.st_atime   # Access time
+            ]
+            
+            # Use the earliest timestamp as the creation time
+            creation_time = min(possible_times)
+            timestamp = datetime.fromtimestamp(creation_time)
+            
+            # Split the original filename and extension
+            stem = original_path.stem
+            suffix = original_path.suffix
+            
+            # Create the new filename with timestamp
+            # Format: {original_name}_{YYYYMMDDHH-MM-SS}{extension}
+            new_filename = f"{stem}_{timestamp.strftime('%Y%m%d%H-%M-%S')}{suffix}"
+            
+            logger.debug(f"Renamed {original_path.name} to {new_filename}")
+            return new_filename
+            
+        except Exception as e:
+            # If anything goes wrong, log it but return original filename
+            logger.error(f"Error creating timestamp filename for {original_path}: {e}")
+            return original_path.name
 
     def _process_files(self, source_path: Path, target_dir: Path, 
-                      file_list: list, log_file: Path,
-                      mhl_filename: Path, tree, hashes) -> bool:
+                    file_list: list, log_file: Path,
+                    mhl_filename: Path, tree, hashes) -> bool:
         """Process all files in the transfer."""
         try:
             total_files = sum(1 for f in file_list if f.is_file())
@@ -193,7 +238,11 @@ class FileTransfer:
 
                     file_number += 1
                     rel_path = src_file.relative_to(source_path)
-                    dst_path = target_dir / rel_path
+                    
+                    # Create timestamped filename for the destination
+                    timestamped_name = self._get_timestamp_filename(src_file)
+                    # Use the parent directory from rel_path but with new filename
+                    dst_path = target_dir / rel_path.parent / timestamped_name
                     
                     # Ensure destination directory exists
                     dst_path.parent.mkdir(parents=True, exist_ok=True)
@@ -227,7 +276,7 @@ class FileTransfer:
                         failures.append(str(src_file))
                         self._log_failure(log, src_file, dst_path)
 
-            return len(failures) == 0
+                return len(failures) == 0
 
         except Exception as e:
             logger.error(f"Error processing files: {e}")
