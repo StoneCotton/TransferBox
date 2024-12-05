@@ -1,39 +1,5 @@
-
-# Feature flags - Enable/disable core functionality
-enable_checksum: True
-enable_mhl: True
-enable_led_indicators: True
-enable_power_monitoring: True
-
-
 # File handling - Control how files are renamed and processed
-rename_with_timestamp: True
-preserve_original_filename: True
-filename_template: {original}_{timestamp}
-timestamp_format: %Y%m%d_%H%M%S
-
-
-# Video processing - Settings for proxy generation
-generate_proxies: False
-proxy_quality: DISABLED
-proxy_subfolder: proxies
-
-
-# Directory structure - Control how files are organized
-create_date_folders: True
-date_folder_format: %Y/%m/%d
-create_device_folders: False
-device_folder_template: {device_name}
-
-
-# Transfer behavior - Control transfer process
-verify_after_copy: True
-unmount_after_transfer: True
-shutdown_when_idle: False
-idle_shutdown_minutes: 30
-
-
-# Display settings - Control LED and display behavior
-display_brightness: 100
-led_brightness: 100
-progress_update_interval: 0.5
+rename_with_timestamp: true
+preserve_original_filename: true
+filename_template: "{original}_{timestamp}"
+timestamp_format: "%Y%m%d_%H%M%S"

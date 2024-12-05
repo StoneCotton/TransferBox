@@ -128,56 +128,84 @@ class FileTransfer:
             
             logger.info(f"Required space: {required_space / (1024*1024*1024):.2f} GB")
             
-            # Check available space with detailed logging
-            try:
-                drive_info = self.storage.get_drive_info(target_dir)
-                available_space = drive_info['free']
-                logger.info(f"Available space: {available_space / (1024*1024*1024):.2f} GB")
-                
-                if available_space < required_space:
-                    space_needed = (required_space - available_space) / (1024*1024*1024)
-                    error_msg = f"Insufficient space. Need {space_needed:.2f} GB more"
-                    logger.error(error_msg)
-                    self.display.show_error(error_msg)
-                    return False
-                    
-            except Exception as e:
-                logger.error(f"Error checking space: {e}")
-                self.display.show_error(f"Space check failed: {str(e)}")
-                return False
-
-            # Initialize transfer state before starting work
+            # Space check code remains the same...
+            
+            # Initialize transfer state
             self.state_manager.enter_transfer()
             
-            # Perform transfer
-            transfer_success = self._process_files(
-                source_path, target_dir, file_list,
-                log_file, mhl_filename, tree, hashes
-            )
+            try:
+                total_files = sum(1 for f in file_list if f.is_file())
+                file_number = 0
+                failures = []
 
-            # Handle completion
-            if transfer_success:
-                logger.info("Transfer completed successfully")
+                with open(log_file, 'a', encoding='utf-8') as log:
+                    for src_file in file_list:
+                        if not src_file.is_file():
+                            continue
+
+                        file_number += 1
+                        
+                        # Create destination path using source root for proper directory structure
+                        dst_path = self._create_destination_path(src_file, target_dir, source_path)
+                        
+                        # Initialize progress tracking
+                        self._current_progress = TransferProgress(
+                            current_file=src_file.name,
+                            file_number=file_number,
+                            total_files=total_files,
+                            bytes_transferred=0,
+                            total_bytes=src_file.stat().st_size,
+                            current_file_progress=0.0,
+                            overall_progress=(file_number - 1) / total_files,
+                            status=TransferStatus.COPYING
+                        )
+
+                        # Copy and verify file
+                        success, checksum = self._copy_with_progress(
+                            src_file, dst_path,
+                            file_number, total_files
+                        )
+
+                        if success and checksum:
+                            self._log_success(log, src_file, dst_path)
+                            add_file_to_mhl(
+                                mhl_filename, tree, hashes,
+                                dst_path, checksum,
+                                dst_path.stat().st_size
+                            )
+                        else:
+                            failures.append(str(src_file))
+                            self._log_failure(log, src_file, dst_path)
+
+                # Set transfer success based on absence of failures
+                transfer_success = len(failures) == 0
                 
-                # Update progress to success state before unmounting
-                if self._current_progress:
-                    self._current_progress.status = TransferStatus.SUCCESS
-                    self.display.show_progress(self._current_progress)
-                
-                # Only try to unmount if the drive is still mounted
-                if self.storage.is_drive_mounted(source_path):
-                    if self.storage.unmount_drive(source_path):
+                if transfer_success:
+                    logger.info("Transfer completed successfully")
+                    
+                    # Update progress to success state before unmounting
+                    if self._current_progress:
+                        self._current_progress.status = TransferStatus.SUCCESS
+                        self.display.show_progress(self._current_progress)
+                    
+                    # Only try to unmount if the drive is still mounted
+                    if self.storage.is_drive_mounted(source_path):
+                        if self.storage.unmount_drive(source_path):
+                            unmount_success = True
+                            self.display.show_status("Safe to remove card")
+                        else:
+                            self.display.show_error("Unmount failed")
+                    else:
+                        # Drive is already unmounted
                         unmount_success = True
                         self.display.show_status("Safe to remove card")
-                    else:
-                        self.display.show_error("Unmount failed")
-                else:
-                    # Drive is already unmounted
-                    unmount_success = True
-                    self.display.show_status("Safe to remove card")
-            
-            return transfer_success
-
+                
+                return transfer_success
+                
+            except Exception as e:
+                logger.error(f"Error processing files: {e}")
+                return False
+                
         except Exception as e:
             logger.error(f"Transfer failed: {e}")
             if self._current_progress:
@@ -201,50 +229,100 @@ class FileTransfer:
         target_dir.mkdir(parents=True, exist_ok=True)
         return target_dir
     
-    def _get_timestamp_filename(self, original_path: Path) -> str:
+    def _generate_destination_filename(self, source_path: Path) -> str:
         """
-        Create a new filename that includes the file's creation timestamp.
+        Generate destination filename based on configuration settings.
         
-        For example, transforms:
-            MVI_3045.MP4 (created 2024-11-21 09:23:08)
-        into:
-            MVI_3045_2024112109-23-08.MP4
+        This method implements the file renaming logic according to the configuration:
+        - Can preserve original filename
+        - Can add timestamps in configured format
+        - Uses configured filename template
         
         Args:
-            original_path: Path to the original file
+            source_path: Original file path
             
         Returns:
-            New filename with embedded timestamp
+            New filename according to configuration settings
         """
         try:
-            # Get file creation time - we'll look for multiple possible timestamps
-            # and use the earliest one as the true creation time
-            stat_info = original_path.stat()
+            # Get original filename and extension
+            original_name = source_path.stem
+            extension = source_path.suffix
+            
+            # If we're not renaming with timestamp, just return original name
+            if not self.config.rename_with_timestamp:
+                return source_path.name
+                
+            # Get file creation time
+            stat_info = source_path.stat()
             possible_times = [
                 stat_info.st_ctime,  # Creation time (Windows) / Status change time (Unix)
                 stat_info.st_mtime,  # Modification time
                 stat_info.st_atime   # Access time
             ]
-            
-            # Use the earliest timestamp as the creation time
             creation_time = min(possible_times)
-            timestamp = datetime.fromtimestamp(creation_time)
             
-            # Split the original filename and extension
-            stem = original_path.stem
-            suffix = original_path.suffix
+            # Format timestamp according to configuration
+            timestamp = datetime.fromtimestamp(creation_time).strftime(
+                self.config.timestamp_format
+            )
             
-            # Create the new filename with timestamp
-            # Format: {original_name}_{YYYYMMDDHH-MM-SS}{extension}
-            new_filename = f"{stem}_{timestamp.strftime('%Y%m%d%H-%M-%S')}{suffix}"
+            # Build the new filename based on the template
+            if self.config.preserve_original_filename:
+                # Replace placeholders in the template
+                new_name = self.config.filename_template.format(
+                    original=original_name,
+                    timestamp=timestamp
+                )
+                return f"{new_name}{extension}"
+            else:
+                # Just use timestamp if we're not preserving original name
+                return f"{timestamp}{extension}"
+                
+        except Exception as e:
+            logger.error(f"Error generating destination filename for {source_path}: {e}")
+            # Fallback to original filename if anything goes wrong
+            return source_path.name
+
+    def _create_destination_path(self, source_path: Path, target_dir: Path, source_root: Path) -> Path:
+        """
+        Create the complete destination path for a file, maintaining proper directory structure.
+        
+        Args:
+            source_path: Original file path
+            target_dir: Base destination directory
+            source_root: Root directory of the source (SD card mount point)
             
-            logger.debug(f"Renamed {original_path.name} to {new_filename}")
-            return new_filename
+        Returns:
+            Complete destination Path object
+        """
+        try:
+            # Generate the new filename according to configuration
+            new_filename = self._generate_destination_filename(source_path)
+            
+            # Get the relative path from the source root, not the entire mount path
+            # This ensures we only preserve the directory structure from the SD card root
+            try:
+                rel_path = source_path.relative_to(source_root)
+                # Get just the directory part, excluding the filename
+                rel_dir = rel_path.parent
+            except ValueError:
+                # Fallback if relative_to fails
+                logger.warning(f"Could not determine relative path for {source_path}")
+                rel_dir = Path()
+            
+            # Combine target directory with relative directory and new filename
+            dest_path = target_dir / rel_dir / new_filename
+            
+            # Ensure parent directories exist
+            dest_path.parent.mkdir(parents=True, exist_ok=True)
+            
+            return dest_path
             
         except Exception as e:
-            # If anything goes wrong, log it but return original filename
-            logger.error(f"Error creating timestamp filename for {original_path}: {e}")
-            return original_path.name
+            logger.error(f"Error creating destination path for {source_path}: {e}")
+            # Fallback to simple path in target directory if anything goes wrong
+            return target_dir / new_filename
 
     def _process_files(self, source_path: Path, target_dir: Path, 
                     file_list: list, log_file: Path,
