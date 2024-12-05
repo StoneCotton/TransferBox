@@ -7,6 +7,7 @@ import time
 from pathlib import Path
 from typing import Optional, Tuple
 from datetime import datetime
+from .config_manager import TransferConfig
 from .interfaces.display import DisplayInterface
 from .interfaces.storage import StorageInterface
 from .interfaces.types import TransferStatus, TransferProgress
@@ -22,10 +23,11 @@ class FileTransferError(Exception):
     pass
 
 class FileTransfer:
-    def __init__(self, state_manager, display: DisplayInterface, storage: StorageInterface):
+    def __init__(self, state_manager, display: DisplayInterface, storage: StorageInterface, config: Optional[TransferConfig] = None):
         self.state_manager = state_manager
         self.display = display
         self.storage = storage
+        self.config = config or TransferConfig()  # Use provided config or create default
         self._current_progress: Optional[TransferProgress] = None
         self.checksum_calculator = ChecksumCalculator(display)
 

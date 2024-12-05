@@ -8,7 +8,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 from threading import Event
-
+from src.core.config_manager import ConfigManager
 from src.core.platform_manager import PlatformManager
 from src.core.interfaces.display import DisplayInterface
 from src.core.interfaces.storage import StorageInterface
@@ -23,6 +23,11 @@ class TransferBox:
     """Main application class for TransferBox"""
     
     def __init__(self):
+
+        # Initialize config manager first
+        self.config_manager = ConfigManager()
+        self.config = self.config_manager.load_config()
+
         self.stop_event = Event()
         self.platform = PlatformManager.get_platform()
         logger.info(f"Initializing TransferBox on {self.platform} platform")
@@ -36,7 +41,8 @@ class TransferBox:
         self.file_transfer = FileTransfer(
             state_manager=self.state_manager,
             display=self.display,
-            storage=self.storage
+            storage=self.storage,
+            config=self.config
         )
         
         # Setup signal handlers
