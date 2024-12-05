@@ -6,8 +6,12 @@ import subprocess
 import logging
 import ctypes
 import string
+import win32file
+import win32con
+import win32security
+from datetime import datetime
 from pathlib import Path
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Any
 from src.core.interfaces.storage import StorageInterface
 
 logger = logging.getLogger(__name__)
@@ -274,3 +278,151 @@ class WindowsStorage(StorageInterface):
             drive for drive in self.get_available_drives()
             if self.get_drive_type(drive) == "REMOVABLE"
         ]
+    
+    def get_file_metadata(self, path: Path) -> Dict[str, Any]:
+        """Get file metadata using Windows APIs"""
+        try:
+            # Get file handle
+            handle = win32file.CreateFile(
+                str(path),
+                win32con.GENERIC_READ,
+                win32con.FILE_SHARE_READ,
+                None,
+                win32con.OPEN_EXISTING,
+                win32con.FILE_ATTRIBUTE_NORMAL,
+                None
+            )
+            
+            try:
+                # Get basic info
+                basic_info = win32file.GetFileInformationByHandle(handle)
+                
+                # Get security info
+                security_info = win32security.GetFileSecurity(
+                    str(path),
+                    win32security.OWNER_SECURITY_INFORMATION |
+                    win32security.GROUP_SECURITY_INFORMATION |
+                    win32security.DACL_SECURITY_INFORMATION
+                )
+                
+                # Get timestamps
+                creation_time, access_time, write_time = win32file.GetFileTime(handle)
+                
+                metadata = {
+                    'attributes': basic_info[0],  # File attributes
+                    'creation_time': self._filetime_to_datetime(creation_time),
+                    'access_time': self._filetime_to_datetime(access_time),
+                    'write_time': self._filetime_to_datetime(write_time),
+                    'security_descriptor': security_info.GetSecurityDescriptorOwner(),
+                    'acl': security_info.GetSecurityDescriptorDacl()
+                }
+                
+                # Get alternative data streams
+                try:
+                    metadata['streams'] = self._get_alternative_streams(path)
+                except Exception as e:
+                    logger.warning(f"Could not get alternative streams: {e}")
+                    metadata['streams'] = {}
+                    
+                return metadata
+                
+            finally:
+                win32file.CloseHandle(handle)
+                
+        except Exception as e:
+            logger.error(f"Error getting metadata for {path}: {e}")
+            return {}
+            
+    def set_file_metadata(self, path: Path, metadata: Dict[str, Any]) -> bool:
+        """Set file metadata using Windows APIs"""
+        try:
+            # Get file handle
+            handle = win32file.CreateFile(
+                str(path),
+                win32con.GENERIC_WRITE,
+                win32con.FILE_SHARE_READ,
+                None,
+                win32con.OPEN_EXISTING,
+                win32con.FILE_ATTRIBUTE_NORMAL,
+                None
+            )
+            
+            try:
+                # Set file attributes
+                win32file.SetFileAttributes(str(path), metadata['attributes'])
+                
+                # Set timestamps
+                win32file.SetFileTime(
+                    handle,
+                    self._datetime_to_filetime(metadata['creation_time']),
+                    self._datetime_to_filetime(metadata['access_time']),
+                    self._datetime_to_filetime(metadata['write_time'])
+                )
+                
+                # Set security descriptor
+                security_info = win32security.GetFileSecurity(
+                    str(path),
+                    win32security.OWNER_SECURITY_INFORMATION |
+                    win32security.GROUP_SECURITY_INFORMATION |
+                    win32security.DACL_SECURITY_INFORMATION
+                )
+                
+                security_info.SetSecurityDescriptorOwner(metadata['security_descriptor'])
+                security_info.SetSecurityDescriptorDacl(1, metadata['acl'], 0)
+                
+                win32security.SetFileSecurity(
+                    str(path),
+                    win32security.OWNER_SECURITY_INFORMATION |
+                    win32security.GROUP_SECURITY_INFORMATION |
+                    win32security.DACL_SECURITY_INFORMATION,
+                    security_info
+                )
+                
+                # Restore alternative data streams
+                if metadata['streams']:
+                    self._set_alternative_streams(path, metadata['streams'])
+                
+                return True
+                
+            finally:
+                win32file.CloseHandle(handle)
+                
+        except Exception as e:
+            logger.error(f"Error setting metadata for {path}: {e}")
+            return False
+            
+    def _filetime_to_datetime(self, filetime) -> datetime:
+        """Convert Windows FILETIME to datetime"""
+        if filetime is None:
+            return None
+        return datetime.fromtimestamp((filetime - 116444736000000000) / 10000000)
+        
+    def _datetime_to_filetime(self, dt) -> int:
+        """Convert datetime to Windows FILETIME"""
+        if dt is None:
+            return None
+        return int((dt.timestamp() * 10000000) + 116444736000000000)
+        
+    def _get_alternative_streams(self, path: Path) -> Dict[str, bytes]:
+        """Get alternative data streams"""
+        streams = {}
+        try:
+            find_stream_data = win32file.FindFirstStreamW(str(path))
+            while True:
+                stream_name = find_stream_data[0]
+                if stream_name != '::$DATA':  # Skip default stream
+                    with open(f"{path}:{stream_name}", 'rb') as f:
+                        streams[stream_name] = f.read()
+                try:
+                    find_stream_data = win32file.FindNextStreamW(find_stream_data[1])
+                except:
+                    break
+        except Exception as e:
+            logger.warning(f"Error reading alternative streams: {e}")
+        return streams
+        
+    def _set_alternative_streams(self, path: Path, streams: Dict[str, bytes]) -> None:
+        """Restore alternative data streams"""
+        for stream_name, data in streams.items():
+            with open(f"{path}:{stream_name}", 'wb') as f:
+                f.write(data)

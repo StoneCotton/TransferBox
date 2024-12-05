@@ -41,46 +41,54 @@ class FileTransfer:
             self.display.show_progress(self._current_progress)
 
     def _copy_with_progress(self, src_path: Path, dst_path: Path, 
-                            file_number: int, total_files: int) -> Tuple[bool, Optional[str]]:
-            """Copy a file with progress updates and checksum calculation."""
-            try:
-                file_size = src_path.stat().st_size
-                xxh64_hash = self.checksum_calculator.create_hash()
-                
-                # First phase: Copy with progress
-                with open(src_path, 'rb') as src, open(dst_path, 'wb') as dst:
-                    bytes_transferred = 0
-                    while True:
-                        chunk = src.read(CHUNK_SIZE)
-                        if not chunk:
-                            break
-                            
-                        dst.write(chunk)
-                        xxh64_hash.update(chunk)
-                        bytes_transferred += len(chunk)
+                        file_number: int, total_files: int) -> Tuple[bool, Optional[str]]:
+        """Copy a file with progress updates and metadata preservation"""
+        try:
+            # Get source metadata before copy
+            source_metadata = self.storage.get_file_metadata(src_path)
+            
+            file_size = src_path.stat().st_size
+            xxh64_hash = self.checksum_calculator.create_hash()
+            
+            # First phase: Copy with progress
+            with open(src_path, 'rb') as src, open(dst_path, 'wb') as dst:
+                bytes_transferred = 0
+                while True:
+                    chunk = src.read(CHUNK_SIZE)
+                    if not chunk:
+                        break
                         
-                        self._update_progress(
-                            bytes_transferred, file_size,
-                            file_number, total_files,
-                            TransferStatus.COPYING
-                        )
+                    dst.write(chunk)
+                    xxh64_hash.update(chunk)
+                    bytes_transferred += len(chunk)
+                    
+                    self._update_progress(
+                        bytes_transferred, file_size,
+                        file_number, total_files,
+                        TransferStatus.COPYING
+                    )
 
-                # Second phase: Verify checksum
-                self._current_progress.status = TransferStatus.CHECKSUMMING
-                verify_success = self.checksum_calculator.verify_checksum(
-                    dst_path,
-                    xxh64_hash.hexdigest(),
-                    current_progress=self._current_progress
-                )
+            # Second phase: Apply metadata
+            if source_metadata:
+                if not self.storage.set_file_metadata(dst_path, source_metadata):
+                    logger.warning(f"Failed to preserve metadata for {dst_path}")
 
-                if not verify_success:
-                    return False, None
+            # Third phase: Verify checksum
+            self._current_progress.status = TransferStatus.CHECKSUMMING
+            verify_success = self.checksum_calculator.verify_checksum(
+                dst_path,
+                xxh64_hash.hexdigest(),
+                current_progress=self._current_progress
+            )
 
-                return True, xxh64_hash.hexdigest()
-                
-            except Exception as e:
-                logger.error(f"Error copying file {src_path}: {e}")
+            if not verify_success:
                 return False, None
+
+            return True, xxh64_hash.hexdigest()
+            
+        except Exception as e:
+            logger.error(f"Error copying file {src_path}: {e}")
+            return False, None
 
     def _validate_transfer_preconditions(self, destination_path: Path) -> bool:
         """Validate preconditions before starting transfer."""
