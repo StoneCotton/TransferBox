@@ -48,10 +48,10 @@ class RichDisplay(DisplayInterface):
             SpinnerColumn(),
             
             # Filename column with fixed width to prevent layout shifts
-            FileNameColumn(width=30),
+            FileNameColumn(width=50),
             
             # Main progress bar
-            BarColumn(bar_width=40, complete_style="blue"),
+            BarColumn(bar_width=100, complete_style="blue"),
             
             # File size progress
             FileSizeColumn(),
@@ -144,14 +144,10 @@ class RichDisplay(DisplayInterface):
             
             # Update total progress
             if self.total_task_id is not None:
-                total_bytes = progress.total_files * progress.total_bytes
-                completed_bytes = ((progress.file_number - 1) * progress.total_bytes +
-                                (progress.bytes_transferred))
-                
                 self.progress.update(
                     self.total_task_id,
-                    completed=completed_bytes,
-                    total=total_bytes,
+                    completed=progress.total_transferred,  # Use accumulated total
+                    total=progress.total_size,            # Use actual total size
                     description=f"Total Progress"
                 )
             

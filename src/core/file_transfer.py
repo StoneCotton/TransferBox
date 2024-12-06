@@ -46,7 +46,8 @@ class FileTransfer:
             self.display.show_progress(self._current_progress)
 
     def _copy_with_progress(self, src_path: Path, dst_path: Path, 
-                        file_number: int, total_files: int) -> Tuple[bool, Optional[str]]:
+                        file_number: int, total_files: int,
+                        total_transferred: int, total_size: int) -> Tuple[bool, Optional[str]]:
         """Copy a file with progress updates and metadata preservation"""
         try:
             # Get source metadata before copy
@@ -67,19 +68,22 @@ class FileTransfer:
                     xxh64_hash.update(chunk)
                     bytes_transferred += len(chunk)
                     
-                    self._update_progress(
-                        bytes_transferred, file_size,
-                        file_number, total_files,
-                        TransferStatus.COPYING
-                    )
+                    # Update progress with both file and total progress
+                    if self._current_progress:
+                        self._current_progress.bytes_transferred = bytes_transferred
+                        self._current_progress.current_file_progress = bytes_transferred / file_size
+                        self._current_progress.total_transferred = total_transferred + bytes_transferred
+                        self._current_progress.status = TransferStatus.COPYING
+                        self.display.show_progress(self._current_progress)
 
-            # Second phase: Apply metadata
+            # Second phase: Apply metadata (unchanged)
             if source_metadata:
                 if not self.storage.set_file_metadata(dst_path, source_metadata):
                     logger.warning(f"Failed to preserve metadata for {dst_path}")
 
             # Third phase: Verify checksum
-            self._current_progress.status = TransferStatus.CHECKSUMMING
+            if self._current_progress:
+                self._current_progress.status = TransferStatus.CHECKSUMMING
             verify_success = self.checksum_calculator.verify_checksum(
                 dst_path,
                 xxh64_hash.hexdigest(),
@@ -112,7 +116,7 @@ class FileTransfer:
                         log_file: Path) -> bool:
         """Copy files from source to destination with verification."""
         if not self._validate_transfer_preconditions(destination_path):
-            self._play_sound(success=False)  # Play error sound for validation failure
+            self._play_sound(success=False)
             return False
 
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -124,23 +128,29 @@ class FileTransfer:
             # Initialize MHL handling
             mhl_filename, tree, hashes = initialize_mhl_file(timestamp, target_dir)
             
-            # Get file list
+            # Get file list and calculate total size
             file_list = list(source_path.rglob('*'))
+            # We filter for files here since directories don't count towards total size
             total_size = sum(f.stat().st_size for f in file_list if f.is_file())
+            total_files = sum(1 for f in file_list if f.is_file())
+            
+            logger.info(f"Total transfer size: {total_size / (1024*1024*1024):.2f} GB")
+            logger.info(f"Total files: {total_files}")
             
             # Add 10% buffer for temporary files and overhead
             required_space = int(total_size * 1.1)
             
-            logger.info(f"Required space: {required_space / (1024*1024*1024):.2f} GB")
-            
-            # Space check code remains the same...
+            if not self.storage.has_enough_space(destination_path, required_space):
+                self.display.show_error("Not enough space")
+                self._play_sound(success=False)
+                return False
             
             # Initialize transfer state
             self.state_manager.enter_transfer()
             
             try:
-                total_files = sum(1 for f in file_list if f.is_file())
                 file_number = 0
+                total_transferred = 0  # Track total bytes transferred across all files
                 failures = []
 
                 with open(log_file, 'a', encoding='utf-8') as log:
@@ -149,17 +159,20 @@ class FileTransfer:
                             continue
 
                         file_number += 1
+                        file_size = src_file.stat().st_size
                         
-                        # Create destination path using source root for proper directory structure
+                        # Create destination path
                         dst_path = self._create_destination_path(src_file, target_dir, source_path)
                         
-                        # Initialize progress tracking
+                        # Initialize progress tracking with new total_transferred and total_size fields
                         self._current_progress = TransferProgress(
                             current_file=src_file.name,
                             file_number=file_number,
                             total_files=total_files,
-                            bytes_transferred=0,
-                            total_bytes=src_file.stat().st_size,
+                            bytes_transferred=0,  # Current file progress
+                            total_bytes=file_size,  # Current file size
+                            total_transferred=total_transferred,  # Running total of all files
+                            total_size=total_size,  # Total size of all files
                             current_file_progress=0.0,
                             overall_progress=(file_number - 1) / total_files,
                             status=TransferStatus.COPYING
@@ -168,15 +181,17 @@ class FileTransfer:
                         # Copy and verify file
                         success, checksum = self._copy_with_progress(
                             src_file, dst_path,
-                            file_number, total_files
+                            file_number, total_files,
+                            total_transferred, total_size
                         )
 
                         if success and checksum:
+                            total_transferred += file_size  # Update total bytes transferred
                             self._log_success(log, src_file, dst_path)
                             add_file_to_mhl(
                                 mhl_filename, tree, hashes,
                                 dst_path, checksum,
-                                dst_path.stat().st_size
+                                file_size
                             )
                         else:
                             failures.append(str(src_file))
@@ -187,12 +202,13 @@ class FileTransfer:
                 
                 if transfer_success:
                     logger.info("Transfer completed successfully")
-                    self._play_sound(success=True)  # Play success sound for successful transfer
+                    self._play_sound(success=True)
                     
-                    # Update progress to success state before unmounting
-                if self._current_progress:
-                    self._current_progress.status = TransferStatus.SUCCESS
-                    self.display.show_progress(self._current_progress)
+                    # Update final progress state
+                    if self._current_progress:
+                        self._current_progress.status = TransferStatus.SUCCESS
+                        self._current_progress.total_transferred = total_size
+                        self.display.show_progress(self._current_progress)
                     
                     # Only try to unmount if the drive is still mounted
                     if self.storage.is_drive_mounted(source_path):
@@ -218,16 +234,6 @@ class FileTransfer:
                 else:
                     self.display.show_error("Transfer Error")
                 return False
-
-                
-        except Exception as e:
-            logger.error(f"Transfer failed: {e}")
-            if self._current_progress:
-                self._current_progress.status = TransferStatus.ERROR
-                self.display.show_progress(self._current_progress)
-            else:
-                self.display.show_error("Transfer Error")
-            return False
             
         finally:
             # Only exit transfer state if we entered it

@@ -15,13 +15,14 @@ class TransferStatus(Enum):
 
 @dataclass
 class TransferProgress:
-    """Data class for transfer progress information"""
     current_file: str
     file_number: int
     total_files: int
-    bytes_transferred: int
-    total_bytes: int
+    bytes_transferred: int     # Current file progress
+    total_bytes: int          # Current file size
+    total_transferred: int    # Total bytes transferred across all files
+    total_size: int          # Total size of all files
     current_file_progress: float
-    overall_progress: float  # This will now represent files completed / total files
+    overall_progress: float
     status: TransferStatus
     error_message: Optional[str] = None
