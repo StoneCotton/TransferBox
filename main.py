@@ -113,10 +113,7 @@ class TransferBox:
                 destination = input("Enter destination path for transfers: ").strip()
                 destination_path = Path(destination)
                 
-                if not destination_path.exists():
-                    self.display.show_error("Destination path does not exist")
-                    continue
-                    
+                # Let FileTransfer handle path validation and creation
                 self.storage.set_dump_drive(destination_path)
                 
                 # Wait for source drive

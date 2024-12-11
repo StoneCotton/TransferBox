@@ -160,21 +160,29 @@ class WindowsStorage(StorageInterface):
         return self.dump_drive_mountpoint
 
     def set_dump_drive(self, path: Path) -> None:
-        """Set the dump drive location"""
+        """
+        Set the dump drive location, creating parent directories if needed.
+        
+        Args:
+            path: Path to set as dump drive location
+                
+        Raises:
+            ValueError: If path is invalid or inaccessible
+        """
         try:
             path = Path(path)
-            if not path.exists():
-                raise ValueError(f"Path {path} does not exist")
-            if not path.is_dir():
-                raise ValueError(f"Path {path} is not a directory")
             
-            # Verify the drive is accessible
-            root_drive = Path(os.path.splitdrive(path)[0] + '\\')
-            if not root_drive.exists():
-                raise ValueError(f"Drive {root_drive} is not accessible")
-                
+            # Check if the drive is available by comparing with our existing method
+            available_drives = self.get_available_drives()
+            drive_path = Path(path.drive + "\\")
+            
+            if not any(drive == drive_path for drive in available_drives):
+                raise ValueError(f"Drive {path.drive} is not accessible")
+            
+            # Store the path - we don't need to verify it exists
             self.dump_drive_mountpoint = path
             logger.info(f"Set dump drive to {path}")
+            
         except Exception as e:
             logger.error(f"Error setting dump drive: {e}")
             raise ValueError(str(e))
