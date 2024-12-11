@@ -1,31 +1,17 @@
 # src/core/config_manager.py
 
+from dataclasses import dataclass, field
+from typing import List, Optional, Dict, Any
+from pathlib import Path
 import yaml
 import logging
-import os
-from pathlib import Path
-from typing import Any, Dict, Optional, List
-from dataclasses import dataclass, asdict, fields, field
-from enum import Enum, auto
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
-
-class VideoProxyQuality(Enum):
-    """Video proxy generation quality settings"""
-    LOW = auto()
-    MEDIUM = auto()
-    HIGH = auto()
-    DISABLED = auto()
 
 @dataclass
 class TransferConfig:
     """Configuration settings for TransferBox"""
-    
-    # Feature flags
-    enable_checksum: bool = True
-    enable_mhl: bool = True
-    enable_led_indicators: bool = True
-    enable_power_monitoring: bool = True
     
     # File handling
     rename_with_timestamp: bool = True
@@ -34,7 +20,7 @@ class TransferConfig:
     timestamp_format: str = "%Y%m%d_%H%M%S"
     
     # Media transfer settings
-    media_only_transfer: bool = False
+    media_only_transfer: bool = True
     preserve_folder_structure: bool = True
     media_extensions: List[str] = field(default_factory=lambda: [
         # Video formats
@@ -49,27 +35,17 @@ class TransferConfig:
         '.xml', '.cdl', '.cube'
     ])
     
-    # Video processing
-    generate_proxies: bool = False
-    proxy_quality: VideoProxyQuality = VideoProxyQuality.DISABLED
-    proxy_subfolder: str = "proxies"
-    
     # Directory structure
     create_date_folders: bool = True
     date_folder_format: str = "%Y/%m/%d"
     create_device_folders: bool = False
     device_folder_template: str = "{device_name}"
     
-    # Transfer behavior
-    verify_after_copy: bool = True
-    unmount_after_transfer: bool = True
-    shutdown_when_idle: bool = False
-    idle_shutdown_minutes: int = 30
-    
-    # Display settings
-    display_brightness: int = 100  # 0-100
-    led_brightness: int = 100      # 0-100
-    progress_update_interval: float = 0.5  # seconds
+    # Proxy generation
+    generate_proxies: bool = False
+    proxy_subfolder: str = "proxies"
+    include_proxy_watermark: bool = True
+    proxy_watermark_path: str = "assets/watermark.png"
     
     # Sound settings
     enable_sounds: bool = True
@@ -77,13 +53,32 @@ class TransferConfig:
     success_sound_path: str = "sounds/success.mp3"
     error_sound_path: str = "sounds/error.mp3"
 
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert config to dictionary with enum handling"""
-        config_dict = asdict(self)
-        # Convert enum to string
-        config_dict['proxy_quality'] = self.proxy_quality.name
-        # Convert media extensions to comma-separated string for YAML
-        config_dict['media_extensions'] = ','.join(self.media_extensions)
+    def to_dict(self) -> dict:
+        """Convert config to dictionary for YAML saving"""
+        config_dict = {
+            "# File handling - Control how files are renamed and processed": None,
+            "rename_with_timestamp": self.rename_with_timestamp,
+            "preserve_original_filename": self.preserve_original_filename,
+            "filename_template": self.filename_template,
+            "timestamp_format": self.timestamp_format,
+            
+            "\n# Media transfer settings": None,
+            "media_only_transfer": self.media_only_transfer,
+            "preserve_folder_structure": self.preserve_folder_structure,
+            "media_extensions": ','.join(self.media_extensions),
+            
+            "\n# Directory structure settings": None,
+            "create_date_folders": self.create_date_folders,
+            "date_folder_format": self.date_folder_format,
+            "create_device_folders": self.create_device_folders,
+            "device_folder_template": self.device_folder_template,
+            
+            "\n# Proxy generation settings": None,
+            "generate_proxies": self.generate_proxies,
+            "proxy_subfolder": self.proxy_subfolder,
+            "include_proxy_watermark": self.include_proxy_watermark,
+            "proxy_watermark_path": self.proxy_watermark_path
+        }
         return config_dict
 
 class ConfigManager:
@@ -133,185 +128,173 @@ class ConfigManager:
 
     def _generate_default_config(self, path: Path) -> None:
         """
-        Generate default configuration file with comments.
+        Generate default configuration file with all settings and comments.
+        
+        This method creates a new configuration file with default values and
+        helpful comments explaining each section. It includes all available
+        configuration options organized by category.
         
         Args:
             path: Path where to create the config file
         """
-        # Create default config
+        # Create default config instance
         default_config = TransferConfig()
         
-        # Convert to dictionary
+        # Convert to dictionary for initial values
         config_dict = default_config.to_dict()
         
-        # Add section comments
+        # Define configuration structure with comments
         config_with_comments = {
-            "# Feature flags - Enable/disable core functionality": None,
-            "enable_checksum": config_dict["enable_checksum"],
-            "enable_mhl": config_dict["enable_mhl"],
-            "enable_led_indicators": config_dict["enable_led_indicators"],
-            "enable_power_monitoring": config_dict["enable_power_monitoring"],
+            "# File handling - Control how files are renamed and processed": None,
+            "rename_with_timestamp": config_dict["rename_with_timestamp"],
+            "preserve_original_filename": config_dict["preserve_original_filename"],
+            "filename_template": config_dict["filename_template"],
+            "timestamp_format": config_dict["timestamp_format"],
             
             "\n# Media transfer settings - Control which files are transferred": None,
             "media_only_transfer": config_dict["media_only_transfer"],
             "preserve_folder_structure": config_dict["preserve_folder_structure"],
             "media_extensions": config_dict["media_extensions"],
             
-            "\n# File handling - Control how files are renamed and processed": None,
-            "rename_with_timestamp": config_dict["rename_with_timestamp"],
-            "preserve_original_filename": config_dict["preserve_original_filename"],
-            "filename_template": config_dict["filename_template"],
-            "timestamp_format": config_dict["timestamp_format"],
+            "\n# Directory structure settings - Control how files are organized": None,
+            "create_date_folders": True,  # Set default to True
+            "date_folder_format": "%Y/%m/%d",  # Default format
+            "create_device_folders": False,  # Default to False
+            "device_folder_template": "{device_name}",  # Default template
             
-            "\n# Video processing - Settings for proxy generation": None,
-            "generate_proxies": config_dict["generate_proxies"],
-            "proxy_quality": config_dict["proxy_quality"],
-            "proxy_subfolder": config_dict["proxy_subfolder"],
-            
-            "\n# Directory structure - Control how files are organized": None,
-            "create_date_folders": config_dict["create_date_folders"],
-            "date_folder_format": config_dict["date_folder_format"],
-            "create_device_folders": config_dict["create_device_folders"],
-            "device_folder_template": config_dict["device_folder_template"],
-            
-            "\n# Transfer behavior - Control transfer process": None,
-            "verify_after_copy": config_dict["verify_after_copy"],
-            "unmount_after_transfer": config_dict["unmount_after_transfer"],
-            "shutdown_when_idle": config_dict["shutdown_when_idle"],
-            "idle_shutdown_minutes": config_dict["idle_shutdown_minutes"],
-            
-            "\n# Display settings - Control LED and display behavior": None,
-            "display_brightness": config_dict["display_brightness"],
-            "led_brightness": config_dict["led_brightness"],
-            "progress_update_interval": config_dict["progress_update_interval"],
-            
-            "\n# Sound settings - Control audio feedback": None,
-            "enable_sounds": config_dict["enable_sounds"],
-            "sound_volume": config_dict["sound_volume"],
-            "success_sound_path": config_dict["success_sound_path"],
-            "error_sound_path": config_dict["error_sound_path"]
+            "\n# Proxy generation settings - Control video proxy creation": None,
+            "generate_proxies": False,  # Default to disabled
+            "proxy_subfolder": "proxies",  # Default subfolder name
+            "include_proxy_watermark": True,  # Default to include watermark
+            "proxy_watermark_path": "assets/watermark.png"  # Default watermark path
         }
         
         # Ensure directory exists
         path.parent.mkdir(parents=True, exist_ok=True)
         
-        # Write config with comments
+        # Write configuration with comments
         with open(path, 'w') as f:
             for key, value in config_with_comments.items():
-                if value is None:  # This is a comment
+                if value is None:  # This is a section comment
                     f.write(f"{key}\n")
                 else:
-                    f.write(f"{key}: {value}\n")
+                    # Format the value appropriately
+                    if isinstance(value, str):
+                        # Quote string values that contain special characters
+                        if any(char in value for char in '{}%'):
+                            formatted_value = f'"{value}"'
+                        else:
+                            formatted_value = value
+                    else:
+                        formatted_value = str(value).lower()  # Convert True/False to lowercase
+                        
+                    f.write(f"{key}: {formatted_value}\n")
         
         logger.info(f"Generated default configuration file at {path}")
 
     def _parse_config(self, raw_config: Dict[str, Any]) -> TransferConfig:
         """
-        Parse and validate raw configuration data.
+        Parse and validate raw configuration data from the YAML file.
+        
+        This method carefully processes each configuration option, applying validation
+        and providing appropriate default values when needed. It handles all settings
+        including file handling, media transfer, directory structure, and proxy generation.
         
         Args:
-            raw_config: Dictionary of configuration values
-            
+            raw_config: Dictionary of configuration values from YAML file
+                
         Returns:
             Validated TransferConfig object
         """
         # Start with default values
         config = TransferConfig()
         
-        # Feature flags
-        config.enable_checksum = raw_config.get('enable_checksum', config.enable_checksum)
-        config.enable_mhl = raw_config.get('enable_mhl', config.enable_mhl)
-        config.enable_led_indicators = raw_config.get('enable_led_indicators', 
-                                                    config.enable_led_indicators)
-        config.enable_power_monitoring = raw_config.get('enable_power_monitoring',
-                                                      config.enable_power_monitoring)
-        
-        # File handling
-        config.rename_with_timestamp = raw_config.get('rename_with_timestamp',
-                                                    config.rename_with_timestamp)
-        config.preserve_original_filename = raw_config.get('preserve_original_filename',
-                                                         config.preserve_original_filename)
-        config.filename_template = raw_config.get('filename_template',
-                                                config.filename_template)
-        config.timestamp_format = raw_config.get('timestamp_format',
-                                               config.timestamp_format)
-        
-        # Media transfer settings
-        config.media_only_transfer = raw_config.get('media_only_transfer',
-                                                  config.media_only_transfer)
-        config.preserve_folder_structure = raw_config.get('preserve_folder_structure',
-                                                        config.preserve_folder_structure)
-        
-        # Parse media extensions
-        extensions_str = raw_config.get('media_extensions', '')
-        if extensions_str:
-            if isinstance(extensions_str, str):
-                # Split comma-separated string and clean up extensions
-                extensions = [ext.strip().lower() for ext in extensions_str.split(',')]
-                # Ensure all extensions start with a dot
-                config.media_extensions = [
-                    ext if ext.startswith('.') else f'.{ext}' 
-                    for ext in extensions
-                ]
-            elif isinstance(extensions_str, list):
-                # Handle case where YAML parser already gave us a list
-                config.media_extensions = [
-                    ext if ext.startswith('.') else f'.{ext}'
-                    for ext in extensions_str
-                ]
-        
-        # Video processing
-        config.generate_proxies = raw_config.get('generate_proxies',
-                                               config.generate_proxies)
-        
-        proxy_quality = raw_config.get('proxy_quality', 'DISABLED')
         try:
-            config.proxy_quality = VideoProxyQuality[proxy_quality.upper()]
-        except (KeyError, AttributeError):
-            logger.warning(f"Invalid proxy quality '{proxy_quality}', using DISABLED")
-            config.proxy_quality = VideoProxyQuality.DISABLED
+            # File handling settings
+            config.rename_with_timestamp = raw_config.get('rename_with_timestamp', 
+                                                        config.rename_with_timestamp)
+            config.preserve_original_filename = raw_config.get('preserve_original_filename',
+                                                            config.preserve_original_filename)
+            config.filename_template = raw_config.get('filename_template',
+                                                    config.filename_template)
+            config.timestamp_format = raw_config.get('timestamp_format',
+                                                config.timestamp_format)
             
-        config.proxy_subfolder = raw_config.get('proxy_subfolder',
-                                              config.proxy_subfolder)
-        
-        # Directory structure
-        config.create_date_folders = raw_config.get('create_date_folders',
-                                                  config.create_date_folders)
-        config.date_folder_format = raw_config.get('date_folder_format',
-                                                 config.date_folder_format)
-        config.create_device_folders = raw_config.get('create_device_folders',
-                                                    config.create_device_folders)
-        config.device_folder_template = raw_config.get('device_folder_template',
-                                                     config.device_folder_template)
-        
-        # Transfer behavior
-        config.verify_after_copy = raw_config.get('verify_after_copy',
-                                                config.verify_after_copy)
-        config.unmount_after_transfer = raw_config.get('unmount_after_transfer',
-                                                     config.unmount_after_transfer)
-        config.shutdown_when_idle = raw_config.get('shutdown_when_idle',
-                                                 config.shutdown_when_idle)
-        config.idle_shutdown_minutes = raw_config.get('idle_shutdown_minutes',
-                                                    config.idle_shutdown_minutes)
-        
-        # Display settings
-        config.display_brightness = max(0, min(100, raw_config.get('display_brightness',
-                                                                 config.display_brightness)))
-        config.led_brightness = max(0, min(100, raw_config.get('led_brightness',
-                                                             config.led_brightness)))
-        config.progress_update_interval = max(0.1, raw_config.get('progress_update_interval',
-                                                                config.progress_update_interval))
-        
-        # Sound settings
-        config.enable_sounds = raw_config.get('enable_sounds', config.enable_sounds)
-        config.sound_volume = max(0, min(100, raw_config.get('sound_volume',
-                                                           config.sound_volume)))
-        config.success_sound_path = raw_config.get('success_sound_path',
-                                                 config.success_sound_path)
-        config.error_sound_path = raw_config.get('error_sound_path',
-                                               config.error_sound_path)
-        
-        return config
+            # Media transfer settings
+            config.media_only_transfer = raw_config.get('media_only_transfer',
+                                                    config.media_only_transfer)
+            config.preserve_folder_structure = raw_config.get('preserve_folder_structure',
+                                                            config.preserve_folder_structure)
+            
+            # Parse media extensions
+            extensions_str = raw_config.get('media_extensions', '')
+            if extensions_str:
+                if isinstance(extensions_str, str):
+                    # Split comma-separated string and clean up extensions
+                    extensions = [ext.strip().lower() for ext in extensions_str.split(',')]
+                    # Ensure all extensions start with a dot
+                    config.media_extensions = [
+                        ext if ext.startswith('.') else f'.{ext}' 
+                        for ext in extensions
+                    ]
+                elif isinstance(extensions_str, list):
+                    # Handle case where YAML parser already gave us a list
+                    config.media_extensions = [
+                        ext if ext.startswith('.') else f'.{ext}'
+                        for ext in extensions_str
+                    ]
+            
+            # Directory structure settings (newly added parsing)
+            config.create_date_folders = raw_config.get('create_date_folders',
+                                                    config.create_date_folders)
+            config.date_folder_format = raw_config.get('date_folder_format',
+                                                    config.date_folder_format)
+            
+            # Validate date format string
+            try:
+                # Test the date format string
+                datetime.now().strftime(config.date_folder_format)
+            except ValueError as e:
+                logger.warning(f"Invalid date format '{config.date_folder_format}', using default")
+                config.date_folder_format = "%Y/%m/%d"
+                
+            config.create_device_folders = raw_config.get('create_device_folders',
+                                                        config.create_device_folders)
+            config.device_folder_template = raw_config.get('device_folder_template',
+                                                        config.device_folder_template)
+            
+            # Validate device folder template
+            if not '{device_name}' in config.device_folder_template:
+                logger.warning("Device folder template must contain {device_name}")
+                config.device_folder_template = "{device_name}"
+            
+            # Proxy generation settings (newly added parsing)
+            config.generate_proxies = raw_config.get('generate_proxies',
+                                                config.generate_proxies)
+            config.proxy_subfolder = raw_config.get('proxy_subfolder',
+                                                config.proxy_subfolder)
+                                                
+            # Sanitize proxy subfolder name
+            config.proxy_subfolder = config.proxy_subfolder.strip().replace('/', '_')
+            if not config.proxy_subfolder:
+                config.proxy_subfolder = "proxies"
+                
+            config.include_proxy_watermark = raw_config.get('include_proxy_watermark',
+                                                        config.include_proxy_watermark)
+            config.proxy_watermark_path = raw_config.get('proxy_watermark_path',
+                                                    config.proxy_watermark_path)
+            
+            # Validate watermark path format
+            if not isinstance(config.proxy_watermark_path, str):
+                logger.warning("Invalid watermark path format")
+                config.proxy_watermark_path = "assets/watermark.png"
+                
+            return config
+            
+        except Exception as e:
+            logger.error(f"Error parsing configuration: {e}")
+            logger.info("Falling back to default configuration")
+            return TransferConfig()
 
     def load_config(self) -> TransferConfig:
         """

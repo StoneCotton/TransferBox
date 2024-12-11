@@ -14,6 +14,8 @@ from .interfaces.types import TransferStatus, TransferProgress
 from .checksum import ChecksumCalculator
 from .mhl_handler import initialize_mhl_file, add_file_to_mhl
 from .sound_manager import SoundManager
+from .proxy_generator import ProxyGenerator
+from .directory_handler import DirectoryHandler
 
 logger = logging.getLogger(__name__)
 
@@ -24,8 +26,14 @@ class FileTransferError(Exception):
     pass
 
 class FileTransfer:
-    def __init__(self, state_manager, display: DisplayInterface, storage: StorageInterface, 
-                config: Optional[TransferConfig] = None, sound_manager = None):
+    def __init__(
+        self,
+        state_manager,
+        display: DisplayInterface,
+        storage: StorageInterface,
+        config: Optional[TransferConfig] = None,
+        sound_manager = None
+    ):
         self.state_manager = state_manager
         self.display = display
         self.storage = storage
@@ -33,7 +41,8 @@ class FileTransfer:
         self.sound_manager = sound_manager
         self._current_progress: Optional[TransferProgress] = None
         self.checksum_calculator = ChecksumCalculator(display)
-
+        self.directory_handler = DirectoryHandler(self.config)
+        
     def _update_progress(self, bytes_transferred: int, total_bytes: int, 
                         file_number: int, total_files: int,
                         status: TransferStatus) -> None:
@@ -115,23 +124,43 @@ class FileTransfer:
     def copy_sd_to_dump(self, source_path: Path, destination_path: Path, 
                         log_file: Path) -> bool:
         """
-        Copy files from source to destination with smart directory handling.
-        Only creates directories that contain media files when in media-only mode.
+        Copy files from source to destination with directory organization and proxy generation.
+        
+        Args:
+            source_path: Path to source drive
+            destination_path: Path to destination drive
+            log_file: Path to transfer log file
+            
+        Returns:
+            bool: True if transfer was successful, False otherwise
         """
         if not self._validate_transfer_preconditions(destination_path):
             self._play_sound(success=False)
             return False
 
+        # Generate timestamp for this transfer session
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        target_dir = self._create_target_directory(destination_path, timestamp)
+        
+        # Create organized directory structure
+        target_dir = self.directory_handler.create_organized_directory(
+            destination_path,
+            source_path,
+            timestamp
+        )
+        
         unmount_success = False
         transfer_success = False
         
         try:
-            # Initialize MHL handling
+            # Initialize MHL handling for transfer verification
             mhl_filename, tree, hashes = initialize_mhl_file(timestamp, target_dir)
             
-            # Get complete file list
+            # Initialize proxy generator if enabled
+            proxy_generator = None
+            if self.config.generate_proxies:
+                proxy_generator = ProxyGenerator(self.config, self.display)
+            
+            # Get complete file list from source
             all_files = list(source_path.rglob('*'))
             
             # Smart file filtering and directory tracking
@@ -208,7 +237,7 @@ class FileTransfer:
                         # Create destination path maintaining structure if enabled
                         dst_path = self._create_destination_path(src_file, target_dir, source_path)
                         
-                        # Ensure the destination directory exists (in case it wasn't created earlier)
+                        # Ensure the destination directory exists
                         dst_path.parent.mkdir(parents=True, exist_ok=True)
                         
                         logger.info(f"Processing file {file_number}/{total_files}: {src_file.name}")
@@ -242,40 +271,53 @@ class FileTransfer:
                                 dst_path, checksum,
                                 file_size
                             )
+                            
+                            # Generate proxy if needed and file was copied successfully
+                            if (proxy_generator and 
+                                proxy_generator.should_generate_proxy(src_file)):
+                                
+                                proxy_success = proxy_generator.generate_proxy(
+                                    dst_path,  # Use the copied file as source
+                                    target_dir,
+                                    self._current_progress
+                                )
+                                
+                                if not proxy_success:
+                                    logger.warning(f"Failed to generate proxy for {src_file}")
                         else:
                             failures.append(str(src_file))
                             self._log_failure(log, src_file, dst_path)
 
-                # Determine transfer success and handle completion
-                transfer_success = len(failures) == 0
-                
-                if transfer_success:
-                    logger.info("Transfer completed successfully")
-                    self._play_sound(success=True)
+                    # Determine transfer success and handle completion
+                    transfer_success = len(failures) == 0
                     
-                    # Update final progress
-                    if self._current_progress:
-                        self._current_progress.status = TransferStatus.SUCCESS
-                        self._current_progress.total_transferred = total_size
-                        self.display.show_progress(self._current_progress)
-                    
-                    # Handle unmounting if drive is still mounted
-                    if self.storage.is_drive_mounted(source_path):
-                        if self.storage.unmount_drive(source_path):
+                    if transfer_success:
+                        logger.info("Transfer completed successfully")
+                        self._play_sound(success=True)
+                        
+                        # Update final progress
+                        if self._current_progress:
+                            self._current_progress.status = TransferStatus.SUCCESS
+                            self._current_progress.total_transferred = total_size
+                            self.display.show_progress(self._current_progress)
+                        
+                        # Handle unmounting if drive is still mounted
+                        if self.storage.is_drive_mounted(source_path):
+                            if self.storage.unmount_drive(source_path):
+                                unmount_success = True
+                                self.display.show_status("Safe to remove card")
+                            else:
+                                self.display.show_error("Unmount failed")
+                        else:
                             unmount_success = True
                             self.display.show_status("Safe to remove card")
-                        else:
-                            self.display.show_error("Unmount failed")
                     else:
-                        unmount_success = True
-                        self.display.show_status("Safe to remove card")
-                else:
-                    self._play_sound(success=False)
-                    self.display.show_error("Transfer Failed")
-                    logger.error("Transfer failed for files: %s", ", ".join(failures))
-                
-                return transfer_success
-                
+                        self._play_sound(success=False)
+                        self.display.show_error("Transfer Failed")
+                        logger.error("Transfer failed for files: %s", ", ".join(failures))
+                    
+                    return transfer_success
+                    
             except Exception as e:
                 logger.error(f"Transfer failed: {e}")
                 self._play_sound(success=False)
@@ -285,7 +327,7 @@ class FileTransfer:
                 else:
                     self.display.show_error("Transfer Error")
                 return False
-            
+                
         finally:
             # Cleanup and state management
             if self.state_manager.is_transfer():
