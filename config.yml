@@ -9,3 +9,8 @@ enable_sounds: true
 sound_volume: 50
 success_sound_path: sounds/success.mp3
 error_sound_path: sounds/error.mp3
+
+# Media transfer settings
+media_only_transfer: true
+preserve_folder_structure: true
+media_extensions: .mp4,.mov,.mxf,.avi,.braw,.r3d,.wav,.aif,.aiff,.crm,.arw,.raw,.xml,.cdl,.cube,.jpg,.jpeg,.png,.tiff,.tif,.dpx,.exr.cr2

@@ -114,7 +114,10 @@ class FileTransfer:
 
     def copy_sd_to_dump(self, source_path: Path, destination_path: Path, 
                         log_file: Path) -> bool:
-        """Copy files from source to destination with verification."""
+        """
+        Copy files from source to destination with smart directory handling.
+        Only creates directories that contain media files when in media-only mode.
+        """
         if not self._validate_transfer_preconditions(destination_path):
             self._play_sound(success=False)
             return False
@@ -128,18 +131,47 @@ class FileTransfer:
             # Initialize MHL handling
             mhl_filename, tree, hashes = initialize_mhl_file(timestamp, target_dir)
             
-            # Get file list and calculate total size
-            file_list = list(source_path.rglob('*'))
-            # We filter for files here since directories don't count towards total size
-            total_size = sum(f.stat().st_size for f in file_list if f.is_file())
-            total_files = sum(1 for f in file_list if f.is_file())
+            # Get complete file list
+            all_files = list(source_path.rglob('*'))
             
+            # Smart file filtering and directory tracking
+            files_to_transfer = []
+            required_directories = set()
+            
+            if self.config.media_only_transfer:
+                # First pass: identify media files and their parent directories
+                for file_path in all_files:
+                    if file_path.is_file():
+                        if file_path.suffix.lower() in self.config.media_extensions:
+                            files_to_transfer.append(file_path)
+                            # Add all parent directories of this media file
+                            if self.config.preserve_folder_structure:
+                                current_dir = file_path.parent
+                                while current_dir != source_path:
+                                    required_directories.add(current_dir)
+                                    current_dir = current_dir.parent
+            else:
+                # If not media only, include all files and their directories
+                files_to_transfer = [f for f in all_files if f.is_file()]
+                if self.config.preserve_folder_structure:
+                    required_directories = {
+                        f.parent for f in all_files if f.is_file()
+                    }
+            
+            # Calculate totals for transfer
+            total_size = sum(f.stat().st_size for f in files_to_transfer)
+            total_files = len(files_to_transfer)
+            
+            # Log transfer configuration and statistics
+            logger.info(f"Transfer mode: {'Media only' if self.config.media_only_transfer else 'All files'}")
+            if self.config.media_only_transfer:
+                logger.info(f"Media extensions: {', '.join(self.config.media_extensions)}")
+            logger.info(f"Total files to transfer: {total_files}")
+            logger.info(f"Required directories: {len(required_directories)}")
             logger.info(f"Total transfer size: {total_size / (1024*1024*1024):.2f} GB")
-            logger.info(f"Total files: {total_files}")
             
-            # Add 10% buffer for temporary files and overhead
+            # Verify sufficient space (with 10% buffer)
             required_space = int(total_size * 1.1)
-            
             if not self.storage.has_enough_space(destination_path, required_space):
                 self.display.show_error("Not enough space")
                 self._play_sound(success=False)
@@ -150,29 +182,46 @@ class FileTransfer:
             
             try:
                 file_number = 0
-                total_transferred = 0  # Track total bytes transferred across all files
+                total_transferred = 0
                 failures = []
+                created_dirs = set()
 
                 with open(log_file, 'a', encoding='utf-8') as log:
-                    for src_file in file_list:
-                        if not src_file.is_file():
-                            continue
+                    # Create only the necessary directory structure
+                    if self.config.preserve_folder_structure:
+                        for dir_path in sorted(required_directories):
+                            # Convert source directory path to destination directory path
+                            rel_path = dir_path.relative_to(source_path)
+                            target_path = target_dir / rel_path
+                            
+                            # Create directory and all necessary parents
+                            if target_path not in created_dirs:
+                                target_path.mkdir(parents=True, exist_ok=True)
+                                created_dirs.add(target_path)
+                                logger.debug(f"Created directory: {target_path}")
 
+                    # Transfer files
+                    for src_file in files_to_transfer:
                         file_number += 1
                         file_size = src_file.stat().st_size
                         
-                        # Create destination path
+                        # Create destination path maintaining structure if enabled
                         dst_path = self._create_destination_path(src_file, target_dir, source_path)
                         
-                        # Initialize progress tracking with new total_transferred and total_size fields
+                        # Ensure the destination directory exists (in case it wasn't created earlier)
+                        dst_path.parent.mkdir(parents=True, exist_ok=True)
+                        
+                        logger.info(f"Processing file {file_number}/{total_files}: {src_file.name}")
+                        
+                        # Initialize progress tracking
                         self._current_progress = TransferProgress(
                             current_file=src_file.name,
                             file_number=file_number,
                             total_files=total_files,
-                            bytes_transferred=0,  # Current file progress
-                            total_bytes=file_size,  # Current file size
-                            total_transferred=total_transferred,  # Running total of all files
-                            total_size=total_size,  # Total size of all files
+                            bytes_transferred=0,
+                            total_bytes=file_size,
+                            total_transferred=total_transferred,
+                            total_size=total_size,
                             current_file_progress=0.0,
                             overall_progress=(file_number - 1) / total_files,
                             status=TransferStatus.COPYING
@@ -186,7 +235,7 @@ class FileTransfer:
                         )
 
                         if success and checksum:
-                            total_transferred += file_size  # Update total bytes transferred
+                            total_transferred += file_size
                             self._log_success(log, src_file, dst_path)
                             add_file_to_mhl(
                                 mhl_filename, tree, hashes,
@@ -197,20 +246,20 @@ class FileTransfer:
                             failures.append(str(src_file))
                             self._log_failure(log, src_file, dst_path)
 
-                # Set transfer success based on absence of failures
+                # Determine transfer success and handle completion
                 transfer_success = len(failures) == 0
                 
                 if transfer_success:
                     logger.info("Transfer completed successfully")
                     self._play_sound(success=True)
                     
-                    # Update final progress state
+                    # Update final progress
                     if self._current_progress:
                         self._current_progress.status = TransferStatus.SUCCESS
                         self._current_progress.total_transferred = total_size
                         self.display.show_progress(self._current_progress)
                     
-                    # Only try to unmount if the drive is still mounted
+                    # Handle unmounting if drive is still mounted
                     if self.storage.is_drive_mounted(source_path):
                         if self.storage.unmount_drive(source_path):
                             unmount_success = True
@@ -218,16 +267,18 @@ class FileTransfer:
                         else:
                             self.display.show_error("Unmount failed")
                     else:
-                        # Drive is already unmounted
                         unmount_success = True
-                        self._play_sound(success=False)  # Play error sound for transfer failure
                         self.display.show_status("Safe to remove card")
+                else:
+                    self._play_sound(success=False)
+                    self.display.show_error("Transfer Failed")
+                    logger.error("Transfer failed for files: %s", ", ".join(failures))
                 
                 return transfer_success
                 
             except Exception as e:
                 logger.error(f"Transfer failed: {e}")
-                self._play_sound(success=False)  # Play error sound for exceptions
+                self._play_sound(success=False)
                 if self._current_progress:
                     self._current_progress.status = TransferStatus.ERROR
                     self.display.show_progress(self._current_progress)
@@ -236,10 +287,9 @@ class FileTransfer:
                 return False
             
         finally:
-            # Only exit transfer state if we entered it
+            # Cleanup and state management
             if self.state_manager.is_transfer():
                 self.state_manager.exit_transfer(source_path if not unmount_success else None)
-            # Show final status only if we haven't already shown it
             if transfer_success and not unmount_success:
                 self.display.show_status("Transfer complete")
 
