@@ -166,7 +166,7 @@ class ConfigManager:
             "generate_proxies": False,  # Default to disabled
             "proxy_subfolder": "proxies",  # Default subfolder name
             "include_proxy_watermark": True,  # Default to include watermark
-            "proxy_watermark_path": "assets/watermark.png"  # Default watermark path
+            "proxy_watermark_path": "assets/adobe_proxy_logo.png"  # Default watermark path
         }
         
         # Ensure directory exists
@@ -334,32 +334,30 @@ class ConfigManager:
             
         logger.info("Active Configuration:")
         logger.info("Feature Flags:")
-        logger.info(f"  Checksum: {self._config.enable_checksum}")
-        logger.info(f"  MHL: {self._config.enable_mhl}")
-        logger.info(f"  LED Indicators: {self._config.enable_led_indicators}")
-        logger.info(f"  Power Monitoring: {self._config.enable_power_monitoring}")
-        
+
+        logger.info("File Handling:")
+        logger.info(f"  Timestamp Renaming: {self._config.rename_with_timestamp}")
+        logger.info(f"  Filename Template: {self._config.filename_template}")
+        logger.info(f"  Timestamp Format: {self._config.timestamp_format}")
+        logger.info(f"  Preserve Original: {self._config.preserve_original_filename}")
+
         logger.info("Media Transfer Settings:")
         logger.info(f"  Media Only: {self._config.media_only_transfer}")
         logger.info(f"  Preserve Structure: {self._config.preserve_folder_structure}")
         logger.info(f"  Extensions: {', '.join(self._config.media_extensions)}")
         
-        logger.info("File Handling:")
-        logger.info(f"  Timestamp Renaming: {self._config.rename_with_timestamp}")
-        logger.info(f"  Filename Template: {self._config.filename_template}")
-        
-        logger.info("Video Processing:")
-        logger.info(f"  Proxy Generation: {self._config.generate_proxies}")
-        logger.info(f"  Quality: {self._config.proxy_quality.name}")
-        
         logger.info("Directory Structure:")
         logger.info(f"  Date Folders: {self._config.create_date_folders}")
+        logger.info(f"  Date Folder Format: {self._config.date_folder_format}")
         logger.info(f"  Device Folders: {self._config.create_device_folders}")
-        
-        logger.info("Transfer Behavior:")
-        logger.info(f"  Verify After Copy: {self._config.verify_after_copy}")
-        logger.info(f"  Unmount After Transfer: {self._config.unmount_after_transfer}")
-        logger.info(f"  Auto Shutdown: {self._config.shutdown_when_idle}")
+        logger.info(f"  Device Folder Template: {self._config.device_folder_template}")
+
+        logger.info("Video Processing:")
+        logger.info(f"  Proxy Generation: {self._config.generate_proxies}")
+        logger.info(f"  Proxy Subfolder: {self._config.proxy_subfolder}")
+        logger.info(f"  Watermark: {self._config.include_proxy_watermark}")
+        logger.info(f"  Watermark Path: {self._config.proxy_watermark_path}")
+
 
     def get_config(self) -> TransferConfig:
         """

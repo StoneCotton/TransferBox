@@ -110,49 +110,74 @@ class FileTransfer:
             return False, None
 
     def _validate_transfer_preconditions(self, destination_path: Path) -> bool:
-        """Validate preconditions before starting transfer."""
+        """
+        Validate preconditions before starting transfer.
+        
+        This method checks if the transfer can proceed by validating:
+        1. A destination path is provided
+        2. We're not in utility mode
+        3. The destination path is valid (but doesn't need to exist yet)
+        
+        Args:
+            destination_path: Path where files will be transferred
+            
+        Returns:
+            True if transfer can proceed, False otherwise
+        """
         if destination_path is None:
             self.display.show_error("No destination")
             return False
-            
+                
         if self.state_manager.is_utility():
             logger.info("Transfer blocked - utility mode")
             return False
+
+        # Validate that the parent directory exists or is a root directory
+        try:
+            # If the path doesn't exist, check its parent
+            parent_path = destination_path.parent
             
-        return True
+            # If we're at a root directory (like "C:\") or the parent exists,
+            # the path is valid even if it doesn't exist yet
+            if destination_path.drive or parent_path.exists():
+                return True
+                
+            self.display.show_error("Invalid path")
+            return False
+            
+        except Exception as e:
+            logger.error(f"Error validating destination path: {e}")
+            self.display.show_error("Invalid path")
+            return False
 
     def copy_sd_to_dump(self, source_path: Path, destination_path: Path, 
                         log_file: Path) -> bool:
-        """
-        Copy files from source to destination with directory organization and proxy generation.
+        """Copy files from source to destination with directory organization"""
         
-        Args:
-            source_path: Path to source drive
-            destination_path: Path to destination drive
-            log_file: Path to transfer log file
-            
-        Returns:
-            bool: True if transfer was successful, False otherwise
-        """
         if not self._validate_transfer_preconditions(destination_path):
             self._play_sound(success=False)
             return False
 
         # Generate timestamp for this transfer session
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        timestamp = datetime.now().strftime(self.config.timestamp_format)
         
-        # Create organized directory structure
+        # Log the current configuration state
+        logger.info(f"Starting transfer with configuration:")
+        logger.info(f"  create_date_folders: {self.config.create_date_folders}")
+        logger.info(f"  destination_path: {destination_path}")
+        
+        # Create target directory using directory handler
         target_dir = self.directory_handler.create_organized_directory(
             destination_path,
             source_path,
-            timestamp
+            timestamp if self.config.create_date_folders else None  # Only pass timestamp if folders enabled
         )
-        
+
         unmount_success = False
         transfer_success = False
-        
+
         try:
-            # Initialize MHL handling for transfer verification
+            # Initialize MHL handling
             mhl_filename, tree, hashes = initialize_mhl_file(timestamp, target_dir)
             
             # Initialize proxy generator if enabled
@@ -335,11 +360,6 @@ class FileTransfer:
             if transfer_success and not unmount_success:
                 self.display.show_status("Transfer complete")
 
-    def _create_target_directory(self, base_path: Path, timestamp: str) -> Path:
-        """Create timestamped directory for transfer."""
-        target_dir = base_path / timestamp
-        target_dir.mkdir(parents=True, exist_ok=True)
-        return target_dir
     
     def _generate_destination_filename(self, source_path: Path) -> str:
         """
