@@ -253,6 +253,13 @@ class RichDisplay(DisplayInterface):
             total=progress.total_bytes,
             completed=0
         )
+        
+        # Add proxy generation progress task
+        self.proxy_task_id = self.progress.add_task(
+            description="Waiting for proxy generation",
+            total=100,  # Use percentage for proxy progress
+            completed=0
+        )
 
     def _cleanup_progress(self) -> None:
         """Clean up progress display resources"""

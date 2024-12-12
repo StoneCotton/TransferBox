@@ -403,7 +403,9 @@ class WindowsStorage(StorageInterface):
         """Convert Windows FILETIME to datetime"""
         if filetime is None:
             return None
-        return datetime.fromtimestamp((filetime - 116444736000000000) / 10000000)
+        # Convert Windows timestamp to Unix timestamp first
+        timestamp = (filetime - 116444736000000000) / 10000000
+        return datetime.fromtimestamp(float(timestamp))
         
     def _datetime_to_filetime(self, dt) -> int:
         """Convert datetime to Windows FILETIME"""

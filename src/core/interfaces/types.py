@@ -9,6 +9,7 @@ class TransferStatus(Enum):
     READY = auto()
     COPYING = auto()
     CHECKSUMMING = auto()
+    GENERATING_PROXY = auto()
     VERIFYING = auto()
     SUCCESS = auto()
     ERROR = auto()
