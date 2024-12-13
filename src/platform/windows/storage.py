@@ -288,7 +288,7 @@ class WindowsStorage(StorageInterface):
         ]
     
     def get_file_metadata(self, path: Path) -> Dict[str, Any]:
-        """Get file metadata using Windows APIs"""
+        """Get file metadata using Windows APIs with proper timestamp handling"""
         try:
             # Get file handle
             handle = win32file.CreateFile(
@@ -313,25 +313,18 @@ class WindowsStorage(StorageInterface):
                     win32security.DACL_SECURITY_INFORMATION
                 )
                 
-                # Get timestamps
+                # Get timestamps and convert properly
                 creation_time, access_time, write_time = win32file.GetFileTime(handle)
                 
                 metadata = {
                     'attributes': basic_info[0],  # File attributes
-                    'creation_time': self._filetime_to_datetime(creation_time),
-                    'access_time': self._filetime_to_datetime(access_time),
-                    'write_time': self._filetime_to_datetime(write_time),
+                    'creation_time': creation_time,  # Store raw Windows time
+                    'access_time': access_time,      # Store raw Windows time
+                    'write_time': write_time,        # Store raw Windows time
                     'security_descriptor': security_info.GetSecurityDescriptorOwner(),
                     'acl': security_info.GetSecurityDescriptorDacl()
                 }
                 
-                # Get alternative data streams
-                try:
-                    metadata['streams'] = self._get_alternative_streams(path)
-                except Exception as e:
-                    logger.warning(f"Could not get alternative streams: {e}")
-                    metadata['streams'] = {}
-                    
                 return metadata
                 
             finally:
@@ -398,21 +391,29 @@ class WindowsStorage(StorageInterface):
         except Exception as e:
             logger.error(f"Error setting metadata for {path}: {e}")
             return False
-            
-    def _filetime_to_datetime(self, filetime) -> datetime:
-        """Convert Windows FILETIME to datetime"""
-        if filetime is None:
-            return None
-        # Convert Windows timestamp to Unix timestamp first
-        timestamp = (filetime - 116444736000000000) / 10000000
-        return datetime.fromtimestamp(float(timestamp))
         
     def _datetime_to_filetime(self, dt) -> int:
         """Convert datetime to Windows FILETIME"""
         if dt is None:
             return None
         return int((dt.timestamp() * 10000000) + 116444736000000000)
-        
+
+    def _windows_time_to_datetime(self, windows_time) -> Optional[datetime]:
+        """Safely convert Windows FILETIME to Python datetime"""
+        try:
+            if windows_time is None:
+                return None
+            # Convert to 100-nanosecond intervals since January 1, 1601
+            windows_nano = int(windows_time)
+            # Convert to seconds and adjust epoch
+            seconds_since_1601 = windows_nano / 10000000
+            # Adjust to Unix epoch (seconds between 1601-01-01 and 1970-01-01)
+            seconds_since_1970 = seconds_since_1601 - 11644473600
+            return datetime.fromtimestamp(seconds_since_1970)
+        except Exception as e:
+            logger.error(f"Error converting Windows time: {e}")
+            return None
+
     def _get_alternative_streams(self, path: Path) -> Dict[str, bytes]:
         """Get alternative data streams"""
         streams = {}
