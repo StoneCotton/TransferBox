@@ -19,11 +19,13 @@ class TransferProgress:
     current_file: str
     file_number: int
     total_files: int
-    bytes_transferred: int     # Current file progress
-    total_bytes: int          # Current file size
-    total_transferred: int    # Total bytes transferred across all files
-    total_size: int          # Total size of all files
+    bytes_transferred: int
+    total_bytes: int
+    total_transferred: int
+    total_size: int
     current_file_progress: float
     overall_progress: float
     status: TransferStatus
-    error_message: Optional[str] = None
+    proxy_progress: float = 0.0
+    proxy_file_number: int = 0
+    proxy_total_files: int = 0
