@@ -43,6 +43,11 @@ class FileTransfer:
         self.checksum_calculator = ChecksumCalculator(display)
         self.directory_handler = DirectoryHandler(self.config)
         
+        # Initialize proxy generator first
+        self.proxy_generator = ProxyGenerator(self.config, self.display)
+        self._proxy_generation_active = False
+        self._current_proxy_file = None
+        
     def _update_progress(self, bytes_transferred: int, total_bytes: int, 
                         file_number: int, total_files: int,
                         status: TransferStatus) -> None:
@@ -152,8 +157,25 @@ class FileTransfer:
 
     def copy_sd_to_dump(self, source_path: Path, destination_path: Path, 
                         log_file: Path) -> bool:
-        """Copy files from source to destination with directory organization"""
+        """
+        Copy files from source to destination with intelligent proxy queue management.
         
+        This function performs a complete media transfer operation:
+        1. Validates transfer preconditions
+        2. Creates necessary directory structure
+        3. Transfers all media files while generating checksums
+        4. Queues proxy generation tasks for background processing
+        5. Creates MHL (Media Hash List) file for transfer verification
+        
+        Args:
+            source_path: Path to source drive (e.g., SD card)
+            destination_path: Path where files should be copied
+            log_file: Path for transfer log file
+            
+        Returns:
+            bool: True if transfer successful, False if any critical operation fails
+        """
+        # Validate transfer preconditions
         if not self._validate_transfer_preconditions(destination_path):
             self._play_sound(success=False)
             return False
@@ -170,7 +192,7 @@ class FileTransfer:
         target_dir = self.directory_handler.create_organized_directory(
             destination_path,
             source_path,
-            timestamp if self.config.create_date_folders else None  # Only pass timestamp if folders enabled
+            timestamp if self.config.create_date_folders else None
         )
 
         unmount_success = False
@@ -180,10 +202,8 @@ class FileTransfer:
             # Initialize MHL handling
             mhl_filename, tree, hashes = initialize_mhl_file(timestamp, target_dir)
             
-            # Initialize proxy generator if enabled
-            proxy_generator = None
-            if self.config.generate_proxies:
-                proxy_generator = ProxyGenerator(self.config, self.display)
+            # Get card name for proxy task grouping
+            card_name = source_path.name or "unnamed_card"
             
             # Get complete file list from source
             all_files = list(source_path.rglob('*'))
@@ -192,36 +212,29 @@ class FileTransfer:
             files_to_transfer = []
             required_directories = set()
             
+            # Filter files based on media_only_transfer setting
             if self.config.media_only_transfer:
-                # First pass: identify media files and their parent directories
                 for file_path in all_files:
                     if file_path.is_file():
                         if file_path.suffix.lower() in self.config.media_extensions:
                             files_to_transfer.append(file_path)
-                            # Add all parent directories of this media file
                             if self.config.preserve_folder_structure:
                                 current_dir = file_path.parent
                                 while current_dir != source_path:
                                     required_directories.add(current_dir)
                                     current_dir = current_dir.parent
             else:
-                # If not media only, include all files and their directories
                 files_to_transfer = [f for f in all_files if f.is_file()]
                 if self.config.preserve_folder_structure:
-                    required_directories = {
-                        f.parent for f in all_files if f.is_file()
-                    }
-            
+                    required_directories = {f.parent for f in files_to_transfer}
+
             # Calculate totals for transfer
             total_size = sum(f.stat().st_size for f in files_to_transfer)
             total_files = len(files_to_transfer)
             
-            # Log transfer configuration and statistics
+            # Log transfer details
             logger.info(f"Transfer mode: {'Media only' if self.config.media_only_transfer else 'All files'}")
-            if self.config.media_only_transfer:
-                logger.info(f"Media extensions: {', '.join(self.config.media_extensions)}")
             logger.info(f"Total files to transfer: {total_files}")
-            logger.info(f"Required directories: {len(required_directories)}")
             logger.info(f"Total transfer size: {total_size / (1024*1024*1024):.2f} GB")
             
             # Verify sufficient space (with 10% buffer)
@@ -230,7 +243,7 @@ class FileTransfer:
                 self.display.show_error("Not enough space")
                 self._play_sound(success=False)
                 return False
-            
+                
             # Initialize transfer state
             self.state_manager.enter_transfer()
             
@@ -238,32 +251,27 @@ class FileTransfer:
                 file_number = 0
                 total_transferred = 0
                 failures = []
-                created_dirs = set()
 
                 with open(log_file, 'a', encoding='utf-8') as log:
-                    # Create only the necessary directory structure
+                    # Create required directory structure
                     if self.config.preserve_folder_structure:
                         for dir_path in sorted(required_directories):
-                            # Convert source directory path to destination directory path
                             rel_path = dir_path.relative_to(source_path)
                             target_path = target_dir / rel_path
-                            
-                            # Create directory and all necessary parents
-                            if target_path not in created_dirs:
-                                target_path.mkdir(parents=True, exist_ok=True)
-                                created_dirs.add(target_path)
-                                logger.debug(f"Created directory: {target_path}")
+                            target_path.mkdir(parents=True, exist_ok=True)
+                            logger.debug(f"Created directory: {target_path}")
 
-                    # Transfer files
+                    # Transfer each file
                     for src_file in files_to_transfer:
                         file_number += 1
                         file_size = src_file.stat().st_size
                         
-                        # Create destination path maintaining structure if enabled
-                        dst_path = self._create_destination_path(src_file, target_dir, source_path)
-                        
-                        # Ensure the destination directory exists
-                        dst_path.parent.mkdir(parents=True, exist_ok=True)
+                        # Create destination path
+                        dst_path = self._create_destination_path(
+                            src_file, 
+                            target_dir, 
+                            source_path
+                        )
                         
                         logger.info(f"Processing file {file_number}/{total_files}: {src_file.name}")
                         
@@ -291,29 +299,27 @@ class FileTransfer:
                         if success and checksum:
                             total_transferred += file_size
                             self._log_success(log, src_file, dst_path)
+                            
+                            # Add file to MHL
                             add_file_to_mhl(
                                 mhl_filename, tree, hashes,
                                 dst_path, checksum,
                                 file_size
                             )
                             
-                            # Generate proxy if needed and file was copied successfully
-                            if (proxy_generator and 
-                                proxy_generator.should_generate_proxy(src_file)):
-                                
-                                proxy_success = proxy_generator.generate_proxy(
-                                    dst_path,  # Use the copied file as source
-                                    target_dir,
-                                    self._current_progress
-                                )
-                                
-                                if not proxy_success:
-                                    logger.warning(f"Failed to generate proxy for {src_file}")
+                            # Queue proxy generation for video files
+                            if self.config.generate_proxies:
+                                if dst_path.suffix.lower() in ['.mp4', '.mov', '.mxf', '.avi']:
+                                    self.proxy_queue.add_task(
+                                        source_path=dst_path,
+                                        destination_dir=target_dir,
+                                        card_name=card_name
+                                    )
                         else:
                             failures.append(str(src_file))
                             self._log_failure(log, src_file, dst_path)
 
-                    # Determine transfer success and handle completion
+                    # Determine transfer success
                     transfer_success = len(failures) == 0
                     
                     if transfer_success:
@@ -326,7 +332,15 @@ class FileTransfer:
                             self._current_progress.total_transferred = total_size
                             self.display.show_progress(self._current_progress)
                         
-                        # Handle unmounting if drive is still mounted
+                        # Wait for proxy generation to complete if enabled
+                        if self.config.generate_proxies:
+                            queue_status = self.proxy_queue.get_queue_status()
+                            if queue_status['total_tasks'] > 0:
+                                logger.info("Waiting for proxy generation to complete...")
+                                while self.proxy_queue.is_active():
+                                    time.sleep(0.1)  # Short sleep to prevent CPU spinning
+                        
+                        # Handle unmounting
                         if self.storage.is_drive_mounted(source_path):
                             if self.storage.unmount_drive(source_path):
                                 unmount_success = True
@@ -359,7 +373,6 @@ class FileTransfer:
                 self.state_manager.exit_transfer(source_path if not unmount_success else None)
             if transfer_success and not unmount_success:
                 self.display.show_status("Transfer complete")
-
     
     def _generate_destination_filename(self, source_path: Path) -> str:
         """

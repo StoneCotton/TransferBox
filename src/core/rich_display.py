@@ -1,4 +1,4 @@
-# /src/core/rich_display.py
+# src/core/rich_display.py
 
 from rich.console import Console
 from rich.progress import (
@@ -11,8 +11,7 @@ from rich.progress import (
     FileSizeColumn,
     TotalFileSizeColumn,
     TransferSpeedColumn,
-    SpinnerColumn,
-    ProgressColumn
+    SpinnerColumn
 )
 from rich.live import Live
 from rich.panel import Panel
@@ -20,6 +19,7 @@ from rich.layout import Layout
 from rich.text import Text
 from datetime import datetime
 from pathlib import Path
+from threading import Lock
 import logging
 from typing import Optional
 
@@ -31,247 +31,218 @@ logger = logging.getLogger(__name__)
 class FileNameColumn(TextColumn):
     """Custom column for displaying filename with consistent width"""
     def __init__(self, width: int = 30):
-        # Create format string that truncates filename to width
         super().__init__(f"{{task.description:.{width}s}}")
 
 class RichDisplay(DisplayInterface):
-    """Platform-agnostic display implementation using Rich library with enhanced progress bars"""
+    """Platform-agnostic display implementation using Rich library"""
     
     def __init__(self):
+        self.display_lock = Lock()
         self.console = Console()
         self._current_progress: Optional[TransferProgress] = None
         self.in_transfer_mode = False
+        self.in_proxy_mode = False
         
-        # Create progress display with all requested columns
+        # Create progress display
         self.progress = Progress(
-            # Leading spinner shows active operation
             SpinnerColumn(),
-            
-            # Filename column with fixed width to prevent layout shifts
             FileNameColumn(width=50),
-            
-            # Main progress bar
             BarColumn(bar_width=100, complete_style="blue"),
-            
-            # File size progress
             FileSizeColumn(),
             TextColumn("/"),
             TotalFileSizeColumn(),
-            
-            # Numerical progress (e.g., "123/456")
-            MofNCompleteColumn(),
-            
-            # Transfer speed
             TransferSpeedColumn(),
-            
-            # Time information
             TimeElapsedColumn(),
             TextColumn("ETA:"),
             TimeRemainingColumn(),
-            
-            # Ensure progress expands to terminal width
             expand=True,
-            
-            # Use console instance for consistent styling
             console=self.console
         )
         
-        # Create tasks for different progress types
+        # Task IDs for different modes
+        # Transfer mode tasks
         self.total_task_id = None
         self.copy_task_id = None
         self.checksum_task_id = None
         
-        # Create layout for status messages and progress
+        # Proxy mode tasks
+        self.proxy_total_task_id = None
+        self.proxy_current_task_id = None
+        
+        # Create layout
         self.layout = Layout()
         self.layout.split_column(
             Layout(name="status", size=2),
-            Layout(name="progress", size=6)  # Increased size to accommodate three progress bars
+            Layout(name="progress", size=6)  # Height for 3 progress bars
         )
         
-        # Create live display with higher refresh rate for smoother updates
         self.live = Live(
             self.layout,
             console=self.console,
-            refresh_per_second=15,  # Increased for smoother updates
-            transient=True  # Cleanup progress display when done
+            refresh_per_second=15,
+            transient=True
         )
-    
-    def _create_status_panel(self, message: str, error: bool = False) -> Panel:
-        """Create a status panel with timestamp and appropriate styling"""
-        timestamp = datetime.now().strftime('%H:%M:%S')
-        style = "red" if error else "blue"
-        
-        text = Text()
-        text.append(f"[{timestamp}] ", style=style)
-        text.append(message, style="bold" if error else "default")
-        
-        return Panel(text, border_style=style)
-    
+
+    def _initialize_transfer_mode(self):
+        """Initialize progress bars for file transfer mode."""
+        self.progress.tasks.clear()
+        self.total_task_id = self.progress.add_task(
+            "Total Progress",
+            total=100,
+            visible=True
+        )
+        self.copy_task_id = self.progress.add_task(
+            "Copy Progress",
+            total=100,
+            visible=True
+        )
+        self.checksum_task_id = self.progress.add_task(
+            "Checksum Progress",
+            total=100,
+            visible=True
+        )
+        self.in_transfer_mode = True
+        self.in_proxy_mode = False
+
+    def _initialize_proxy_mode(self):
+        """Initialize progress bars for proxy generation mode."""
+        self.progress.tasks.clear()
+        self.proxy_total_task_id = self.progress.add_task(
+            "Total Proxy Progress",
+            total=100,
+            visible=True
+        )
+        self.proxy_current_task_id = self.progress.add_task(
+            "Current Proxy",
+            total=100,
+            visible=True
+        )
+        self.in_transfer_mode = False
+        self.in_proxy_mode = True
+
+    def show_progress(self, progress: TransferProgress) -> None:
+        """Update progress display based on current operation mode."""
+        with self.display_lock:
+            try:
+                # Handle mode initialization
+                if not self.in_transfer_mode and not self.in_proxy_mode:
+                    if progress.status == TransferStatus.GENERATING_PROXY:
+                        self._initialize_proxy_mode()
+                    else:
+                        self._initialize_transfer_mode()
+                    self.live.start()
+
+                # Handle completion
+                if progress.status == TransferStatus.SUCCESS:
+                    self._cleanup_progress()
+                    return
+
+                # Update progress based on mode
+                if progress.status == TransferStatus.GENERATING_PROXY:
+                    if not self.in_proxy_mode:
+                        self._initialize_proxy_mode()
+                    
+                    # Update proxy progress bars
+                    self.progress.update(
+                        self.proxy_total_task_id,
+                        completed=((progress.proxy_file_number - 1) / progress.proxy_total_files) * 100,
+                        description=f"Total Progress ({progress.proxy_file_number}/{progress.proxy_total_files})"
+                    )
+                    
+                    self.progress.update(
+                        self.proxy_current_task_id,
+                        completed=progress.proxy_progress,
+                        description=f"Generating: {progress.current_file}"
+                    )
+                else:
+                    # Update transfer progress bars
+                    self.progress.update(
+                        self.total_task_id,
+                        completed=(progress.total_transferred / progress.total_size) * 100,
+                        description=f"Total Progress ({progress.file_number}/{progress.total_files})"
+                    )
+
+                    if progress.status == TransferStatus.COPYING:
+                        self.progress.update(
+                            self.copy_task_id,
+                            completed=(progress.bytes_transferred / progress.total_bytes) * 100,
+                            description=f"Copying: {progress.current_file}"
+                        )
+                        # Reset checksum progress during copy
+                        self.progress.update(
+                            self.checksum_task_id,
+                            completed=0,
+                            description="Waiting for checksum"
+                        )
+                    elif progress.status == TransferStatus.CHECKSUMMING:
+                        # Keep copy progress complete during checksum
+                        self.progress.update(
+                            self.copy_task_id,
+                            completed=100,
+                            description=f"Copied: {progress.current_file}"
+                        )
+                        # Update checksum progress
+                        self.progress.update(
+                            self.checksum_task_id,
+                            completed=progress.current_file_progress * 100,
+                            description=f"Checksumming: {progress.current_file}"
+                        )
+
+                # Update the layout
+                self.layout["progress"].update(self.progress)
+
+            except Exception as e:
+                logger.error(f"Error updating progress: {e}")
+
+    def _cleanup_progress(self) -> None:
+        """Clean up progress display."""
+        if self.in_transfer_mode or self.in_proxy_mode:
+            if self.live.is_started:
+                self.live.stop()
+            self.progress.tasks.clear()
+            self.in_transfer_mode = False
+            self.in_proxy_mode = False
+            
+            # Reset all task IDs
+            self.total_task_id = None
+            self.copy_task_id = None
+            self.checksum_task_id = None
+            self.proxy_total_task_id = None
+            self.proxy_current_task_id = None
+
     def show_status(self, message: str, line: int = 0) -> None:
-        """Display a status message"""
+        """Display a status message."""
         try:
-            # Handle transfer mode transitions
-            if message.lower() in ["standby", "input card"] and self.in_transfer_mode:
-                self.in_transfer_mode = False
-                self._cleanup_progress()
-            
-            # Create status panel
-            status_panel = self._create_status_panel(message)
-            
-            if self.in_transfer_mode:
-                self.layout["status"].update(status_panel)
+            if self.in_transfer_mode or self.in_proxy_mode:
+                self.layout["status"].update(
+                    Panel(Text(message, style="blue"))
+                )
             else:
-                # Direct console output when not in transfer mode
-                self.console.print(status_panel)
+                self.console.print(message)
             
             logger.debug(f"Status: {message}")
-            
         except Exception as e:
             logger.error(f"Error showing status: {e}")
 
-    def show_progress(self, progress: TransferProgress) -> None:
-        """Update transfer progress display"""
-        try:
-            if not self.in_transfer_mode:
-                self.in_transfer_mode = True
-                self._initialize_progress_display(progress)
-                self.live.start()
-            
-            # Handle completion
-            if progress.status == TransferStatus.SUCCESS:
-                self._cleanup_progress()
-                return
-            
-            # Update total progress
-            if self.total_task_id is not None:
-                self.progress.update(
-                    self.total_task_id,
-                    completed=progress.total_transferred,  # Use accumulated total
-                    total=progress.total_size,            # Use actual total size
-                    description=f"Total Progress"
-                )
-            
-            # Update operation-specific progress based on status
-            if progress.status == TransferStatus.COPYING:
-                # Update copy progress
-                if self.copy_task_id is not None:
-                    self.progress.update(
-                        self.copy_task_id,
-                        completed=progress.bytes_transferred,
-                        total=progress.total_bytes,
-                        description=f"Copying: {progress.current_file}"
-                    )
-                # Reset checksum progress
-                if self.checksum_task_id is not None:
-                    self.progress.update(
-                        self.checksum_task_id,
-                        completed=0,
-                        total=100,
-                        description="Waiting for checksum"
-                    )
-                    
-            elif progress.status == TransferStatus.CHECKSUMMING:
-                # Keep copy at 100% during checksumming
-                if self.copy_task_id is not None:
-                    self.progress.update(
-                        self.copy_task_id,
-                        completed=progress.total_bytes,
-                        total=progress.total_bytes,
-                        description=f"Copied: {progress.current_file}"
-                    )
-                
-                # Update checksum progress
-                if self.checksum_task_id is not None:
-                    if progress.current_file_progress <= 0.5:
-                        # Source checksum phase (0-50%)
-                        phase = "Source"
-                        completed = progress.current_file_progress * 2 * progress.total_bytes
-                    else:
-                        # Destination checksum phase (50-100%)
-                        phase = "Destination"
-                        completed = (progress.current_file_progress - 0.5) * 2 * progress.total_bytes
-                    
-                    self.progress.update(
-                        self.checksum_task_id,
-                        description=f"Checksumming ({phase}): {progress.current_file}",
-                        completed=completed,
-                        total=progress.total_bytes
-                    )
-            
-            # Update the layout
-            self.layout["progress"].update(self.progress)
-            
-        except Exception as e:
-            logger.error(f"Error updating progress: {e}")
-
     def show_error(self, message: str) -> None:
-        """Display an error message"""
+        """Display an error message."""
         try:
-            error_panel = self._create_status_panel(message, error=True)
-            
-            if self.in_transfer_mode:
-                self.layout["status"].update(error_panel)
+            if self.in_transfer_mode or self.in_proxy_mode:
+                self.layout["status"].update(
+                    Panel(Text(message, style="red bold"))
+                )
             else:
-                self.console.print(error_panel)
+                self.console.print(f"[red bold]Error: {message}[/]")
             
             logger.error(f"Display error: {message}")
-            
         except Exception as e:
             logger.error(f"Error showing error message: {e}")
 
     def clear(self) -> None:
-        """Clear the display"""
+        """Clear the display."""
         try:
             self._cleanup_progress()
             self.console.clear()
             logger.debug("Display cleared")
         except Exception as e:
             logger.error(f"Error clearing display: {e}")
-
-    def _initialize_progress_display(self, progress: TransferProgress) -> None:
-        """Initialize progress bars for a new transfer"""
-        # Calculate total bytes for the entire transfer
-        total_bytes = progress.total_files * progress.total_bytes
-        
-        # Create total progress task
-        self.total_task_id = self.progress.add_task(
-            description="Total Progress",
-            total=total_bytes,
-            completed=0
-        )
-        
-        # Create copy progress task
-        self.copy_task_id = self.progress.add_task(
-            description=f"Copying: {progress.current_file}",
-            total=progress.total_bytes,
-            completed=0
-        )
-        
-        # Create checksum progress task
-        self.checksum_task_id = self.progress.add_task(
-            description="Waiting for checksum",
-            total=progress.total_bytes,
-            completed=0
-        )
-        
-        # Add proxy generation progress task
-        self.proxy_task_id = self.progress.add_task(
-            description="Waiting for proxy generation",
-            total=100,  # Use percentage for proxy progress
-            completed=0
-        )
-
-    def _cleanup_progress(self) -> None:
-        """Clean up progress display resources"""
-        if self.in_transfer_mode:
-            self.in_transfer_mode = False
-            if hasattr(self, 'live') and self.live.is_started:
-                self.live.stop()
-            
-            # Reset task IDs
-            self.total_task_id = None
-            self.copy_task_id = None
-            self.checksum_task_id = None
-            
-            # Clear existing tasks
-            self.progress.tasks.clear()
