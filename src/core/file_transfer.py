@@ -116,12 +116,12 @@ class FileTransfer:
 
     def _validate_transfer_preconditions(self, destination_path: Path) -> bool:
         """
-        Validate preconditions before starting transfer.
+        Validate preconditions before starting transfer and create destination directory if needed.
         
         This method checks if the transfer can proceed by validating:
         1. A destination path is provided
         2. We're not in utility mode
-        3. The destination path is valid (but doesn't need to exist yet)
+        3. The destination path can be created if it doesn't exist
         
         Args:
             destination_path: Path where files will be transferred
@@ -137,18 +137,37 @@ class FileTransfer:
             logger.info("Transfer blocked - utility mode")
             return False
 
-        # Validate that the parent directory exists or is a root directory
         try:
-            # If the path doesn't exist, check its parent
-            parent_path = destination_path.parent
-            
-            # If we're at a root directory (like "C:\") or the parent exists,
-            # the path is valid even if it doesn't exist yet
-            if destination_path.drive or parent_path.exists():
+            # Check if the path exists and is a directory
+            if destination_path.exists():
+                if not destination_path.is_dir():
+                    self.display.show_error("Path exists but is not a directory")
+                    return False
+                logger.info(f"Using existing directory: {destination_path}")
+                return True
+
+            # Path doesn't exist, check if we can create it
+            try:
+                # First check if parent directory exists or is a root
+                parent_path = destination_path.parent
+                if not (destination_path.drive or parent_path.exists()):
+                    self.display.show_error("Parent directory does not exist")
+                    return False
+
+                # Attempt to create the directory
+                destination_path.mkdir(parents=True, exist_ok=True)
+                logger.info(f"Created directory: {destination_path}")
+                
+                # Double-check the directory was created
+                if not destination_path.exists() or not destination_path.is_dir():
+                    self.display.show_error("Failed to create directory")
+                    return False
+                
                 return True
                 
-            self.display.show_error("Invalid path")
-            return False
+            except PermissionError:
+                self.display.show_error("Permission denied creating directory")
+                return False
             
         except Exception as e:
             logger.error(f"Error validating destination path: {e}")

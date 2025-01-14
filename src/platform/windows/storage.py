@@ -161,25 +161,44 @@ class WindowsStorage(StorageInterface):
 
     def set_dump_drive(self, path: Path) -> None:
         """
-        Set the dump drive location, creating parent directories if needed.
+        Set the dump drive location for Windows, validating drive accessibility but allowing
+        for directory creation. This method checks that the drive letter exists and is
+        writable, but doesn't require the full directory path to exist yet.
         
         Args:
             path: Path to set as dump drive location
                 
         Raises:
-            ValueError: If path is invalid or inaccessible
+            ValueError: If drive letter is invalid or inaccessible
         """
         try:
             path = Path(path)
             
-            # Check if the drive is available by comparing with our existing method
-            available_drives = self.get_available_drives()
-            drive_path = Path(path.drive + "\\")
+            # On Windows, we need to validate the drive letter first
+            drive_path = Path(path.drive + '\\')
             
+            # Get available drives to check against
+            available_drives = self.get_available_drives()
+            
+            # Verify the drive exists
             if not any(drive == drive_path for drive in available_drives):
                 raise ValueError(f"Drive {path.drive} is not accessible")
-            
-            # Store the path - we don't need to verify it exists
+                
+            # Check drive type - we want to ensure it's a proper storage drive
+            drive_type = self.get_drive_type(drive_path)
+            if drive_type not in ["FIXED", "REMOVABLE"]:
+                raise ValueError(f"Drive {path.drive} is not a valid storage drive (type: {drive_type})")
+                
+            # Verify the drive is writable by checking permissions
+            try:
+                # Create a temporary file to test write access
+                test_file = drive_path / ".write_test"
+                test_file.touch()
+                test_file.unlink()
+            except (PermissionError, OSError):
+                raise ValueError(f"Drive {path.drive} is not writable")
+                
+            # Store the target path - we don't verify it exists as it will be created during transfer
             self.dump_drive_mountpoint = path
             logger.info(f"Set dump drive to {path}")
             

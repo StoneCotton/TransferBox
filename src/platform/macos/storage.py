@@ -125,20 +125,43 @@ class MacOSStorage(StorageInterface):
         return self.dump_drive_mountpoint
 
     def set_dump_drive(self, path: Path) -> None:
-        """Set the dump drive location"""
+        """
+        Set the dump drive location, validating the drive is accessible but allowing
+        for directory creation.
+        
+        Args:
+            path: Path to set as dump drive location
+                
+        Raises:
+            ValueError: If path's drive is invalid or inaccessible
+        """
         try:
             path = Path(path)
-            if not path.exists():
-                raise ValueError(f"Path {path} does not exist")
-            if not path.is_dir():
-                raise ValueError(f"Path {path} is not a directory")
+            
+            # First validate that the volume/drive exists and is accessible
+            drive_path = None
+            
+            # On macOS, check if the path starts with /Volumes/
+            if str(path).startswith('/Volumes/'):
+                volume_name = path.parts[2]  # Get the volume name
+                drive_path = Path('/Volumes') / volume_name
+            else:
+                # For paths not in /Volumes, use the root
+                drive_path = Path('/')
+            
+            # Check if the drive/volume is accessible
+            if not drive_path.exists():
+                raise ValueError(f"Volume {drive_path} is not accessible")
                 
-            # Verify the directory is writable
-            if not os.access(path, os.W_OK):
-                raise ValueError(f"Path {path} is not writable")
-                    
+            # Verify the drive is writable by checking permissions on the volume root
+            if not os.access(drive_path, os.W_OK):
+                raise ValueError(f"Volume {drive_path} is not writable")
+            
+            # Store the target path - we don't need to verify it exists
+            # as it will be created during transfer if needed
             self.dump_drive_mountpoint = path
             logger.info(f"Set dump drive to {path}")
+            
         except Exception as e:
             logger.error(f"Error setting dump drive: {e}")
             raise ValueError(str(e))
