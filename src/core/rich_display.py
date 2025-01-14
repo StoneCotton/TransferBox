@@ -1,5 +1,3 @@
-# src/core/rich_display.py
-
 from rich.console import Console
 from rich.progress import (
     Progress,
@@ -43,29 +41,27 @@ class RichDisplay(DisplayInterface):
         self.in_transfer_mode = False
         self.in_proxy_mode = False
         
-        # Create progress display
+        # Create progress display with improved column configuration
+        # Note: Rich's size columns automatically handle binary formatting
         self.progress = Progress(
-            SpinnerColumn(),
-            FileNameColumn(width=50),
-            BarColumn(bar_width=100, complete_style="blue"),
-            FileSizeColumn(),
-            TextColumn("/"),
-            TotalFileSizeColumn(),
-            TransferSpeedColumn(),
-            TimeElapsedColumn(),
-            TextColumn("ETA:"),
-            TimeRemainingColumn(),
-            expand=True,
+            SpinnerColumn(),                              # Shows an animated spinner
+            FileNameColumn(width=50),                     # Custom column for filename
+            BarColumn(bar_width=100, complete_style="blue"), # Progress bar
+            FileSizeColumn(),                             # Current size - automatically formats
+            TextColumn("/"),                              # Separator
+            TotalFileSizeColumn(),                        # Total size - automatically formats
+            TransferSpeedColumn(),                        # Transfer speed - automatically formats
+            TimeElapsedColumn(),                          # Time elapsed
+            TextColumn("ETA:"),                           # ETA label
+            TimeRemainingColumn(),                        # Time remaining
+            expand=True,                                  # Allow the progress bar to expand
             console=self.console
         )
         
         # Task IDs for different modes
-        # Transfer mode tasks
         self.total_task_id = None
         self.copy_task_id = None
         self.checksum_task_id = None
-        
-        # Proxy mode tasks
         self.proxy_total_task_id = None
         self.proxy_current_task_id = None
         
@@ -73,7 +69,7 @@ class RichDisplay(DisplayInterface):
         self.layout = Layout()
         self.layout.split_column(
             Layout(name="status", size=2),
-            Layout(name="progress", size=6)  # Height for 3 progress bars
+            Layout(name="progress", size=6)
         )
         
         self.live = Live(
@@ -84,46 +80,49 @@ class RichDisplay(DisplayInterface):
         )
 
     def _initialize_transfer_mode(self):
-        """Initialize progress bars for file transfer mode."""
+        """Initialize progress bars for file transfer mode with proper size tracking"""
         self.progress.tasks.clear()
-        self.total_task_id = self.progress.add_task(
-            "Total Progress",
-            total=100,
-            visible=True
-        )
-        self.copy_task_id = self.progress.add_task(
-            "Copy Progress",
-            total=100,
-            visible=True
-        )
-        self.checksum_task_id = self.progress.add_task(
-            "Checksum Progress",
-            total=100,
-            visible=True
-        )
+        
+        # Initialize total progress with correct total size
+        if self._current_progress:
+            self.total_task_id = self.progress.add_task(
+                "Total Progress",
+                total=self._current_progress.total_size,
+                completed=self._current_progress.total_transferred,
+                visible=True
+            )
+            
+            # Initialize current file progress
+            self.copy_task_id = self.progress.add_task(
+                "Copy Progress",
+                total=self._current_progress.total_bytes,
+                completed=self._current_progress.bytes_transferred,
+                visible=True
+            )
+            
+            # Initialize checksum progress
+            self.checksum_task_id = self.progress.add_task(
+                "Checksum Progress",
+                total=self._current_progress.total_bytes,
+                completed=0,
+                visible=True
+            )
+        else:
+            # Fallback initialization if no progress info available
+            self.total_task_id = self.progress.add_task("Total Progress", total=100, visible=True)
+            self.copy_task_id = self.progress.add_task("Copy Progress", total=100, visible=True)
+            self.checksum_task_id = self.progress.add_task("Checksum Progress", total=100, visible=True)
+        
         self.in_transfer_mode = True
         self.in_proxy_mode = False
 
-    def _initialize_proxy_mode(self):
-        """Initialize progress bars for proxy generation mode."""
-        self.progress.tasks.clear()
-        self.proxy_total_task_id = self.progress.add_task(
-            "Total Proxy Progress",
-            total=100,
-            visible=True
-        )
-        self.proxy_current_task_id = self.progress.add_task(
-            "Current Proxy",
-            total=100,
-            visible=True
-        )
-        self.in_transfer_mode = False
-        self.in_proxy_mode = True
-
     def show_progress(self, progress: TransferProgress) -> None:
-        """Update progress display based on current operation mode."""
+        """Update progress display with accurate size and speed tracking"""
         with self.display_lock:
             try:
+                # Store current progress information
+                self._current_progress = progress
+                
                 # Handle mode initialization
                 if not self.in_transfer_mode and not self.in_proxy_mode:
                     if progress.status == TransferStatus.GENERATING_PROXY:
@@ -142,49 +141,57 @@ class RichDisplay(DisplayInterface):
                     if not self.in_proxy_mode:
                         self._initialize_proxy_mode()
                     
-                    # Update proxy progress bars
+                    # Update proxy progress bars with correct sizes
                     self.progress.update(
                         self.proxy_total_task_id,
-                        completed=((progress.proxy_file_number - 1) / progress.proxy_total_files) * 100,
+                        completed=progress.total_transferred,
+                        total=progress.total_size,
                         description=f"Total Progress ({progress.proxy_file_number}/{progress.proxy_total_files})"
                     )
                     
                     self.progress.update(
                         self.proxy_current_task_id,
-                        completed=progress.proxy_progress,
+                        completed=progress.bytes_transferred,
+                        total=progress.total_bytes,
                         description=f"Generating: {progress.current_file}"
                     )
                 else:
-                    # Update transfer progress bars
+                    # Update transfer progress bars with correct sizes
                     self.progress.update(
                         self.total_task_id,
-                        completed=(progress.total_transferred / progress.total_size) * 100,
+                        completed=progress.total_transferred,
+                        total=progress.total_size,
                         description=f"Total Progress ({progress.file_number}/{progress.total_files})"
                     )
 
                     if progress.status == TransferStatus.COPYING:
                         self.progress.update(
                             self.copy_task_id,
-                            completed=(progress.bytes_transferred / progress.total_bytes) * 100,
+                            completed=progress.bytes_transferred,
+                            total=progress.total_bytes,
                             description=f"Copying: {progress.current_file}"
                         )
                         # Reset checksum progress during copy
                         self.progress.update(
                             self.checksum_task_id,
                             completed=0,
+                            total=progress.total_bytes,
                             description="Waiting for checksum"
                         )
                     elif progress.status == TransferStatus.CHECKSUMMING:
                         # Keep copy progress complete during checksum
                         self.progress.update(
                             self.copy_task_id,
-                            completed=100,
+                            completed=progress.total_bytes,
+                            total=progress.total_bytes,
                             description=f"Copied: {progress.current_file}"
                         )
                         # Update checksum progress
+                        checksum_completed = int(progress.current_file_progress * progress.total_bytes)
                         self.progress.update(
                             self.checksum_task_id,
-                            completed=progress.current_file_progress * 100,
+                            completed=checksum_completed,
+                            total=progress.total_bytes,
                             description=f"Checksumming: {progress.current_file}"
                         )
 
@@ -195,7 +202,7 @@ class RichDisplay(DisplayInterface):
                 logger.error(f"Error updating progress: {e}")
 
     def _cleanup_progress(self) -> None:
-        """Clean up progress display."""
+        """Clean up progress display"""
         if self.in_transfer_mode or self.in_proxy_mode:
             if self.live.is_started:
                 self.live.stop()
@@ -214,11 +221,13 @@ class RichDisplay(DisplayInterface):
         """Display a status message."""
         try:
             if self.in_transfer_mode or self.in_proxy_mode:
+                # When in progress mode, show status in the status panel
                 self.layout["status"].update(
                     Panel(Text(message, style="blue"))
                 )
             else:
-                self.console.print(message)
+                # When not in progress mode, print directly to console
+                self.console.print(Text(message, style="blue"))
             
             logger.debug(f"Status: {message}")
         except Exception as e:
@@ -228,11 +237,13 @@ class RichDisplay(DisplayInterface):
         """Display an error message."""
         try:
             if self.in_transfer_mode or self.in_proxy_mode:
+                # When in progress mode, show error in the status panel
                 self.layout["status"].update(
                     Panel(Text(message, style="red bold"))
                 )
             else:
-                self.console.print(f"[red bold]Error: {message}[/]")
+                # When not in progress mode, print directly to console
+                self.console.print(Text(f"Error: {message}", style="red bold"))
             
             logger.error(f"Display error: {message}")
         except Exception as e:
@@ -241,8 +252,12 @@ class RichDisplay(DisplayInterface):
     def clear(self) -> None:
         """Clear the display."""
         try:
+            # Clean up any existing progress display
             self._cleanup_progress()
+            
+            # Clear the console
             self.console.clear()
+            
             logger.debug("Display cleared")
         except Exception as e:
             logger.error(f"Error clearing display: {e}")
