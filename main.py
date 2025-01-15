@@ -16,6 +16,7 @@ from src.core.state_manager import StateManager
 from src.core.file_transfer import FileTransfer
 from src.core.logger_setup import setup_logging
 from src.core.sound_manager import SoundManager
+from src.core.path_utils import sanitize_path, validate_destination_path
 
 # Initialize logging
 logger = setup_logging()
@@ -110,12 +111,18 @@ class TransferBox:
             try:
                 # Get destination path from user
                 self.display.show_status("Enter destination path:")
-                destination = input("Enter destination path for transfers: ").strip()
-                destination_path = Path(destination)
-                
-                # Let FileTransfer handle path validation and creation
-                self.storage.set_dump_drive(destination_path)
-                
+                raw_destination = input("Enter destination path for transfers: ")
+                try:
+                    # Sanitize and validate the input path
+                    destination_path = sanitize_path(raw_destination)
+                    destination_path = validate_destination_path(destination_path, self.storage)
+                    
+                    # Let FileTransfer handle path validation and creation
+                    self.storage.set_dump_drive(destination_path)
+                except ValueError as e:
+                    self.display.show_error(str(e))
+                    continue              
+                                
                 # Wait for source drive
                 self.display.show_status("Waiting for source drive...")
                 initial_drives = self.storage.get_available_drives()

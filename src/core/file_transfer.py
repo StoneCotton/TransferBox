@@ -4,6 +4,7 @@ import logging
 import os
 import shutil 
 import time
+import platform
 from pathlib import Path
 from typing import Optional, Tuple
 from datetime import datetime
@@ -58,6 +59,88 @@ class FileTransfer:
             self._current_progress.overall_progress = (file_number - 1 + (bytes_transferred / total_bytes)) / total_files
             self._current_progress.status = status
             self.display.show_progress(self._current_progress)
+
+    def sanitize_path(path_str: str) -> Path:
+        """
+        Sanitize a path string by removing quotes and normalizing it to an absolute path.
+        
+        Args:
+            path_str: Raw path string that might contain quotes
+            
+        Returns:
+            Path object representing an absolute path
+            
+        Raises:
+            ValueError: If the path is invalid or cannot be converted to absolute
+        """
+        try:
+            # Remove any surrounding quotes (single or double)
+            cleaned_path = path_str.strip("'\"")
+            
+            # Convert to Path object
+            path = Path(cleaned_path)
+            
+            # Resolve any relative path components and convert to absolute
+            if not path.is_absolute():
+                raise ValueError(f"Path must be absolute: {path_str}")
+                
+            # Normalize the path (resolve any .. or . components)
+            normalized_path = path.resolve()
+            
+            # On Windows, ensure consistent path separator
+            if os.name == 'nt':
+                normalized_path = Path(str(normalized_path).replace('/', '\\'))
+                
+            return normalized_path
+            
+        except Exception as e:
+            logger.error(f"Error sanitizing path '{path_str}': {e}")
+            raise ValueError(f"Invalid path format: {path_str}")
+        
+    def validate_destination_path(path: Path, storage: StorageInterface) -> Path:
+        """
+        Validate a destination path and ensure it's properly formatted for the current platform.
+        
+        Args:
+            path: Path to validate
+            storage: StorageInterface implementation for the current platform
+            
+        Returns:
+            Validated and normalized Path object
+            
+        Raises:
+            ValueError: If the path is invalid for the current platform
+        """
+        try:
+            # Handle platform-specific path validation
+            if platform.system().lower() == 'darwin':
+                # For macOS, ensure paths to external drives start with /Volumes/
+                if not str(path).startswith('/Volumes/'):
+                    raise ValueError("External drive paths must start with /Volumes/")
+            elif platform.system().lower() == 'windows':
+                # For Windows, ensure path has a drive letter
+                if not path.drive:
+                    raise ValueError("Windows paths must include a drive letter")
+            
+            # Check if the path's drive/volume exists and is accessible
+            drive_path = Path(path.drive + '\\') if os.name == 'nt' else Path('/Volumes')
+            if not drive_path.exists():
+                raise ValueError(f"Drive/volume not found: {drive_path}")
+                
+            # Check if we have permission to write to the drive
+            try:
+                if not os.access(drive_path, os.W_OK):
+                    raise ValueError(f"No write permission for drive: {drive_path}")
+            except OSError:
+                # Handle access check failures
+                raise ValueError(f"Cannot verify permissions for drive: {drive_path}")
+                
+            return path
+            
+        except Exception as e:
+            logger.error(f"Error validating destination path '{path}': {e}")
+            raise ValueError(str(e))
+
 
     def _copy_with_progress(self, src_path: Path, dst_path: Path, 
                         file_number: int, total_files: int,

@@ -8,8 +8,9 @@ import time
 import subprocess
 import logging
 from pathlib import Path
-from typing import List, Dict, Optional, Any
+from typing import List, Dict, Optional, Any, Union
 from src.core.interfaces.storage import StorageInterface
+from src.core.path_utils import sanitize_path, validate_destination_path
 
 logger = logging.getLogger(__name__)
 
@@ -124,7 +125,7 @@ class MacOSStorage(StorageInterface):
         """Get the dump drive location"""
         return self.dump_drive_mountpoint
 
-    def set_dump_drive(self, path: Path) -> None:
+    def set_dump_drive(self, path: Union[Path, str]) -> None:
         """
         Set the dump drive location, validating the drive is accessible but allowing
         for directory creation.
@@ -133,11 +134,15 @@ class MacOSStorage(StorageInterface):
             path: Path to set as dump drive location
                 
         Raises:
-            ValueError: If path's drive is invalid or inaccessible
+            ValueError: If drive letter is invalid or inaccessible
         """
         try:
-            path = Path(path)
-            
+            # Sanitize the path if it's a string
+            if isinstance(path, str):
+                path = sanitize_path(path)
+            elif isinstance(path, Path):
+                path = validate_destination_path(path, self)
+                
             # First validate that the volume/drive exists and is accessible
             drive_path = None
             
