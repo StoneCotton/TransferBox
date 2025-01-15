@@ -11,8 +11,9 @@ import win32con
 import win32security
 from datetime import datetime
 from pathlib import Path
-from typing import List, Dict, Optional, Any
+from typing import List, Dict, Optional, Any, Union
 from src.core.interfaces.storage import StorageInterface
+from src.core.path_utils import sanitize_path, validate_destination_path
 
 logger = logging.getLogger(__name__)
 
@@ -159,11 +160,10 @@ class WindowsStorage(StorageInterface):
         """Get the dump drive location"""
         return self.dump_drive_mountpoint
 
-    def set_dump_drive(self, path: Path) -> None:
+    def set_dump_drive(self, path: Union[Path, str]) -> None:
         """
         Set the dump drive location for Windows, validating drive accessibility but allowing
-        for directory creation. This method checks that the drive letter exists and is
-        writable, but doesn't require the full directory path to exist yet.
+        for directory creation.
         
         Args:
             path: Path to set as dump drive location
@@ -172,33 +172,47 @@ class WindowsStorage(StorageInterface):
             ValueError: If drive letter is invalid or inaccessible
         """
         try:
-            path = Path(path)
+            # Sanitize the path if it's a string
+            if isinstance(path, str):
+                path = sanitize_path(path)
+            elif isinstance(path, Path):
+                path = validate_destination_path(path, self)
             
-            # On Windows, we need to validate the drive letter first
+            # Get drive path
             drive_path = Path(path.drive + '\\')
             
-            # Get available drives to check against
-            available_drives = self.get_available_drives()
-            
-            # Verify the drive exists
-            if not any(drive == drive_path for drive in available_drives):
-                raise ValueError(f"Drive {path.drive} is not accessible")
-                
-            # Check drive type - we want to ensure it's a proper storage drive
-            drive_type = self.get_drive_type(drive_path)
-            if drive_type not in ["FIXED", "REMOVABLE"]:
-                raise ValueError(f"Drive {path.drive} is not a valid storage drive (type: {drive_type})")
-                
-            # Verify the drive is writable by checking permissions
+            # Verify it's a proper storage drive using Windows API
             try:
-                # Create a temporary file to test write access
-                test_file = drive_path / ".write_test"
-                test_file.touch()
-                test_file.unlink()
-            except (PermissionError, OSError):
-                raise ValueError(f"Drive {path.drive} is not writable")
+                import win32file
+                drive_type = win32file.GetDriveType(str(drive_path))
+                valid_types = [win32file.DRIVE_FIXED, win32file.DRIVE_REMOVABLE]
                 
-            # Store the target path - we don't verify it exists as it will be created during transfer
+                if drive_type not in valid_types:
+                    drive_type_names = {
+                        win32file.DRIVE_UNKNOWN: "Unknown",
+                        win32file.DRIVE_NO_ROOT_DIR: "No Root Directory",
+                        win32file.DRIVE_REMOVABLE: "Removable",
+                        win32file.DRIVE_FIXED: "Fixed",
+                        win32file.DRIVE_REMOTE: "Network",
+                        win32file.DRIVE_CDROM: "CD-ROM",
+                        win32file.DRIVE_RAMDISK: "RAM Disk"
+                    }
+                    type_name = drive_type_names.get(drive_type, f"Unknown Type ({drive_type})")
+                    raise ValueError(f"Drive {drive_path} is not a valid storage drive (Type: {type_name})")
+                
+                # Get drive free space
+                sectors_per_cluster, bytes_per_sector, free_clusters, total_clusters = \
+                    win32file.GetDiskFreeSpace(str(drive_path))
+                
+                free_bytes = sectors_per_cluster * bytes_per_sector * free_clusters
+                if free_bytes < 1024 * 1024 * 100:  # 100MB minimum
+                    free_gb = free_bytes / (1024 * 1024 * 1024)
+                    raise ValueError(f"Drive {drive_path} has insufficient space ({free_gb:.2f} GB free)")
+                
+            except ImportError:
+                logger.warning("win32file not available - skipping detailed drive checks")
+            
+            # Store the target path - the actual directory will be created during transfer
             self.dump_drive_mountpoint = path
             logger.info(f"Set dump drive to {path}")
             

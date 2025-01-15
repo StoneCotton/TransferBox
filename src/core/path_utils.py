@@ -73,11 +73,38 @@ def validate_destination_path(path: Path, storage: StorageInterface) -> Path:
             # For Windows, ensure path has a drive letter
             if not path.drive:
                 raise ValueError("Windows paths must include a drive letter")
+            
+            # Check for invalid Windows path characters
+            invalid_chars = '<>:"|?*'
+            for char in invalid_chars:
+                if char in str(path):
+                    raise ValueError(f"Invalid character '{char}' in Windows path")
+            
+            # Check for reserved Windows names
+            reserved_names = {'CON', 'PRN', 'AUX', 'NUL', 'COM1', 'COM2', 'COM3', 'COM4',
+                            'COM5', 'COM6', 'COM7', 'COM8', 'COM9', 'LPT1', 'LPT2',
+                            'LPT3', 'LPT4', 'LPT5', 'LPT6', 'LPT7', 'LPT8', 'LPT9'}
+            
+            for part in path.parts:
+                name = part.split('.')[0].upper()
+                if name in reserved_names:
+                    raise ValueError(f"Invalid Windows reserved name: {part}")
+            
             # For Windows, use the drive root
             drive_path = Path(path.drive + '\\')
-        else:
-            # For other platforms (like Raspberry Pi), use the root of the path
-            drive_path = path.anchor
+            
+            # Verify drive type is fixed or removable
+            try:
+                import win32file
+                drive_type = win32file.GetDriveType(str(drive_path))
+                if drive_type not in [win32file.DRIVE_FIXED, win32file.DRIVE_REMOVABLE]:
+                    raise ValueError(f"Drive {drive_path} is not a valid storage drive")
+            except ImportError:
+                logger.warning("win32file not available - skipping drive type check")
+            
+        else:  # Linux/Raspberry Pi - though we don't use this in the actual RPi implementation
+            # Use root directory as drive path for permission checking
+            drive_path = Path('/')
             
         # Check if the drive/volume exists and is accessible
         if not drive_path.exists():
