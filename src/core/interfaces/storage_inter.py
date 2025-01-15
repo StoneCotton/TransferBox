@@ -1,4 +1,4 @@
-# src/core/interfaces/storage.py
+# src/core/interfaces/storage_inter.py
 from abc import ABC, abstractmethod
 from typing import List, Dict
 from pathlib import Path

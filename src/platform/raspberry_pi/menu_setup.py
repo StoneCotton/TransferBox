@@ -10,7 +10,7 @@ from typing import Optional, Callable
 from gpiozero import Button
 
 from src.core.interfaces.display import DisplayInterface
-from src.core.interfaces.storage import StorageInterface
+from src.core.interfaces.storage_inter import StorageInterface
 from .led_control import LEDControl, led_manager
 from .power_management import power_manager
 

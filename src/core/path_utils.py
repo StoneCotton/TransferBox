@@ -3,7 +3,7 @@ import platform
 import logging
 from pathlib import Path
 from typing import Union
-from .interfaces.storage import StorageInterface
+from .interfaces.storage_inter import StorageInterface
 
 logger = logging.getLogger(__name__)
 

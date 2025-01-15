@@ -5,7 +5,7 @@ from threading import Thread, Event
 from gpiozero import Button
 from src.core.interfaces.platform import PlatformInitializer
 from .display import RaspberryPiDisplay
-from .storage import RaspberryPiStorage
+from .storage_pi import RaspberryPiStorage
 from .power_management import power_manager
 from .led_control import setup_leds, cleanup_leds
 from .lcd_display import setup_lcd

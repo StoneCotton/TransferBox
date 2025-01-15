@@ -2,7 +2,7 @@
 from abc import ABC, abstractmethod
 from typing import Optional
 from .display import DisplayInterface
-from .storage import StorageInterface
+from .storage_inter import StorageInterface
 
 class PlatformInitializer(ABC):
     """Abstract base class for platform-specific initialization"""

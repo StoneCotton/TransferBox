@@ -11,7 +11,7 @@ from threading import Event
 from src.core.config_manager import ConfigManager
 from src.core.platform_manager import PlatformManager
 from src.core.interfaces.display import DisplayInterface
-from src.core.interfaces.storage import StorageInterface
+from src.core.interfaces.storage_inter import StorageInterface
 from src.core.state_manager import StateManager
 from src.core.file_transfer import FileTransfer
 from src.core.logger_setup import setup_logging
@@ -67,7 +67,7 @@ class TransferBox:
                 
                 # Special handling for Raspberry Pi
                 if self.platform == "raspberry_pi":
-                    from src.platform.raspberry_pi.initializer import RaspberryPiInitializer
+                    from src.platform.raspberry_pi.initializer_pi import RaspberryPiInitializer
                     self.pi_initializer = RaspberryPiInitializer()
                     # Initialize all required components
                     self.pi_initializer.initialize_hardware()

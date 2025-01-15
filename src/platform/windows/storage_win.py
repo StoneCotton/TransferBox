@@ -12,7 +12,7 @@ import win32security
 from datetime import datetime
 from pathlib import Path
 from typing import List, Dict, Optional, Any, Union
-from src.core.interfaces.storage import StorageInterface
+from src.core.interfaces.storage_inter import StorageInterface
 from src.core.path_utils import sanitize_path, validate_destination_path
 
 logger = logging.getLogger(__name__)

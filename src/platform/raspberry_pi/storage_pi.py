@@ -1,4 +1,4 @@
-# src/platform/raspberry_pi/storage.py
+# src/platform/raspberry_pi/storage-pi.py
 
 import os
 import subprocess
@@ -12,7 +12,7 @@ from xattr import xattr
 from typing import List, Dict, Optional, Any
 from pathlib import Path
 
-from src.core.interfaces.storage import StorageInterface
+from src.core.interfaces.storage_inter import StorageInterface
 from src.platform.raspberry_pi.led_control import LEDControl, set_led_state
 
 

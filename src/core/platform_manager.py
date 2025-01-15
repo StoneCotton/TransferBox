@@ -4,7 +4,7 @@ import logging
 from pathlib import Path
 from typing import Dict
 from .interfaces.display import DisplayInterface
-from .interfaces.storage import StorageInterface
+from .interfaces.storage_inter import StorageInterface
 
 logger = logging.getLogger(__name__)
 
@@ -45,13 +45,13 @@ class PlatformManager:
         platform_name = cls.get_platform()
         
         if platform_name == "raspberry_pi":
-            from src.platform.raspberry_pi.storage import RaspberryPiStorage
+            from src.platform.raspberry_pi.storage_pi import RaspberryPiStorage
             return RaspberryPiStorage()
         elif platform_name == "darwin":
-            from src.platform.macos.storage import MacOSStorage
+            from src.platform.macos.storage_macos import MacOSStorage
             return MacOSStorage()
         elif platform_name == "windows":
-            from src.platform.windows.storage import WindowsStorage
+            from src.platform.windows.storage_win import WindowsStorage
             return WindowsStorage()
         else:
             raise NotImplementedError(f"Platform {platform_name} is not supported")

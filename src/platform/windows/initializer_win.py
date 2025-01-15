@@ -1,18 +1,18 @@
-# src/platform/macos/initializer.py
+# src/platform/windows/initializer.py
 
 import logging
 from src.core.interfaces.platform import PlatformInitializer
 from src.core.rich_display import RichDisplay
-from .storage import MacOSStorage
+from .storage_win import WindowsStorage
 
 logger = logging.getLogger(__name__)
 
-class MacOSInitializer(PlatformInitializer):
-    """Handles macOS specific initialization"""
+class WindowsInitializer(PlatformInitializer):
+    """Handles Windows specific initialization"""
     
     def initialize_hardware(self) -> None:
-        """No hardware initialization needed for macOS"""
-        logger.debug("MacOS hardware initialization (no-op)")
+        """No hardware initialization needed for Windows"""
+        logger.debug("Windows hardware initialization (no-op)")
         pass
     
     def initialize_display(self) -> None:
@@ -23,11 +23,11 @@ class MacOSInitializer(PlatformInitializer):
     
     def initialize_storage(self) -> None:
         """Initialize storage detection"""
-        logger.info("Initializing macOS storage")
-        self.storage = MacOSStorage()
+        logger.info("Initializing Windows storage")
+        self.storage = WindowsStorage()
     
     def cleanup(self) -> None:
         """Perform any necessary cleanup"""
-        logger.info("Performing macOS cleanup")
+        logger.info("Performing Windows cleanup")
         if self.display:
             self.display.clear()

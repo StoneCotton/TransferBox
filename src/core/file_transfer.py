@@ -10,7 +10,7 @@ from typing import Optional, Tuple
 from datetime import datetime
 from .config_manager import TransferConfig
 from .interfaces.display import DisplayInterface
-from .interfaces.storage import StorageInterface
+from .interfaces.storage_inter import StorageInterface
 from .interfaces.types import TransferStatus, TransferProgress
 from .checksum import ChecksumCalculator
 from .mhl_handler import initialize_mhl_file, add_file_to_mhl
