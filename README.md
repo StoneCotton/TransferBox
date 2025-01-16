@@ -1,109 +1,199 @@
 # TransferBox
 
-## Overview
-
-TransferBox is an autonomous media transfer utility designed for the Raspberry Pi 4B. It provides a reliable and efficient solution for transferring media files from SD cards to a designated storage drive, with built-in verification and logging capabilities.
+A robust, platform-independent media file transfer utility designed for reliable data transfer from storage devices to a designated backup location. Originally designed for the Raspberry Pi but with support for macOS and Windows.
 
 ## Features
 
-- **Autonomous Operation**: Automatically detects when an SD card is inserted and initiates the transfer process.
-- **File Integrity**: Uses xxHash algorithm for fast and reliable checksum verification.
-- **Progress Tracking**: Real-time transfer progress displayed on an LCD screen and LED bar graph.
-- **Comprehensive Logging**: Generates detailed logs and MHL (Media Hash List) files for each transfer session.
-- **User Interface**: Simple button-based interface for initiating transfers and accessing utility functions.
-- **Error Handling**: Robust error detection and reporting system.
-- **Utility Menu**: Includes functions like drive formatting, LED testing, and system information display.
+### Core Features
+- **Cross-Platform Support**: Works on Raspberry Pi, macOS, and Windows
+- **Automated File Transfer**: Automatically detects when storage devices are connected
+- **Data Integrity**: Uses xxHash algorithm for fast and reliable checksum verification
+- **Progress Monitoring**: Real-time transfer progress tracking
+- **Comprehensive Logging**: Generates detailed logs and MHL (Media Hash List) files for each transfer session
+- **Error Handling**: Robust error detection and reporting system
 
-## Hardware Requirements
+### Platform-Specific Features
 
-- Raspberry Pi 4B
-- 16x2 LCD Display (I2C interface)
-- 74HC595 Shift Register (x2, daisy-chained)
-- LEDs for status indication
-- Push buttons for user input
-- SD card reader
-- External storage drive (referred to as DUMP_DRIVE)
+#### Raspberry Pi
+- **Hardware Interface**: 
+  - 16x2 LCD Display (I2C interface)
+  - LED status indicators with 74HC595 shift registers
+  - Physical button controls
+  - Power management with x728 UPS HAT support
+- **Utility Menu**: Access system functions through hardware buttons
+- **Visual Feedback**: LED progress bar and status indicators
 
-## Software Requirements
+#### Desktop (macOS/Windows)
+- **Rich Console Interface**: Uses the Rich library for beautiful console output
+- **Native Integration**: Platform-specific drive detection and handling
+- **User Interface**: Interactive command-line interface
 
-- Raspberry Pi OS
+### Technical Features
+- **Intelligent File Handling**:
+  - Configurable file filtering based on extensions
+  - Customizable directory organization
+  - Timestamp-based file naming
+  - Original metadata preservation
+- **Flexible Configuration**:
+  - YAML-based configuration system
+  - Customizable file naming patterns
+  - Adjustable directory structure
+- **Extensible Architecture**:
+  - Platform-agnostic core
+  - Interface-based design for easy platform extension
+  - Modular component system
+
+## Requirements
+
+### General Requirements
 - Python 3.11.2+
-- Required Python packages (see `requirements.txt`)
+- Required Python packages (installed via pip):
+  - smbus==1.1.post2
+  - xxhash==3.5.0
+  - colorama==0.4.6
+  - rich==13.9.4
+  - pyyaml==6.0.2
+  - pygame==2.6.1
+
+### Platform-Specific Requirements
+
+#### Raspberry Pi
+- Raspberry Pi 4B (recommended)
+- Raspberry Pi OS
+- Hardware components:
+  - 16x2 LCD Display (I2C)
+  - 74HC595 Shift Registers (x2)
+  - Push buttons for control
+  - x728 UPS HAT (optional)
+
+#### Windows
+- Windows 10/11
+- Python for Windows
+- pywin32 package
+
+#### macOS
+- macOS 10.15+
+- Python for macOS
 
 ## Installation
 
 1. Clone the repository:
-   ```
-   git clone https://github.com/yourusername/TransferBox.git
-   ```
+```bash
+git clone https://github.com/yourusername/TransferBox.git
+cd TransferBox
+```
 
-2. Navigate to the project directory:
-   ```
-   cd TransferBox
-   ```
+2. Install required packages:
+```bash
+pip install -r requirements.txt
+```
 
-3. Install required packages:
-   ```
-   pip install -r requirements.txt
-   ```
+3. For Raspberry Pi, additional setup may be required:
+```bash
+# Install I2C and GPIO dependencies
+sudo apt-get update
+sudo apt-get install -y python3-smbus i2c-tools
+```
+
+## Configuration
+
+The application uses a YAML configuration file located at:
+- `config.yml` in the current directory
+- `~/.transferbox/config.yml` in the user's home directory
+- `/etc/transferbox/config.yml` for system-wide configuration
+
+Example configuration:
+```yaml
+# File handling
+rename_with_timestamp: true
+preserve_original_filename: true
+filename_template: "{original}_{timestamp}"
+timestamp_format: "%Y%m%d_%H%M%S"
+
+# Media transfer settings
+media_only_transfer: true
+preserve_folder_structure: true
+media_extensions: .mp4,.mov,.mxf,.avi,.braw,.r3d,.wav,.aif,.aiff,.jpg,.jpeg,.raw
+
+# Directory structure
+create_date_folders: true
+date_folder_format: "%Y/%m/%d"
+create_device_folders: false
+device_folder_template: "{device_name}"
+```
+
 ## Usage
 
-1. Power on your Raspberry Pi with TransferBox installed.
+### Raspberry Pi Mode
 
-2. The system will boot into standby mode, waiting for an SD card to be inserted.
-
-3. Insert an SD card containing media files.
-
-4. TransferBox will automatically detect the card and begin the transfer process.
-
-5. Monitor the progress on the LCD display and LED bar graph.
-
-6. Once complete, the system will indicate success or failure and return to standby mode.
-
-### Utility Menu
-
-To access the utility menu:
-
-1. In standby mode, press and hold the BACK button.
-2. While holding BACK, quickly press the OK button twice.
-3. Use UP and DOWN buttons to navigate the menu, and OK to select an option.
-
-Available utility functions include:
-- List connected drives
-- Format DUMP_DRIVE
-- Test LEDs and LCD
-- Display system information
-- Check available space
-- Shutdown/Reboot system
-
-## Project Structure
-
-```
-TransferBox/
-│
-├── src/
-│   ├── __init__.py
-│   ├── button_handler.py
-│   ├── drive_detection.py
-│   ├── file_transfer.py
-│   ├── lcd_display.py
-│   ├── led_control.py
-│   ├── logger_setup.py
-│   ├── menu_setup.py
-│   ├── mhl_handler.py
-│   ├── pi74HC595.py
-│   ├── state_manager.py
-│   └── system_utils.py
-│
-├── main.py
-├── requirements.txt
-├── README.md
+1. Connect the hardware components according to the pinout configuration.
+2. Run the application:
+```bash
+python main.py
 ```
 
-## Troubleshooting
+3. The system will boot into standby mode, waiting for a storage device.
 
-- **System won't boot**: Ensure all wiring is correct and secure.
-- **Transfer fails**: Check SD card and DUMP_DRIVE connections. Verify available space on DUMP_DRIVE.
-- **LEDs not working**: Confirm shift register connections and LED polarity.
-- **LCD not displaying**: Check I2C connections and address configuration.
+4. Control using hardware buttons:
+- Insert storage device to initiate transfer
+- Use menu combination (BACK + double OK press) to access utilities
+- Navigate menu with UP/DOWN buttons
+- Select options with OK button
+- Exit menu with BACK button
 
+### Desktop Mode (macOS/Windows)
+
+1. Run the application:
+```bash
+python main.py
+```
+
+2. Follow the prompts to:
+- Set destination directory
+- Insert source drive
+- Monitor transfer progress
+
+### Transfer Process
+
+The transfer process follows these steps:
+
+1. Device Detection
+   - System detects when a storage device is connected
+   - Validates device mounting and accessibility
+
+2. File Transfer
+   - Creates destination directory structure
+   - Copies files with progress monitoring
+   - Generates checksums during transfer
+
+3. Verification
+   - Verifies checksums for all transferred files
+   - Generates MHL (Media Hash List) file
+   - Creates detailed transfer log
+
+4. Completion
+   - Safely unmounts source device
+   - Provides transfer summary
+   - Returns to standby mode
+
+## Error Handling
+
+The system includes comprehensive error handling:
+- Drive detection failures
+- Transfer interruptions
+- Checksum mismatches
+- Hardware failures (Raspberry Pi)
+- Permission issues
+- Space constraints
+
+## License
+
+[Add your license information here]
+
+## Contributing
+
+[Add contribution guidelines here]
+
+## Support
+
+[Add support information here]
