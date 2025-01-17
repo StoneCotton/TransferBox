@@ -9,10 +9,10 @@ logger = logging.getLogger(__name__)
 
 def sanitize_path(path_str: str) -> Path:
     """
-    Sanitize a path string by removing quotes and normalizing it to an absolute path.
+    Sanitize a path string by handling escaped characters and normalizing it to an absolute path.
     
     Args:
-        path_str: Raw path string that might contain quotes
+        path_str: Raw path string that might contain escaped characters
         
     Returns:
         Path object representing an absolute path
@@ -23,6 +23,13 @@ def sanitize_path(path_str: str) -> Path:
     try:
         # Remove any surrounding quotes (single or double)
         cleaned_path = path_str.strip("'\"")
+        
+        # Handle escaped spaces and special characters from shell
+        cleaned_path = cleaned_path.replace("\\ ", " ")  # Replace escaped spaces
+        cleaned_path = cleaned_path.replace("\\#", "#")  # Replace escaped hash
+        cleaned_path = cleaned_path.replace("\\(", "(")  # Replace escaped parentheses
+        cleaned_path = cleaned_path.replace("\\)", ")")
+        cleaned_path = cleaned_path.replace("\\&", "&")  # Replace escaped ampersand
         
         # Convert to Path object
         path = Path(cleaned_path)
@@ -102,7 +109,7 @@ def validate_destination_path(path: Path, storage: StorageInterface) -> Path:
             except ImportError:
                 logger.warning("win32file not available - skipping drive type check")
             
-        else:  # Linux/Raspberry Pi - though we don't use this in the actual RPi implementation
+        else:  # Linux/Raspberry Pi
             # Use root directory as drive path for permission checking
             drive_path = Path('/')
             

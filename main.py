@@ -115,7 +115,9 @@ class TransferBox:
                 try:
                     # Sanitize and validate the input path
                     destination_path = sanitize_path(raw_destination)
+                    logger.debug(f"Raw destination path: {raw_destination}")
                     destination_path = validate_destination_path(destination_path, self.storage)
+                    logger.debug(f"Validated destination path: {destination_path}")
                     
                     # Let FileTransfer handle path validation and creation
                     self.storage.set_dump_drive(destination_path)
