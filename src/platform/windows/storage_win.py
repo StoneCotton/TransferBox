@@ -219,8 +219,16 @@ class WindowsStorage(StorageInterface):
         """Get the dump drive location"""
         return self.dump_drive_mountpoint
 
-    def get_drive_type(path: Path) -> str:
-        """Get the type of drive (e.g., removable, fixed, network)"""
+    def get_drive_type(self, path: Path) -> str:
+        """
+        Get the type of drive (e.g., removable, fixed, network).
+        
+        Args:
+            path: Path to check drive type
+            
+        Returns:
+            String representing the drive type
+        """
         drive_types = {
             0: "UNKNOWN",
             1: "NO_ROOT_DIR",
