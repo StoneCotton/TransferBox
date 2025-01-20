@@ -1,4 +1,4 @@
-# src/platform/windows/storage.py
+# src/platform/windows/storage_win.py
 
 import os
 import time
@@ -20,6 +20,65 @@ logger = logging.getLogger(__name__)
 class WindowsStorage(StorageInterface):
     def __init__(self):
         self.dump_drive_mountpoint: Optional[Path] = None
+
+    def set_dump_drive(self, path: Union[Path, str]) -> None:
+        """
+        Set the dump drive location for Windows, with improved path validation.
+        
+        Args:
+            path: Path to set as dump drive location
+                
+        Raises:
+            ValueError: If drive or path is invalid or inaccessible
+        """
+        try:
+            # Sanitize the path if it's a string
+            if isinstance(path, str):
+                path = sanitize_path(path)
+                
+            # Validate the path using our improved validation
+            path = validate_destination_path(path, self)
+            
+            # Additional Windows-specific checks
+            drive_path = Path(path.drive + '\\')
+            
+            # Verify it's a proper storage drive using Windows API
+            try:
+                drive_type = win32file.GetDriveType(str(drive_path))
+                valid_types = [win32file.DRIVE_FIXED, win32file.DRIVE_REMOVABLE]
+                
+                if drive_type not in valid_types:
+                    drive_type_names = {
+                        win32file.DRIVE_UNKNOWN: "Unknown",
+                        win32file.DRIVE_NO_ROOT_DIR: "No Root Directory",
+                        win32file.DRIVE_REMOVABLE: "Removable",
+                        win32file.DRIVE_FIXED: "Fixed",
+                        win32file.DRIVE_REMOTE: "Network",
+                        win32file.DRIVE_CDROM: "CD-ROM",
+                        win32file.DRIVE_RAMDISK: "RAM Disk"
+                    }
+                    type_name = drive_type_names.get(drive_type, f"Unknown Type ({drive_type})")
+                    raise ValueError(f"Drive {drive_path} is not a valid storage drive (Type: {type_name})")
+                
+                # Get drive free space
+                sectors_per_cluster, bytes_per_sector, free_clusters, total_clusters = \
+                    win32file.GetDiskFreeSpace(str(drive_path))
+                
+                free_bytes = sectors_per_cluster * bytes_per_sector * free_clusters
+                if free_bytes < 1024 * 1024 * 100:  # 100MB minimum
+                    free_gb = free_bytes / (1024 * 1024 * 1024)
+                    raise ValueError(f"Drive {drive_path} has insufficient space ({free_gb:.2f} GB free)")
+                
+            except ImportError:
+                logger.warning("win32file not available - skipping detailed drive checks")
+            
+            # Store the validated path
+            self.dump_drive_mountpoint = path
+            logger.info(f"Set dump drive to {path}")
+            
+        except Exception as e:
+            logger.error(f"Error setting dump drive: {e}")
+            raise ValueError(str(e))
 
     def get_available_drives(self) -> List[Path]:
         """Get list of available drive letters"""
@@ -160,67 +219,6 @@ class WindowsStorage(StorageInterface):
         """Get the dump drive location"""
         return self.dump_drive_mountpoint
 
-    def set_dump_drive(self, path: Union[Path, str]) -> None:
-        """
-        Set the dump drive location for Windows, validating drive accessibility but allowing
-        for directory creation.
-        
-        Args:
-            path: Path to set as dump drive location
-                
-        Raises:
-            ValueError: If drive letter is invalid or inaccessible
-        """
-        try:
-            # Sanitize the path if it's a string
-            if isinstance(path, str):
-                path = sanitize_path(path)
-            elif isinstance(path, Path):
-                path = validate_destination_path(path, self)
-            
-            # Get drive path
-            drive_path = Path(path.drive + '\\')
-            
-            # Verify it's a proper storage drive using Windows API
-            try:
-                import win32file
-                drive_type = win32file.GetDriveType(str(drive_path))
-                valid_types = [win32file.DRIVE_FIXED, win32file.DRIVE_REMOVABLE]
-                
-                if drive_type not in valid_types:
-                    drive_type_names = {
-                        win32file.DRIVE_UNKNOWN: "Unknown",
-                        win32file.DRIVE_NO_ROOT_DIR: "No Root Directory",
-                        win32file.DRIVE_REMOVABLE: "Removable",
-                        win32file.DRIVE_FIXED: "Fixed",
-                        win32file.DRIVE_REMOTE: "Network",
-                        win32file.DRIVE_CDROM: "CD-ROM",
-                        win32file.DRIVE_RAMDISK: "RAM Disk"
-                    }
-                    type_name = drive_type_names.get(drive_type, f"Unknown Type ({drive_type})")
-                    raise ValueError(f"Drive {drive_path} is not a valid storage drive (Type: {type_name})")
-                
-                # Get drive free space
-                sectors_per_cluster, bytes_per_sector, free_clusters, total_clusters = \
-                    win32file.GetDiskFreeSpace(str(drive_path))
-                
-                free_bytes = sectors_per_cluster * bytes_per_sector * free_clusters
-                if free_bytes < 1024 * 1024 * 100:  # 100MB minimum
-                    free_gb = free_bytes / (1024 * 1024 * 1024)
-                    raise ValueError(f"Drive {drive_path} has insufficient space ({free_gb:.2f} GB free)")
-                
-            except ImportError:
-                logger.warning("win32file not available - skipping detailed drive checks")
-            
-            # Store the target path - the actual directory will be created during transfer
-            self.dump_drive_mountpoint = path
-            logger.info(f"Set dump drive to {path}")
-            
-        except Exception as e:
-            logger.error(f"Error setting dump drive: {e}")
-            raise ValueError(str(e))
-
-    @staticmethod
     def get_drive_type(path: Path) -> str:
         """Get the type of drive (e.g., removable, fixed, network)"""
         drive_types = {
