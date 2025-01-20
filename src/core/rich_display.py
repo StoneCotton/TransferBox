@@ -68,7 +68,7 @@ class RichDisplay(DisplayInterface):
         # Create layout
         self.layout = Layout()
         self.layout.split_column(
-            Layout(name="status", size=2),
+            Layout(name="Status", size=2),
             Layout(name="progress", size=6)
         )
         
@@ -80,41 +80,82 @@ class RichDisplay(DisplayInterface):
         )
 
     def _initialize_transfer_mode(self):
-        """Initialize progress bars for file transfer mode with proper size tracking"""
-        self.progress.tasks.clear()
-        
-        # Initialize total progress with correct total size
-        if self._current_progress:
-            self.total_task_id = self.progress.add_task(
-                "Total Progress",
-                total=self._current_progress.total_size,
-                completed=self._current_progress.total_transferred,
-                visible=True
+            """
+            Initialize progress bars for file transfer mode with proper size tracking.
+            Creates entirely new Progress instance to ensure clean state.
+            """
+            # Ensure any previous display is fully cleaned up
+            if self.live is not None:
+                self._cleanup_progress()
+                
+            # Create a completely new Progress instance instead of reusing the old one
+            self.progress = Progress(
+                SpinnerColumn(),
+                FileNameColumn(width=50),
+                BarColumn(bar_width=100, complete_style="blue"),
+                FileSizeColumn(),
+                TextColumn("/"),
+                TotalFileSizeColumn(),
+                TransferSpeedColumn(),
+                TimeElapsedColumn(),
+                TextColumn("ETA:"),
+                TimeRemainingColumn(),
+                expand=True,
+                console=self.console
             )
             
-            # Initialize current file progress
-            self.copy_task_id = self.progress.add_task(
-                "Copy Progress",
-                total=self._current_progress.total_bytes,
-                completed=self._current_progress.bytes_transferred,
-                visible=True
+            # Initialize total progress with correct total size
+            if self._current_progress:
+                self.total_task_id = self.progress.add_task(
+                    "Total Progress",
+                    total=self._current_progress.total_size,
+                    completed=self._current_progress.total_transferred,
+                    visible=True
+                )
+                
+                # Initialize current file progress
+                self.copy_task_id = self.progress.add_task(
+                    "Copy Progress",
+                    total=self._current_progress.total_bytes,
+                    completed=self._current_progress.bytes_transferred,
+                    visible=True
+                )
+                
+                # Initialize checksum progress
+                self.checksum_task_id = self.progress.add_task(
+                    "Checksum Progress",
+                    total=self._current_progress.total_bytes,
+                    completed=0,
+                    visible=True
+                )
+            else:
+                # Fallback initialization if no progress info available
+                self.total_task_id = self.progress.add_task("Total Progress", total=100, visible=True)
+                self.copy_task_id = self.progress.add_task("Copy Progress", total=100, visible=True)
+                self.checksum_task_id = self.progress.add_task("Checksum Progress", total=100, visible=True)
+            
+            # Create new live display with fresh layout
+            self.layout = Layout()
+            self.layout.split_column(
+                Layout(name="status", size=2),
+                Layout(name="progress", size=6)
             )
             
-            # Initialize checksum progress
-            self.checksum_task_id = self.progress.add_task(
-                "Checksum Progress",
-                total=self._current_progress.total_bytes,
-                completed=0,
-                visible=True
+            # Update layout with new progress instance
+            self.layout["progress"].update(self.progress)
+            
+            self.live = Live(
+                self.layout,
+                console=self.console,
+                refresh_per_second=15,
+                transient=True
             )
-        else:
-            # Fallback initialization if no progress info available
-            self.total_task_id = self.progress.add_task("Total Progress", total=100, visible=True)
-            self.copy_task_id = self.progress.add_task("Copy Progress", total=100, visible=True)
-            self.checksum_task_id = self.progress.add_task("Checksum Progress", total=100, visible=True)
-        
-        self.in_transfer_mode = True
-        self.in_proxy_mode = False
+            self.live.start()
+            
+            self.in_transfer_mode = True
+            self.in_proxy_mode = False
+            
+            logger.debug("Transfer mode initialized with completely fresh progress display")
 
     def show_progress(self, progress: TransferProgress) -> None:
         """Update progress display with accurate size and speed tracking"""
@@ -202,27 +243,62 @@ class RichDisplay(DisplayInterface):
                 logger.error(f"Error updating progress: {e}")
 
     def _cleanup_progress(self) -> None:
-        """Clean up progress display"""
-        if self.in_transfer_mode or self.in_proxy_mode:
-            if self.live.is_started:
-                self.live.stop()
-            self.progress.tasks.clear()
-            self.in_transfer_mode = False
-            self.in_proxy_mode = False
-            
-            # Reset all task IDs
-            self.total_task_id = None
-            self.copy_task_id = None
-            self.checksum_task_id = None
-            self.proxy_total_task_id = None
-            self.proxy_current_task_id = None
+            """
+            Clean up progress display and reset state.
+            This method ensures proper cleanup of the Rich Live display context
+            and resets all associated state for a fresh start.
+            """
+            if self.in_transfer_mode or self.in_proxy_mode:
+                try:
+                    # First properly stop the live display if it's running
+                    if self.live and self.live.is_started:
+                        # Do one final refresh to ensure clean state
+                        self.live.refresh()
+                        # Stop the live display
+                        self.live.stop()
+                        # Set to None to ensure complete cleanup
+                        self.live = None
+
+                    # Clear all progress tasks
+                    if hasattr(self, 'progress'):
+                        self.progress.tasks.clear()
+                    
+                    # Reset all task IDs to ensure no stale references
+                    self.total_task_id = None
+                    self.copy_task_id = None
+                    self.checksum_task_id = None
+                    self.proxy_total_task_id = None
+                    self.proxy_current_task_id = None
+                    
+                    # Reset state flags
+                    self.in_transfer_mode = False
+                    self.in_proxy_mode = False
+                    
+                    # Clear the console to remove any leftover output
+                    self.console.clear()
+                    
+                    # Create a fresh layout for next use
+                    self.layout = Layout()
+                    self.layout.split_column(
+                        Layout(name="Status", size=2),
+                        Layout(name="progress", size=6)
+                    )
+                    
+                    logger.debug("Progress display cleaned up successfully")
+                    
+                except Exception as e:
+                    logger.error(f"Error during progress cleanup: {e}")
+                    # Ensure state is reset even if cleanup fails
+                    self.in_transfer_mode = False
+                    self.in_proxy_mode = False
+                    self.live = None
 
     def show_status(self, message: str, line: int = 0) -> None:
         """Display a status message."""
         try:
             if self.in_transfer_mode or self.in_proxy_mode:
                 # When in progress mode, show status in the status panel
-                self.layout["status"].update(
+                self.layout["Status"].update(
                     Panel(Text(message, style="blue"))
                 )
             else:
@@ -238,7 +314,7 @@ class RichDisplay(DisplayInterface):
         try:
             if self.in_transfer_mode or self.in_proxy_mode:
                 # When in progress mode, show error in the status panel
-                self.layout["status"].update(
+                self.layout["Status"].update(
                     Panel(Text(message, style="red bold"))
                 )
             else:
@@ -250,14 +326,15 @@ class RichDisplay(DisplayInterface):
             logger.error(f"Error showing error message: {e}")
 
     def clear(self) -> None:
-        """Clear the display."""
-        try:
-            # Clean up any existing progress display
-            self._cleanup_progress()
-            
-            # Clear the console
-            self.console.clear()
-            
-            logger.debug("Display cleared")
-        except Exception as e:
-            logger.error(f"Error clearing display: {e}")
+        """Clear the display"""
+        with self.display_lock:
+            try:
+                # Clean up any existing progress display
+                self._cleanup_progress()
+                
+                # Clear the console completely
+                self.console.clear()
+                
+                logger.debug("Display cleared")
+            except Exception as e:
+                logger.error(f"Error clearing display: {e}")
