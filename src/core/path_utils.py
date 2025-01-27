@@ -4,6 +4,7 @@ import os
 import platform
 import logging
 import stat
+import urllib.parse
 from pathlib import Path
 from typing import Union
 
@@ -153,7 +154,7 @@ def _validate_macos_path(path: Path, storage) -> Path:
 
 def _validate_linux_path(path: Path, storage) -> Path:
     """
-    Validate Linux-specific path requirements.
+    Validate Linux/Raspberry Pi specific path requirements with improved handling.
     
     Args:
         path: Path to validate
@@ -166,34 +167,52 @@ def _validate_linux_path(path: Path, storage) -> Path:
         ValueError: If path is invalid
     """
     try:
-        # Check if the path is absolute
+        # Ensure path is absolute
         if not path.is_absolute():
             raise ValueError("Path must be absolute")
-            
-        # Check base mount point permissions
+
+        # Handle /media paths specifically
+        if str(path).startswith('/media/'):
+            parts = str(path).split('/')
+            if len(parts) >= 4:
+                # Verify the media path structure
+                user_name = parts[2]
+                volume_name = parts[3]
+                
+                # Check if the user directory exists
+                user_path = Path('/media') / user_name
+                if not user_path.exists():
+                    raise ValueError(f"Media user path not found: {user_path}")
+                
+                # For volume paths, be more lenient as they might not exist yet
+                volume_path = user_path / volume_name
+                if volume_path.exists() and not os.access(volume_path, os.W_OK):
+                    raise ValueError(f"No write permission for volume: {volume_path}")
+
+        # Check mount point permissions
         mount_point = path
         while mount_point != mount_point.parent:
             if mount_point.is_mount():
                 break
             mount_point = mount_point.parent
-            
-        if not _check_unix_write_permission(mount_point):
+
+        if not os.access(mount_point, os.W_OK):
             raise ValueError(f"No write permission for mount point: {mount_point}")
-            
-        # Check target path permissions
-        if path.exists() and not _check_unix_write_permission(path):
+
+        # If path exists, check direct permissions
+        if path.exists() and not os.access(path, os.W_OK):
             raise ValueError(f"No write permission for path: {path}")
-            
+
         # If path doesn't exist, check parent directory
         if not path.exists():
             parent = path.parent
             while not parent.exists():
                 parent = parent.parent
-            if not _check_unix_write_permission(parent):
+            if not os.access(parent, os.W_OK):
                 raise ValueError(f"No write permission for parent directory: {parent}")
-                
+
         return path
-        
+
     except ValueError as e:
         raise ValueError(str(e))
     except Exception as e:
@@ -249,10 +268,16 @@ def _validate_windows_path(path: Path, storage) -> Path:
 
 def sanitize_path(path_str: str) -> Path:
     """
-    Sanitize a path string by handling escaped characters and normalizing it.
+    Sanitize a path string with improved handling of special characters.
+    
+    This function handles:
+    - URL-encoded characters (like %20 or \x20)
+    - Spaces in paths
+    - Special characters
+    - Platform-specific path separators
     
     Args:
-        path_str: Raw path string that might contain escaped characters
+        path_str: Raw path string that might contain special characters
         
     Returns:
         Path object representing a sanitized path
@@ -261,51 +286,58 @@ def sanitize_path(path_str: str) -> Path:
         ValueError: If the path is invalid or cannot be sanitized
     """
     try:
-        # Remove any surrounding quotes (single or double)
-        cleaned_path = path_str.strip("'\"")
-        
-        # Handle escaped spaces and special characters
-        cleaned_path = cleaned_path.replace("\\ ", " ")
-        cleaned_path = cleaned_path.replace("\\#", "#")
-        cleaned_path = cleaned_path.replace("\\(", "(")
-        cleaned_path = cleaned_path.replace("\\)", ")")
-        cleaned_path = cleaned_path.replace("\\&", "&")
-        
-        # Convert to Path object
-        path = Path(cleaned_path)
-        
-        # Platform-specific sanitization
+        # First, handle any URL-encoded characters
+        try:
+            # Try to decode any percent-encoded or hex-encoded characters
+            decoded_path = urllib.parse.unquote(path_str)
+            # Also handle \x encoded characters
+            decoded_path = bytes(decoded_path, 'utf-8').decode('unicode_escape')
+        except Exception as e:
+            logger.debug(f"Path decoding failed, using original: {e}")
+            decoded_path = path_str
+
+        # Remove any surrounding quotes
+        cleaned_path = decoded_path.strip("'\"")
+
+        # Platform-specific handling
         system = platform.system().lower()
-        if system == 'windows':
-            # Handle Windows drive letter consistency
+        if system == 'linux':  # Includes Raspberry Pi
+            # For Linux/Raspberry Pi, handle spaces and special characters
+            cleaned_path = cleaned_path.replace("\\ ", " ")  # Convert escaped spaces
+            cleaned_path = cleaned_path.replace("\\#", "#")
+            cleaned_path = cleaned_path.replace("\\(", "(")
+            cleaned_path = cleaned_path.replace("\\)", ")")
+            cleaned_path = cleaned_path.replace("\\&", "&")
+            
+            # Ensure media paths are properly formatted
+            if cleaned_path.startswith('/media/'):
+                parts = cleaned_path.split('/')
+                if len(parts) >= 4:  # /media/user/volume/...
+                    # Ensure the volume name is properly handled
+                    volume_name = parts[3]
+                    parts[3] = volume_name.replace('\\x20', ' ')
+                    cleaned_path = '/'.join(parts)
+
+        elif system == 'windows':
+            # Handle Windows-specific path issues
             if len(cleaned_path) >= 2 and cleaned_path[1] == ':':
                 drive_letter = cleaned_path[0].upper()
                 rest_of_path = cleaned_path[2:]
                 cleaned_path = f"{drive_letter}:{rest_of_path}"
             
-            path = Path(cleaned_path.replace('/', '\\'))
-            
-            # Make absolute if not already
-            if not path.is_absolute():
-                current_dir = Path.cwd()
-                path = current_dir / path
-                
-        elif system == 'darwin':
-            # Handle macOS paths
-            if not path.is_absolute():
-                path = path.resolve()
-                
-            # Ensure /Volumes paths are preserved
-            if str(cleaned_path).startswith('/Volumes/'):
-                path = Path('/Volumes') / path.relative_to('/Volumes')
-                
-        else:  # Linux
-            # Handle Linux paths
-            if not path.is_absolute():
-                path = path.resolve()
-        
+            # Convert forward slashes to backslashes for Windows
+            cleaned_path = cleaned_path.replace('/', '\\')
+
+        # Convert to Path object
+        path = Path(cleaned_path)
+
+        # Make absolute if not already
+        if not path.is_absolute():
+            path = path.resolve()
+
+        logger.debug(f"Sanitized path: {str(path)}")
         return path
-        
+
     except Exception as e:
         logger.error(f"Error sanitizing path '{path_str}': {e}")
         raise ValueError(f"Invalid path format: {path_str}")
@@ -340,3 +372,36 @@ def validate_destination_path(path: Path, storage) -> Path:
     except Exception as e:
         logger.error(f"Error validating destination path '{path}': {e}")
         raise ValueError(str(e))
+
+def get_safe_path(unsafe_path: Union[str, Path]) -> Path:
+    """
+    Convert any path string to a safe Path object.
+    This is a convenience function that combines sanitization and validation.
+    
+    Args:
+        unsafe_path: Raw path string or Path object that might contain special characters
+        
+    Returns:
+        Safe Path object
+        
+    Raises:
+        ValueError: If the path cannot be safely converted
+    """
+    try:
+        # First sanitize the path
+        if isinstance(unsafe_path, str):
+            path = sanitize_path(unsafe_path)
+        else:
+            path = unsafe_path
+
+        # Ensure it's absolute
+        if not path.is_absolute():
+            path = path.resolve()
+
+        # Log the conversion for debugging
+        logger.debug(f"Converted path: {unsafe_path} -> {path}")
+        return path
+
+    except Exception as e:
+        logger.error(f"Error converting path: {e}")
+        raise ValueError(f"Cannot safely convert path: {unsafe_path}")

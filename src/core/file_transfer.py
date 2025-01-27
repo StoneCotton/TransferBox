@@ -6,7 +6,7 @@ import shutil
 import time
 import platform
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional, Tuple, List
 from datetime import datetime
 from .config_manager import TransferConfig
 from .interfaces.display import DisplayInterface
@@ -97,6 +97,90 @@ class FileTransfer:
             logger.error(f"Error sanitizing path '{path_str}': {e}")
             raise ValueError(f"Invalid path format: {path_str}")
         
+
+    def _verify_source_access(self, path: Path) -> bool:
+        """
+        Verify source path accessibility with proper error handling.
+        """
+        try:
+            # Convert to Path object if it isn't already
+            path = Path(path)
+            
+            # Basic existence check
+            if not path.exists():
+                logger.error(f"Source path does not exist: {path}")
+                return False
+                
+            # Check if it's a directory
+            if not path.is_dir():
+                logger.error(f"Source path is not a directory: {path}")
+                return False
+                
+            # Check read permission
+            if not os.access(path, os.R_OK):
+                logger.error(f"No read permission for source: {path}")
+                return False
+                
+            # Try to list directory contents
+            next(path.iterdir())
+            return True
+            
+        except StopIteration:
+            # Empty directory is valid
+            return True
+        except PermissionError:
+            logger.error(f"Permission denied accessing source: {path}")
+            return False
+        except Exception as e:
+            logger.error(f"Error verifying source access: {path}, {e}")
+            return False
+
+    def _get_transferable_files(self, source_path: Path) -> List[Path]:
+        """
+        Get list of files to transfer with improved path handling.
+        """
+        files_to_transfer = []
+        try:
+            # Convert source path to Path object for consistent handling
+            source_path = Path(source_path)
+            
+            # First verify the source path is accessible
+            if not self._verify_source_access(source_path):
+                logger.error(f"Source path not accessible: {source_path}")
+                return []
+
+            # Walk the directory structure safely
+            for path in source_path.rglob('*'):
+                try:
+                    # Skip directories and hidden files
+                    if path.is_dir() or path.name.startswith('.'):
+                        continue
+                        
+                    # Skip system directories
+                    if 'System Volume Information' in str(path):
+                        continue
+                        
+                    # Apply media filter if configured
+                    if self.config.media_only_transfer:
+                        if any(path.name.lower().endswith(ext) 
+                            for ext in self.config.media_extensions):
+                            files_to_transfer.append(path)
+                    else:
+                        files_to_transfer.append(path)
+                        
+                except PermissionError:
+                    logger.warning(f"Permission denied accessing: {path}")
+                    continue
+                except Exception as e:
+                    logger.warning(f"Error processing file {path}: {e}")
+                    continue
+
+            return files_to_transfer
+            
+        except Exception as e:
+            logger.error(f"Error scanning for files: {e}")
+            return []
+
     def validate_destination_path(path: Path, storage: StorageInterface) -> Path:
         """
         Validate a destination path and ensure it's properly formatted for the current platform.
@@ -199,75 +283,72 @@ class FileTransfer:
 
     def _validate_transfer_preconditions(self, destination_path: Path) -> bool:
         """
-        Validate preconditions before starting transfer and create destination directory if needed.
-        
-        This method checks if the transfer can proceed by validating:
-        1. A destination path is provided
-        2. We're not in utility mode
-        3. The destination path can be created if it doesn't exist
-        
-        Args:
-            destination_path: Path where files will be transferred
-            
-        Returns:
-            True if transfer can proceed, False otherwise
+        Validate preconditions before starting transfer with improved path handling.
         """
-        if destination_path is None:
-            self.display.show_error("No destination")
-            return False
-                
-        if self.state_manager.is_utility():
-            logger.info("Transfer blocked - utility mode")
-            return False
-
         try:
-            # Check if the path exists and is a directory
-            if destination_path.exists():
-                if not destination_path.is_dir():
-                    self.display.show_error("Path exists but is not a directory")
-                    return False
-                logger.info(f"Using existing directory: {destination_path}")
-                return True
-
-            # Path doesn't exist, check if we can create it
-            try:
-                # First check if parent directory exists or is a root
-                parent_path = destination_path.parent
-                if not (destination_path.drive or parent_path.exists()):
-                    self.display.show_error("Parent directory does not exist")
-                    return False
-
-                # Attempt to create the directory
-                destination_path.mkdir(parents=True, exist_ok=True)
-                logger.info(f"Created directory: {destination_path}")
-                
-                # Double-check the directory was created
-                if not destination_path.exists() or not destination_path.is_dir():
-                    self.display.show_error("Failed to create directory")
-                    return False
-                
-                return True
-                
-            except PermissionError:
-                self.display.show_error("Permission denied creating directory")
+            if destination_path is None:
+                self.display.show_error("No destination")
                 return False
+                
+            if self.state_manager.is_utility():
+                logger.info("Transfer blocked - utility mode")
+                return False
+
+            # Convert to Path object to ensure consistent handling
+            dest_path = Path(destination_path)
             
+            # Verify the destination exists and is accessible
+            if dest_path.exists():
+                if not dest_path.is_dir():
+                    self.display.show_error("Not a directory")
+                    return False
+                    
+                # Check write permissions
+                if not os.access(dest_path, os.W_OK):
+                    self.display.show_error("Write permission denied")
+                    return False
+                    
+                logger.info(f"Using existing directory: {dest_path}")
+                return True
+
+            # Path doesn't exist, check parent directory
+            parent = dest_path.parent
+            if not parent.exists():
+                self.display.show_error("Parent dir missing")
+                return False
+                
+            if not os.access(parent, os.W_OK):
+                self.display.show_error("Parent write denied")
+                return False
+                
+            # Try to create the directory
+            try:
+                dest_path.mkdir(parents=True, exist_ok=True)
+                logger.info(f"Created directory: {dest_path}")
+                return True
+            except Exception as e:
+                logger.error(f"Failed to create directory: {e}")
+                self.display.show_error("Create dir failed")
+                return False
+                
         except Exception as e:
-            logger.error(f"Error validating destination path: {e}")
+            logger.error(f"Error validating path: {e}")
             self.display.show_error("Invalid path")
             return False
 
     def copy_sd_to_dump(self, source_path: Path, destination_path: Path, 
                         log_file: Path) -> bool:
         """
-        Copy files from source to destination with intelligent proxy queue management.
+        Copy files from source to destination with comprehensive validation and error handling.
         
-        This function performs a complete media transfer operation:
-        1. Validates transfer preconditions
-        2. Creates necessary directory structure
-        3. Transfers all media files while generating checksums
-        4. Queues proxy generation tasks for background processing
-        5. Creates MHL (Media Hash List) file for transfer verification
+        This function manages the complete transfer process including:
+        - Source and destination validation
+        - File detection and filtering
+        - Directory structure creation
+        - File copying with progress tracking
+        - Checksum generation and verification
+        - MHL (Media Hash List) creation
+        - Safe unmounting of source drive
         
         Args:
             source_path: Path to source drive (e.g., SD card)
@@ -277,9 +358,25 @@ class FileTransfer:
         Returns:
             bool: True if transfer successful, False if any critical operation fails
         """
-        # Validate transfer preconditions
+        # First validate that we can proceed with the transfer
         if not self._validate_transfer_preconditions(destination_path):
             self._play_sound(success=False)
+            return False
+
+        # Verify source drive accessibility
+        try:
+            if not source_path.exists() or not os.access(str(source_path), os.R_OK):
+                logger.error(f"Source path not accessible: {source_path}")
+                self.display.show_error("Source Error")
+                return False
+            
+            # Test directory listing
+            test_list = list(source_path.iterdir())
+            logger.info(f"Source directory contains {len(test_list)} items")
+            
+        except Exception as e:
+            logger.error(f"Error accessing source path: {e}")
+            self.display.show_error("Access Error")
             return False
 
         # Generate timestamp for this transfer session
@@ -301,44 +398,89 @@ class FileTransfer:
         transfer_success = False
 
         try:
-            # Initialize MHL handling
+            # Initialize MHL handling for transfer verification
             mhl_filename, tree, hashes = initialize_mhl_file(timestamp, target_dir)
             
-            # Get card name for proxy task grouping
+            # Get card name for organization
             card_name = source_path.name or "unnamed_card"
             
-            # Get complete file list from source
-            all_files = list(source_path.rglob('*'))
-            
-            # Smart file filtering and directory tracking
+            # Get complete file list using improved file detection
             files_to_transfer = []
-            required_directories = set()
-            
-            # Filter files based on media_only_transfer setting
-            if self.config.media_only_transfer:
-                for file_path in all_files:
-                    if file_path.is_file():
-                        if file_path.suffix.lower() in self.config.media_extensions:
-                            files_to_transfer.append(file_path)
-                            if self.config.preserve_folder_structure:
-                                current_dir = file_path.parent
-                                while current_dir != source_path:
-                                    required_directories.add(current_dir)
-                                    current_dir = current_dir.parent
-            else:
-                files_to_transfer = [f for f in all_files if f.is_file()]
-                if self.config.preserve_folder_structure:
-                    required_directories = {f.parent for f in files_to_transfer}
+            try:
+                # Walk through the directory structure with error handling
+                source_str = str(source_path)
+                logger.debug(f"Starting file scan from: {source_str}")
+                
+                for root, dirs, files in os.walk(source_str, onerror=lambda err: logger.error(f"Walk error: {err}")):
+                    try:
+                        current_dir = Path(root)
+                        logger.debug(f"Processing directory: {current_dir}")
+                        
+                        # Skip system directories
+                        if any(part.startswith('.') or part == 'System Volume Information' 
+                            for part in current_dir.parts):
+                            logger.debug(f"Skipping system directory: {current_dir}")
+                            continue
+                        
+                        # Process each file in current directory
+                        for filename in files:
+                            try:
+                                file_path = current_dir / filename
+                                logger.debug(f"Examining file: {file_path}")
+                                
+                                # Skip hidden files
+                                if filename.startswith('.'):
+                                    logger.debug(f"Skipping hidden file: {filename}")
+                                    continue
+                                    
+                                # Verify file exists and is readable
+                                if not file_path.exists():
+                                    logger.warning(f"File not accessible: {file_path}")
+                                    continue
+                                    
+                                # Apply media filtering if enabled
+                                if self.config.media_only_transfer:
+                                    if any(file_path.name.lower().endswith(ext) 
+                                        for ext in self.config.media_extensions):
+                                        files_to_transfer.append(file_path)
+                                        logger.debug(f"Added media file: {file_path}")
+                                else:
+                                    files_to_transfer.append(file_path)
+                                    logger.debug(f"Added file: {file_path}")
+                                    
+                            except Exception as file_err:
+                                logger.error(f"Error processing file {filename}: {file_err}")
+                                continue
+                                
+                    except Exception as dir_err:
+                        logger.error(f"Error processing directory {root}: {dir_err}")
+                        continue
+                        
+            except Exception as e:
+                logger.error(f"Error scanning for files: {e}")
+                self.display.show_error("Scan Failed")
+                return False
 
-            # Calculate totals for transfer
-            total_size = sum(f.stat().st_size for f in files_to_transfer)
-            total_files = len(files_to_transfer)
-            
-            # Log transfer details
-            logger.info(f"Transfer mode: {'Media only' if self.config.media_only_transfer else 'All files'}")
-            logger.info(f"Total files to transfer: {total_files}")
-            logger.info(f"Total transfer size: {total_size / (1024*1024*1024):.2f} GB")
-            
+            # Verify we found files to transfer
+            if not files_to_transfer:
+                logger.warning("No files found to transfer")
+                self.display.show_error("No Files Found")
+                return False
+
+            # Calculate transfer totals with error handling
+            try:
+                total_size = sum(f.stat().st_size for f in files_to_transfer)
+                total_files = len(files_to_transfer)
+                
+                logger.info(f"Transfer mode: {'Media only' if self.config.media_only_transfer else 'All files'}")
+                logger.info(f"Total files to transfer: {total_files}")
+                logger.info(f"Total transfer size: {total_size / (1024*1024*1024):.2f} GB")
+                
+            except Exception as e:
+                logger.error(f"Error calculating transfer totals: {e}")
+                self.display.show_error("Size Calc Error")
+                return False
+                
             # Verify sufficient space (with 10% buffer)
             required_space = int(total_size * 1.1)
             if not self.storage.has_enough_space(destination_path, required_space):
@@ -357,18 +499,22 @@ class FileTransfer:
                 with open(log_file, 'a', encoding='utf-8') as log:
                     # Create required directory structure
                     if self.config.preserve_folder_structure:
-                        for dir_path in sorted(required_directories):
-                            rel_path = dir_path.relative_to(source_path)
+                        required_directories = set()
+                        for file_path in files_to_transfer:
+                            rel_path = file_path.parent.relative_to(source_path)
                             target_path = target_dir / rel_path
-                            target_path.mkdir(parents=True, exist_ok=True)
-                            logger.debug(f"Created directory: {target_path}")
+                            required_directories.add(target_path)
+                            
+                        for dir_path in sorted(required_directories):
+                            dir_path.mkdir(parents=True, exist_ok=True)
+                            logger.debug(f"Created directory: {dir_path}")
 
                     # Transfer each file
                     for src_file in files_to_transfer:
                         file_number += 1
                         file_size = src_file.stat().st_size
                         
-                        # Create destination path
+                        # Create destination path preserving structure
                         dst_path = self._create_destination_path(
                             src_file, 
                             target_dir, 
@@ -402,21 +548,12 @@ class FileTransfer:
                             total_transferred += file_size
                             self._log_success(log, src_file, dst_path)
                             
-                            # Add file to MHL
+                            # Add file to MHL for verification
                             add_file_to_mhl(
                                 mhl_filename, tree, hashes,
                                 dst_path, checksum,
                                 file_size
                             )
-                            
-                            # Queue proxy generation for video files
-                            if self.config.generate_proxies:
-                                if dst_path.suffix.lower() in ['.mp4', '.mov', '.mxf', '.avi']:
-                                    self.proxy_queue.add_task(
-                                        source_path=dst_path,
-                                        destination_dir=target_dir,
-                                        card_name=card_name
-                                    )
                         else:
                             failures.append(str(src_file))
                             self._log_failure(log, src_file, dst_path)
@@ -433,14 +570,6 @@ class FileTransfer:
                             self._current_progress.status = TransferStatus.SUCCESS
                             self._current_progress.total_transferred = total_size
                             self.display.show_progress(self._current_progress)
-                        
-                        # Wait for proxy generation to complete if enabled
-                        if self.config.generate_proxies:
-                            queue_status = self.proxy_queue.get_queue_status()
-                            if queue_status['total_tasks'] > 0:
-                                logger.info("Waiting for proxy generation to complete...")
-                                while self.proxy_queue.is_active():
-                                    time.sleep(0.1)  # Short sleep to prevent CPU spinning
                         
                         # Handle unmounting
                         if self.storage.is_drive_mounted(source_path):
@@ -475,7 +604,8 @@ class FileTransfer:
                 self.state_manager.exit_transfer(source_path if not unmount_success else None)
             if transfer_success and not unmount_success:
                 self.display.show_status("Transfer complete")
-    
+
+
     def _generate_destination_filename(self, source_path: Path) -> str:
         """
         Generate destination filename based on configuration settings.

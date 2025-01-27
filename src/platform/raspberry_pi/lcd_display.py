@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 class LCDDisplay:
     """Hardware interface for 16x2 LCD display via I2C"""
     
-    def __init__(self, i2c_bus: int = 3, address: int = 0x3f):
+    def __init__(self, i2c_bus: int = 1, address: int = 0x3f):
         """
         Initialize LCD display.
         
@@ -66,7 +66,7 @@ class LCDDisplay:
     def i2c_scan(self) -> list[str]:
         """Scan I2C bus for devices."""
         try:
-            cmd = "i2cdetect -y 3"
+            cmd = "i2cdetect -y 1"
             result = subprocess.check_output(cmd, shell=True).decode()
             result = result.replace("\n", "").replace(" --", "")
             return result.split(' ')

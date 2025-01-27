@@ -11,7 +11,7 @@ import stat
 from xattr import xattr
 from typing import List, Dict, Optional, Any
 from pathlib import Path
-
+from src.core.path_utils import sanitize_path, get_safe_path
 from src.core.interfaces.storage_inter import StorageInterface
 from src.platform.raspberry_pi.led_control import LEDControl, set_led_state
 
@@ -245,43 +245,43 @@ class RaspberryPiStorage(StorageInterface):
 
     def wait_for_new_drive(self, initial_drives: List[Path]) -> Optional[Path]:
         """
-        Wait for a new drive to be connected and return its mountpoint.
-        
-        Args:
-            initial_drives: List of initially mounted drives
-                
-        Returns:
-            Path to the new drive if detected, None if timeout or error
+        Wait for a new drive with improved path handling.
+        Ensures proper handling of paths with spaces and special characters.
         """
         try:
             while True:
                 time.sleep(2)
                 current_drives = self.get_mounted_drives_lsblk()
-                new_drives = set(current_drives) - set(initial_drives)
                 
-                for drive in new_drives:
-                    if "/media/" in str(drive) or "/mnt" in str(drive):
-                        logger.info(f"New drive detected: {drive}")
-                        return drive
-                        
+                # Convert all paths to strings for comparison
+                initial_paths = {str(d) for d in initial_drives}
+                current_paths = {str(d) for d in current_drives}
+                
+                # Find new drives
+                new_paths = current_paths - initial_paths
+                
+                for new_path in new_paths:
+                    path = Path(new_path)
+                    if "/media/" in str(path):
+                        # Verify the path is actually accessible
+                        try:
+                            # Use sanitize_path for proper path handling
+                            safe_path = sanitize_path(str(path))
+                            # Basic accessibility check
+                            if safe_path.exists() and os.access(safe_path, os.R_OK):
+                                logger.info(f"New drive detected and verified: {safe_path}")
+                                return safe_path
+                            else:
+                                logger.warning(f"Drive detected but not accessible: {safe_path}")
+                        except Exception as e:
+                            logger.error(f"Error verifying drive access: {path}, {e}")
+                            continue
+                            
+                time.sleep(1)  # Short sleep to prevent busy-waiting
+                
         except Exception as e:
             logger.error(f"Error detecting new drive: {e}")
             return None
-
-    def wait_for_drive_removal(self, path: Path) -> None:
-        """
-        Wait for a specific drive to be removed.
-        
-        Args:
-            path: Path to the drive to monitor
-        """
-        try:
-            while path.exists() and path.is_mount():
-                logger.debug(f"Waiting for {path} to be removed...")
-                time.sleep(1)
-            logger.info(f"Drive {path} has been removed")
-        except Exception as e:
-            logger.error(f"Error waiting for drive removal: {e}")
 
     def has_enough_space(self, path: Path, required_size: int) -> bool:
         """
@@ -303,20 +303,39 @@ class RaspberryPiStorage(StorageInterface):
 
     def get_mounted_drives_lsblk(self) -> List[Path]:
         """
-        Get list of mounted drives using lsblk command.
-        Replaces DriveDetection.get_mounted_drives_lsblk()
-        
-        Returns:
-            List of paths to mounted drives
+        Get list of mounted drives using lsblk command with improved path handling.
+        Uses --pairs output format for reliable parsing and proper handling of spaces.
         """
         try:
+            # Use --pairs format for reliable parsing
             result = subprocess.run(
-                ['lsblk', '-o', 'MOUNTPOINT', '-nr'],
+                ['lsblk', '--pairs', '--output', 'MOUNTPOINT', '--noheadings'],
                 stdout=subprocess.PIPE,
                 text=True,
                 check=True
             )
-            return [Path(drive) for drive in result.stdout.strip().split('\n') if drive]
+            
+            mounted_drives = []
+            for line in result.stdout.strip().split('\n'):
+                if not line:
+                    continue
+                    
+                # Parse the key=value format
+                try:
+                    # Extract the value part of MOUNTPOINT="value"
+                    mount = line.split('=')[1].strip('"')
+                    if mount and mount != 'None':
+                        # Convert to Path using our sanitize_path function
+                        path = sanitize_path(mount)
+                        if path.exists():
+                            mounted_drives.append(path)
+                            logger.debug(f"Found mounted drive: {path}")
+                except (IndexError, ValueError) as e:
+                    logger.debug(f"Skipping malformed lsblk output: {line}, {e}")
+                    continue
+                    
+            return mounted_drives
+            
         except subprocess.CalledProcessError as e:
             logger.error(f"Error running lsblk: {e}")
             return []
@@ -514,3 +533,118 @@ class RaspberryPiStorage(StorageInterface):
             pass
         except FileNotFoundError:
             logger.debug("exfatprogs tools not installed")
+
+    def _verify_drive_access(self, path: Path) -> bool:
+        """Verify that a drive path is accessible with proper error handling."""
+        try:
+            path = sanitize_path(str(path))
+            if not path.exists():
+                logger.debug(f"Path does not exist: {path}")
+                return False
+                
+            if not path.is_mount():
+                logger.debug(f"Path is not a mount point: {path}")
+                return False
+                
+            if not os.access(path, os.R_OK):
+                logger.debug(f"No read permission for path: {path}")
+                return False
+                
+            # Try to list directory contents to verify access
+            list(path.iterdir())
+            return True
+            
+        except PermissionError:
+            logger.debug(f"Permission denied accessing path: {path}")
+            return False
+        except Exception as e:
+            logger.debug(f"Error verifying drive access: {path}, {e}")
+            return False
+        
+    def _get_filesystem_type(self, path: Path) -> str:
+        """
+        Determine the filesystem type of a given path using findmnt command.
+        
+        This method uses the findmnt command which is more reliable than df -T
+        for getting filesystem types, especially for removable media.
+        
+        Args:
+            path: Path to check filesystem type
+            
+        Returns:
+            String representing filesystem type (e.g., 'exfat', 'ext4', etc.)
+        """
+        try:
+            # Use findmnt to get filesystem type
+            result = subprocess.run(
+                ['findmnt', '-no', 'FSTYPE', str(path)],
+                capture_output=True,
+                text=True,
+                check=True
+            )
+            
+            # Get the filesystem type and convert to lowercase
+            fs_type = result.stdout.strip().lower()
+            logger.debug(f"Filesystem type for {path}: {fs_type}")
+            return fs_type
+            
+        except subprocess.CalledProcessError:
+            # If findmnt fails, try using stat
+            try:
+                stat_info = os.statvfs(path)
+                logger.debug(f"Using statvfs fallback for {path}")
+                # Return a generic filesystem type
+                return 'unknown'
+            except Exception as e:
+                logger.error(f"Error getting filesystem type using statvfs: {e}")
+                return 'unknown'
+        except Exception as e:
+            logger.error(f"Error getting filesystem type for {path}: {e}")
+            return 'unknown'
+
+    def wait_for_drive_removal(self, path: Path) -> None:
+        """
+        Wait for a drive to be unmounted or removed.
+        
+        This method continuously checks if the drive is still mounted
+        and accessible, waiting until it's removed or unmounted.
+        
+        Args:
+            path: Path to the drive to monitor
+        """
+        try:
+            # Convert to Path object if it isn't already
+            path = Path(path)
+            logger.info(f"Waiting for removal of drive: {path}")
+            
+            # Keep checking until the drive is gone
+            while True:
+                try:
+                    # First check if path still exists
+                    if not path.exists():
+                        logger.info(f"Drive path no longer exists: {path}")
+                        break
+                        
+                    # Then check if it's still mounted
+                    if not path.is_mount():
+                        logger.info(f"Drive is no longer mounted: {path}")
+                        break
+                        
+                    # Short sleep to prevent excessive CPU usage
+                    time.sleep(1)
+                    
+                except PermissionError:
+                    # If we get permission error, drive might be in process of unmounting
+                    logger.debug(f"Permission error checking {path}, might be unmounting")
+                    time.sleep(1)
+                    continue
+                except Exception as e:
+                    logger.warning(f"Error checking drive status: {e}")
+                    # Wait a bit longer if we hit an error
+                    time.sleep(2)
+                    continue
+                    
+            logger.info(f"Confirmed drive removal: {path}")
+            
+        except Exception as e:
+            logger.error(f"Error monitoring drive removal: {e}")
