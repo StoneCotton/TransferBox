@@ -463,8 +463,16 @@ class FileTransfer:
 
             # Verify we found files to transfer
             if not files_to_transfer:
-                logger.warning("No files found to transfer")
-                self.display.show_error("No Files Found")
+                logger.warning("No media files found to transfer")
+                if self.platform == "raspberry_pi":
+                    self.display.show_error("No Media Found")
+                    self.display.show_status("Remove Card", line=1)
+                else:
+                    # Desktop mode - can show longer messages
+                    self.display.show_error("No media files found on card")
+                    self.display.show_status("Please remove the card and verify its contents")
+                
+                self._play_sound(success=False)  # Add error sound
                 return False
 
             # Calculate transfer totals with error handling
