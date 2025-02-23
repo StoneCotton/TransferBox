@@ -58,6 +58,8 @@ class TransferBox:
         logger.info("Shutdown signal received")
         self.display.show_status("Shutting down...")
         self.stop_event.set()
+        self.cleanup()  # Add this line
+        sys.exit(0)    # Add this line to ensure clean exit
 
     def setup(self):
             """Perform initial setup"""
@@ -94,7 +96,13 @@ class TransferBox:
         try:
             self.setup()
             
-            if self.platform in ["darwin", "windows"]:  # macOS or Windows
+            if self.platform == "darwin":
+                from src.platform.macos.initializer_macos import MacOSInitializer
+                self.mac_initializer = MacOSInitializer()
+                self.run_desktop_mode()
+            elif self.platform == "windows":
+                from src.platform.windows.initializer_win import WindowsInitializer
+                self.win_initializer = WindowsInitializer()
                 self.run_desktop_mode()
             else:  # Raspberry Pi
                 self.run_embedded_mode()
@@ -241,8 +249,13 @@ class TransferBox:
         self.display.clear()
         self.sound_manager.cleanup()
         
+        # Add platform-specific cleanup
         if self.platform == "raspberry_pi":
             self.pi_initializer.cleanup()
+        elif self.platform == "darwin":
+            self.mac_initializer.cleanup()
+        elif self.platform == "windows":
+            self.win_initializer.cleanup()
 
 def main():
     """Main entry point"""
