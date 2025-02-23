@@ -617,53 +617,39 @@ class FileTransfer:
     def _generate_destination_filename(self, source_path: Path) -> str:
         """
         Generate destination filename based on configuration settings.
-        
-        This method implements the file renaming logic according to the configuration:
-        - Can preserve original filename
-        - Can add timestamps in configured format
-        - Uses configured filename template
+        Uses file creation time for timestamp to prevent duplicates.
         
         Args:
             source_path: Original file path
             
         Returns:
-            New filename according to configuration settings
+            New filename according to configuration
         """
         try:
             # Get original filename and extension
             original_name = source_path.stem
             extension = source_path.suffix
             
-            # If we're not renaming with timestamp, just return original name
+            # If rename_with_timestamp is False, return original filename
             if not self.config.rename_with_timestamp:
                 return source_path.name
-                
-            # Get file creation time
+            
+            # Get file creation time (using stat)
             stat_info = source_path.stat()
-            possible_times = [
-                stat_info.st_ctime,  # Creation time (Windows) / Status change time (Unix)
-                stat_info.st_mtime,  # Modification time
-                stat_info.st_atime   # Access time
-            ]
-            creation_time = min(possible_times)
+            # Use creation time on Windows, or earliest of ctime/mtime on Unix-like systems
+            creation_time = stat_info.st_ctime
+            if hasattr(stat_info, 'st_birthtime'):  # macOS specific
+                creation_time = stat_info.st_birthtime
             
-            # Format timestamp according to configuration
-            timestamp = datetime.fromtimestamp(creation_time).strftime(
-                self.config.timestamp_format
-            )
+            # Generate timestamp from creation time
+            timestamp = datetime.fromtimestamp(creation_time).strftime(self.config.timestamp_format)
             
-            # Build the new filename based on the template
+            # Build new filename according to template
             if self.config.preserve_original_filename:
-                # Replace placeholders in the template
-                new_name = self.config.filename_template.format(
-                    original=original_name,
-                    timestamp=timestamp
-                )
-                return f"{new_name}{extension}"
+                return f"{original_name}_{timestamp}{extension}"
             else:
-                # Just use timestamp if we're not preserving original name
                 return f"{timestamp}{extension}"
-                
+            
         except Exception as e:
             logger.error(f"Error generating destination filename for {source_path}: {e}")
             # Fallback to original filename if anything goes wrong
