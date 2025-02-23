@@ -1,3 +1,5 @@
+# src/platform/raspberry_pi/power_management.py
+
 import struct
 import smbus
 import time
@@ -5,10 +7,13 @@ import logging
 from threading import Thread, Event
 import lgpio
 import subprocess
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
 class PowerManager:
+    """Manages power-related functionality for Raspberry Pi with x728 UPS HAT"""
+    
     def __init__(self):
         self.GPIO_PORT = 26
         self.I2C_ADDR = 0x36
@@ -22,7 +27,8 @@ class PowerManager:
         
         self.initialize_gpio()
 
-    def initialize_gpio(self):
+    def initialize_gpio(self) -> None:
+        """Initialize GPIO resources"""
         try:
             if self.h is not None:
                 self.close_gpio()
@@ -35,7 +41,8 @@ class PowerManager:
             self.close_gpio()
             raise
 
-    def close_gpio(self):
+    def close_gpio(self) -> None:
+        """Close GPIO resources"""
         if self.h is not None:
             try:
                 lgpio.gpio_free(self.h, self.GPIO_PORT)
@@ -47,13 +54,14 @@ class PowerManager:
             finally:
                 self.h = None
 
-    def release_gpio_resources(self):
+    def release_gpio_resources(self) -> None:
+        """Release GPIO resources before shutdown"""
         logger.info("Releasing GPIO resources before shutdown")
         self.close_gpio()
-        # Add a small delay to ensure resources are fully released
-        time.sleep(0.5)
+        time.sleep(0.5)  # Small delay to ensure resources are released
 
-    def read_voltage(self):
+    def read_voltage(self) -> float:
+        """Read battery voltage"""
         try:
             read = self.bus.read_word_data(self.I2C_ADDR, 2)
             swapped = struct.unpack("<H", struct.pack(">H", read))[0]
@@ -61,25 +69,28 @@ class PowerManager:
             return voltage
         except Exception as e:
             logger.error(f"Error reading voltage: {e}")
-            return None
+            return 0.0
 
-    def read_capacity(self):
+    def read_capacity(self) -> float:
+        """Read battery capacity percentage"""
         try:
             read = self.bus.read_word_data(self.I2C_ADDR, 4)
             swapped = struct.unpack("<H", struct.pack(">H", read))[0]
             capacity = swapped / 256
-            return min(capacity, 100)
+            return min(capacity, 100.0)
         except Exception as e:
             logger.error(f"Error reading capacity: {e}")
-            return None
+            return 0.0
 
-    def check_ac_power(self):
+    def check_ac_power(self) -> bool:
+        """Check if AC power is connected"""
         if self.h is None:
             logger.error("GPIO chip handle is not valid.")
             return False
         return lgpio.gpio_read(self.h, self.PLD_PIN) == 0
 
-    def beep_buzzer(self):
+    def beep_buzzer(self) -> None:
+        """Activate buzzer for alert"""
         if self.h is None:
             logger.error("GPIO chip handle is not valid. Cannot beep buzzer.")
             return
@@ -87,31 +98,33 @@ class PowerManager:
         time.sleep(0.1)
         lgpio.gpio_write(self.h, self.BUZZER_PIN, 0)
 
-    def safe_shutdown(self):
-        """
-        Perform a safe shutdown of the system using the x728 command.
-        """
+    def safe_shutdown(self) -> None:
+        """Perform a safe system shutdown"""
         logger.warning("Initiating safe shutdown...")
-        self.shutdown_event.set()  # Signal the monitoring thread to stop
-        self.release_gpio_resources()  # Release GPIO resources
+        self.shutdown_event.set()
+        self.release_gpio_resources()
         
+        script_path = Path('/usr/local/bin/xSoft.sh')
         try:
-            result = subprocess.run(['sudo', '/usr/local/bin/xSoft.sh', '0', '26'], 
-                                    check=True, 
-                                    capture_output=True, 
-                                    text=True)
-            logger.info(f"Shutdown command output: {result.stdout}")
+            if script_path.exists():
+                result = subprocess.run(
+                    ['sudo', str(script_path), '0', '26'],
+                    check=True,
+                    capture_output=True,
+                    text=True
+                )
+                logger.info(f"Shutdown command output: {result.stdout}")
+            else:
+                logger.error("Shutdown script not found")
+                subprocess.run(['sudo', 'shutdown', '-h', 'now'], check=True)
+                
         except subprocess.CalledProcessError as e:
             logger.error(f"Failed to execute shutdown command: {e}")
             logger.error(f"Command output: {e.output}")
             logger.error(f"Command stderr: {e.stderr}")
-        except FileNotFoundError:
-            logger.error("Shutdown script not found. Make sure it's installed and the path is correct.")
 
-    def safe_reboot(self):
-        """
-        Perform a safe reboot of the system by simulating a 1-2 second button press.
-        """
+    def safe_reboot(self) -> None:
+        """Perform a safe system reboot"""
         logger.warning("Initiating safe reboot...")
         self.stop_monitoring()
         
@@ -132,13 +145,13 @@ class PowerManager:
         finally:
             self.close_gpio()
         
-        # Initiate system reboot
         try:
             subprocess.run(['sudo', 'reboot'], check=True)
         except subprocess.CalledProcessError as e:
             logger.error(f"Failed to execute reboot command: {e}")
 
-    def monitor_power(self):
+    def monitor_power(self) -> None:
+        """Monitor power status continuously"""
         last_beep_time = 0
         beep_interval = 30
         last_print_time = 0
@@ -151,10 +164,8 @@ class PowerManager:
             ac_power = self.check_ac_power()
 
             if voltage is not None and capacity is not None:
-                # Print and log battery status every 15 seconds
                 if current_time - last_print_time >= print_interval:
                     status_message = f"Battery: {voltage:.2f}V, {capacity:.1f}%"
-                    print(status_message)
                     logger.info(status_message)
                     last_print_time = current_time
                 
@@ -175,19 +186,23 @@ class PowerManager:
                     self.safe_shutdown()
                     break
             
-            time.sleep(5)  # Check every 5 seconds, but only print every 15 seconds
+            time.sleep(5)
 
-    def start_monitoring(self):
+    def start_monitoring(self) -> None:
+        """Start power monitoring thread"""
         if self.monitor_thread is None or not self.monitor_thread.is_alive():
             self.stop_event.clear()
             self.shutdown_event.clear()
             self.monitor_thread = Thread(target=self.monitor_power)
+            self.monitor_thread.daemon = True
             self.monitor_thread.start()
 
-    def stop_monitoring(self):
+    def stop_monitoring(self) -> None:
+        """Stop power monitoring thread"""
         self.stop_event.set()
         if self.monitor_thread and self.monitor_thread.is_alive():
-            self.monitor_thread.join(timeout=5)  # Wait for up to 5 seconds
+            self.monitor_thread.join(timeout=5)
         self.close_gpio()
 
+# Create singleton instance
 power_manager = PowerManager()

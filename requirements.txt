@@ -1,2 +1,11 @@
-smbus==1.1.post2
-xxhash==3.4.1
+# Core dependencies for all platforms
+xxhash==3.5.0
+colorama==0.4.6
+rich==13.9.4
+pyyaml==6.0.2
+
+# Linux/Raspberry Pi only
+smbus==1.1.post2; sys_platform == 'linux'
+
+# Desktop platforms (Windows, macOS, Linux)
+pygame==2.6.1; sys_platform != 'linux' or platform_machine != 'armv7l'
