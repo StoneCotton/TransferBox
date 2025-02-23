@@ -127,48 +127,36 @@ class MacOSStorage(StorageInterface):
 
     def set_dump_drive(self, path: Union[Path, str]) -> None:
         """
-        Set the dump drive location, validating the drive is accessible but allowing
-        for directory creation.
+        Set the destination drive for file dumps.
         
         Args:
-            path: Path to set as dump drive location
-                
+            path: Path to the destination directory
+            
         Raises:
-            ValueError: If drive letter is invalid or inaccessible
+            ValueError: If path is invalid or not writable
         """
         try:
             # Sanitize the path if it's a string
             if isinstance(path, str):
                 path = sanitize_path(path)
-            elif isinstance(path, Path):
-                path = validate_destination_path(path, self)
-                
-            # First validate that the volume/drive exists and is accessible
-            drive_path = None
             
-            # On macOS, check if the path starts with /Volumes/
-            if str(path).startswith('/Volumes/'):
-                volume_name = path.parts[2]  # Get the volume name
-                drive_path = Path('/Volumes') / volume_name
-            else:
-                # For paths not in /Volumes, use the root
-                drive_path = Path('/')
+            # Create directory if it doesn't exist
+            path = Path(path)
+            if not path.exists():
+                path.mkdir(parents=True, exist_ok=True)
             
-            # Check if the drive/volume is accessible
-            if not drive_path.exists():
-                raise ValueError(f"Volume {drive_path} is not accessible")
-                
-            # Verify the drive is writable by checking permissions on the volume root
-            if not os.access(drive_path, os.W_OK):
-                raise ValueError(f"Volume {drive_path} is not writable")
+            # Check if we can write to the directory
+            if not os.access(path, os.W_OK):
+                # If path doesn't exist, check parent directory
+                parent = path.parent
+                while not parent.exists():
+                    parent = parent.parent
+                if not os.access(parent, os.W_OK):
+                    raise ValueError(f"No write permission for directory: {parent}")
             
-            # Store the target path - we don't need to verify it exists
-            # as it will be created during transfer if needed
             self.dump_drive_mountpoint = path
-            logger.info(f"Set dump drive to {path}")
             
         except Exception as e:
-            logger.error(f"Error setting dump drive: {e}")
             raise ValueError(str(e))
 
     def wait_for_new_drive(self, initial_drives: List[Path]) -> Optional[Path]:

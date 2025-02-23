@@ -118,32 +118,47 @@ def _validate_macos_path(path: Path, storage) -> Path:
         ValueError: If path is invalid
     """
     try:
+        # Handle paths starting with /Users/
+        if str(path).startswith('/Users/'):
+            if not _check_unix_write_permission(path):
+                # If path doesn't exist, check parent directory
+                if not path.exists():
+                    parent = path.parent
+                    while not parent.exists():
+                        parent = parent.parent
+                    if not _check_unix_write_permission(parent):
+                        raise ValueError(f"No write permission for parent directory: {parent}")
+                else:
+                    raise ValueError(f"No write permission for path: {path}")
+            return path
+
         # For external drives on macOS, path should start with /Volumes/
-        if not str(path).startswith('/Volumes/') and not str(path).startswith('/Users/'):
+        if not str(path).startswith('/Volumes/'):
             raise ValueError("External drive paths must start with /Volumes/")
             
         # Get volume root (e.g., /Volumes/DriveName)
         volume_path = Path('/Volumes')
-        if str(path).startswith('/Volumes/'):
-            volume_name = path.parts[2]  # Get volume name
-            volume_path = volume_path / volume_name
+        volume_name = path.parts[2]  # Get volume name
+        volume_path = volume_path / volume_name
             
-            # Check if volume exists
-            if not volume_path.exists():
-                raise ValueError(f"Volume not found: {volume_path}")
-                
-            # Check volume permissions
-            if not _check_unix_write_permission(volume_path):
-                raise ValueError(f"No write permission for volume: {volume_path}")
-                
-        # For user directory paths
-        elif str(path).startswith('/Users/'):
-            if not _check_unix_write_permission(path):
-                raise ValueError(f"No write permission for path: {path}")
-                
+        # Check if volume exists
+        if not volume_path.exists():
+            raise ValueError(f"Volume not found: {volume_path}")
+            
+        # Check volume permissions
+        if not _check_unix_write_permission(volume_path):
+            raise ValueError(f"No write permission for volume: {volume_path}")
+            
         # Check if we can write to the target directory or its parent
         if not _check_unix_write_permission(path):
-            raise ValueError(f"No write permission for path: {path}")
+            if not path.exists():
+                parent = path.parent
+                while not parent.exists():
+                    parent = parent.parent
+                if not _check_unix_write_permission(parent):
+                    raise ValueError(f"No write permission for parent directory: {parent}")
+            else:
+                raise ValueError(f"No write permission for path: {path}")
             
         return path
         
