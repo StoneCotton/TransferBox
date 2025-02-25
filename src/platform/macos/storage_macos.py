@@ -271,12 +271,12 @@ class MacOSStorage(StorageInterface):
             except ImportError:
                 logger.warning("xattr module not available - extended attributes won't be preserved")
                 metadata['xattrs'] = {}
-                
-            return metadata
             
+            return metadata
+        
         except Exception as e:
             logger.error(f"Error getting metadata for {path}: {e}")
-            return {}
+            raise StorageError(f"Failed to retrieve file metadata", path=path) from e
             
     def set_file_metadata(self, path: Path, metadata: Dict[str, Any]) -> bool:
         """Set file metadata using macOS native APIs"""
@@ -309,9 +309,9 @@ class MacOSStorage(StorageInterface):
                         attrs[name] = value
                 except ImportError:
                     logger.warning("xattr module not available - extended attributes won't be preserved")
-                    
-            return True
             
+            return True
+        
         except Exception as e:
             logger.error(f"Error setting metadata for {path}: {e}")
-            return False
+            raise StorageError(f"Failed to set file metadata", path=path) from e
