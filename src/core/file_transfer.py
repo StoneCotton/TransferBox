@@ -121,11 +121,21 @@ class FileTransfer:
     def _verify_source_access(self, path: Path) -> bool:
         """
         Verify source path accessibility with proper error handling.
+        
+        Args:
+            path: Path to check for accessibility
+            
+        Returns:
+            bool: True if the path is accessible, False otherwise
         """
         try:
             # Convert to Path object if it isn't already
-            path = Path(path)
-            
+            try:
+                path = Path(path)
+            except TypeError as e:
+                logger.error(f"Invalid path type: {type(path).__name__}, {e}")
+                return False
+                
             # Basic existence check
             if not path.exists():
                 logger.error(f"Source path does not exist: {path}")
@@ -142,63 +152,124 @@ class FileTransfer:
                 return False
                 
             # Try to list directory contents
-            next(path.iterdir())
-            return True
-            
-        except StopIteration:
-            # Empty directory is valid
-            return True
-        except PermissionError:
-            logger.error(f"Permission denied accessing source: {path}")
+            try:
+                next(path.iterdir())
+                return True
+            except StopIteration:
+                # Empty directory is valid
+                logger.debug(f"Source directory is empty: {path}")
+                return True
+                
+        except PermissionError as e:
+            logger.error(f"Permission denied accessing source: {path}, {e}")
+            return False
+        except FileNotFoundError as e:
+            # This could happen if the directory is removed between checks
+            logger.error(f"Source path disappeared during verification: {path}, {e}")
+            return False
+        except NotADirectoryError as e:
+            # This could happen if path changes from directory to file during checks
+            logger.error(f"Source path is not a directory during iteration: {path}, {e}")
+            return False
+        except OSError as e:
+            # Handle specific OS errors (disk errors, etc.)
+            logger.error(f"OS error accessing source: {path}, {e}")
             return False
         except Exception as e:
-            logger.error(f"Error verifying source access: {path}, {e}")
+            # Last resort catch-all with detailed logging
+            logger.error(f"Unexpected error verifying source access: {path}, {e}", exc_info=True)
             return False
 
     def _get_transferable_files(self, source_path: Path) -> List[Path]:
         """
         Get list of files to transfer with improved path handling.
+        
+        Args:
+            source_path: Root directory to scan for files
+            
+        Returns:
+            List[Path]: List of files to transfer, empty list if error occurs
         """
         files_to_transfer = []
+        ignored_files = 0
+        permission_errors = 0
+        
         try:
             # Convert source path to Path object for consistent handling
-            source_path = Path(source_path)
-            
+            try:
+                source_path = Path(source_path)
+            except TypeError as e:
+                logger.error(f"Invalid source path type: {type(source_path).__name__}, {e}")
+                return []
+                
             # First verify the source path is accessible
             if not self._verify_source_access(source_path):
                 logger.error(f"Source path not accessible: {source_path}")
                 return []
-
+                
             # Walk the directory structure safely
-            for path in source_path.rglob('*'):
-                try:
-                    # Skip directories and hidden files
-                    if path.is_dir() or path.name.startswith('.'):
-                        continue
-                        
-                    # Skip system directories
-                    if 'System Volume Information' in str(path):
-                        continue
-                        
-                    # Apply media filter if configured
-                    if self.config.media_only_transfer:
-                        if any(path.name.lower().endswith(ext) 
-                            for ext in self.config.media_extensions):
+            try:
+                for path in source_path.rglob('*'):
+                    try:
+                        # Skip directories and hidden files
+                        if path.is_dir():
+                            continue
+                            
+                        if path.name.startswith('.'):
+                            ignored_files += 1
+                            continue
+                            
+                        # Skip system directories
+                        if 'System Volume Information' in str(path):
+                            ignored_files += 1
+                            continue
+                            
+                        # Apply media filter if configured
+                        if self.config.media_only_transfer:
+                            if any(path.name.lower().endswith(ext) 
+                                for ext in self.config.media_extensions):
+                                files_to_transfer.append(path)
+                            else:
+                                ignored_files += 1
+                        else:
                             files_to_transfer.append(path)
-                    else:
-                        files_to_transfer.append(path)
+                            
+                    except PermissionError as e:
+                        permission_errors += 1
+                        logger.warning(f"Permission denied accessing: {path}, {e}")
+                        continue
+                    except FileNotFoundError as e:
+                        # File might have been deleted during scan
+                        logger.warning(f"File disappeared during scan: {path}, {e}")
+                        continue
+                    except OSError as e:
+                        # Handle OS-specific errors (like disk errors)
+                        logger.warning(f"OS error processing file {path}: {e}")
+                        continue
+                    except Exception as e:
+                        logger.warning(f"Unexpected error processing file {path}: {e}", exc_info=True)
+                        continue
                         
-                except PermissionError:
-                    logger.warning(f"Permission denied accessing: {path}")
-                    continue
-                except Exception as e:
-                    logger.warning(f"Error processing file {path}: {e}")
-                    continue
-
-            return files_to_transfer
-            
+                # Log summary statistics
+                if files_to_transfer:
+                    logger.info(f"Found {len(files_to_transfer)} files to transfer, ignored {ignored_files} files")
+                    if permission_errors > 0:
+                        logger.warning(f"Encountered {permission_errors} permission errors during scan")
+                else:
+                    logger.warning(f"No files found to transfer in {source_path}")
+                    
+                return files_to_transfer
+                
+            except PermissionError as e:
+                logger.error(f"Permission denied during directory traversal: {source_path}, {e}")
+                return []
+            except RuntimeError as e:
+                # Handle recursive symlinks
+                logger.error(f"Recursive directory structure detected in {source_path}: {e}")
+                return []
+                
         except Exception as e:
-            logger.error(f"Error scanning for files: {e}")
+            logger.error(f"Error scanning for files in {source_path}: {e}", exc_info=True)
             return []
 
     def validate_destination_path(path: Path, storage: StorageInterface) -> Path:
