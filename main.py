@@ -17,6 +17,7 @@ from src.core.file_transfer import FileTransfer
 from src.core.logger_setup import setup_logging
 from src.core.sound_manager import SoundManager
 from src.core.path_utils import sanitize_path, validate_destination_path
+from src.core.exceptions import HardwareError, StorageError, StateError
 
 # Initialize logging
 logger = setup_logging()
@@ -54,42 +55,101 @@ class TransferBox:
         signal.signal(signal.SIGTERM, self.handle_shutdown)
 
     def handle_shutdown(self, signum, frame):
-        """Handle shutdown signals gracefully"""
-        logger.info("Shutdown signal received")
-        self.display.show_status("Shutting down...")
-        self.stop_event.set()
-        self.cleanup()  # Add this line
-        sys.exit(0)    # Add this line to ensure clean exit
+        """
+        Handle shutdown signals gracefully by cleaning up resources and exiting.
+        
+        Args:
+            signum: Signal number that triggered this handler
+            frame: Current stack frame
+        """
+        try:
+            signal_names = {
+                signal.SIGINT: "SIGINT (Ctrl+C)",
+                signal.SIGTERM: "SIGTERM"
+            }
+            signal_name = signal_names.get(signum, f"Signal {signum}")
+            logger.info(f"Shutdown signal received: {signal_name}")
+            
+            # Inform user about shutdown
+            try:
+                self.display.show_status("Shutting down...")
+            except Exception as e:
+                logger.warning(f"Could not update display during shutdown: {e}")
+            
+            # Signal threads to stop
+            self.stop_event.set()
+            
+            # Perform cleanup operations
+            try:
+                self.cleanup()
+                logger.info("Cleanup completed successfully")
+            except Exception as e:
+                logger.error(f"Error during cleanup: {e}")
+                # Continue with shutdown despite cleanup errors
+        except Exception as e:
+            # Catch-all exception handler to ensure we always exit
+            logger.critical(f"Critical error during shutdown: {e}")
+        finally:
+            # Always exit, even if there were errors in the shutdown process
+            logger.info("Exiting program")
+            sys.exit(0)
 
     def setup(self):
-            """Perform initial setup"""
-            try:
-                self.display.clear()
-                self.display.show_status("TransferBox Ready")
-                
-                # Special handling for Raspberry Pi
-                if self.platform == "raspberry_pi":
+        """Perform initial setup with comprehensive error handling"""
+        try:
+            self.display.clear()
+            self.display.show_status("TransferBox Ready")
+
+            # Special handling for Raspberry Pi
+            if self.platform == "raspberry_pi":
+                try:
                     from src.platform.raspberry_pi.initializer_pi import RaspberryPiInitializer
                     self.pi_initializer = RaspberryPiInitializer()
-                    # Initialize all required components
+                except ImportError as import_err:
+                    logger.error(f"Failed to import RaspberryPiInitializer: {import_err}")
+                    raise
+
+                # Initialize hardware with specific error handling for each step
+                try:
                     self.pi_initializer.initialize_hardware()
+                except HardwareError as hw_err:
+                    logger.error(f"Hardware initialization failed: {hw_err}")
+                    self.display.show_error("Hardware Setup Failed")
+                    raise
+
+                try:
                     self.pi_initializer.initialize_display()
+                except Exception as display_err:
+                    logger.error(f"Display initialization failed: {display_err}")
+                    self.display.show_error("Display Setup Failed")
+                    raise
+
+                try:
                     self.pi_initializer.initialize_storage()
-                    
-                    # Initialize button handling
-                    def menu_callback():
-                        self.display.show_status("Menu Mode")
-                        self.pi_initializer.handle_utility_mode(True)
-                        
+                except StorageError as storage_err:
+                    logger.error(f"Storage initialization failed: {storage_err}")
+                    self.display.show_error("Storage Setup Failed")
+                    raise
+
+                # Initialize button handling
+                def menu_callback():
+                    self.display.show_status("Menu Mode")
+                    self.pi_initializer.handle_utility_mode(True)
+
+                try:
                     self.pi_initializer.initialize_buttons(
-                        self.state_manager,
+                        self.state_manager, 
                         menu_callback
                     )
-                
-            except Exception as e:
-                logger.error(f"Setup failed: {e}")
-                self.display.show_error("Setup failed")
-                raise
+                except StateError as state_err:
+                    logger.error(f"Button initialization failed: {state_err}")
+                    self.display.show_error("Button Setup Failed")
+                    raise
+
+        except Exception as e:
+            logger.error(f"Critical setup failure: {e}")
+            self.display.show_error("Critical Setup Error")
+            raise
 
     def run(self):
         """Main application loop"""
