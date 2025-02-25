@@ -1153,29 +1153,49 @@ class FileTransfer:
     def _generate_destination_filename(self, source_path: Path) -> str:
         """
         Generate destination filename based on configuration settings.
-        
-        This method implements the file renaming logic according to the configuration:
-        - Can preserve original filename
-        - Can add timestamps in configured format
-        - Uses configured filename template
+        Uses file creation time for timestamp to prevent duplicates.
         
         Args:
             source_path: Original file path
             
         Returns:
-            New filename according to configuration settings
+            New filename according to configuration
         """
+        # Validate source_path is a Path object
+        if not isinstance(source_path, Path):
+            logger.error(f"Invalid source_path type: {type(source_path).__name__}")
+            try:
+                source_path = Path(source_path)
+            except Exception as e:
+                logger.error(f"Could not convert {source_path} to Path: {e}")
+                return str(source_path)  # Return string representation as fallback
+        
         try:
             # Get original filename and extension
-            original_name = source_path.stem
-            extension = source_path.suffix
-            
+            try:
+                original_name = source_path.stem
+                extension = source_path.suffix
+            except AttributeError as e:
+                logger.error(f"Error accessing filename attributes: {e}")
+                return str(source_path)
+                
             # If we're not renaming with timestamp, just return original name
             if not self.config.rename_with_timestamp:
                 return source_path.name
                 
-            # Get file creation time
-            stat_info = source_path.stat()
+            # Get file creation time with specific exception handling
+            try:
+                stat_info = source_path.stat()
+            except FileNotFoundError as e:
+                logger.error(f"File not found when getting stats: {source_path}, {e}")
+                return source_path.name
+            except PermissionError as e:
+                logger.error(f"Permission denied accessing file stats: {source_path}, {e}")
+                return source_path.name
+            except OSError as e:
+                logger.error(f"OS error accessing file stats: {source_path}, {e}")
+                return source_path.name
+                
             possible_times = [
                 stat_info.st_ctime,  # Creation time (Windows) / Status change time (Unix)
                 stat_info.st_mtime,  # Modification time
@@ -1184,42 +1204,70 @@ class FileTransfer:
             creation_time = min(possible_times)
             
             # Format timestamp according to configuration
-            timestamp = datetime.fromtimestamp(creation_time).strftime(
-                self.config.timestamp_format
-            )
-            
+            try:
+                timestamp = datetime.fromtimestamp(creation_time).strftime(
+                    self.config.timestamp_format
+                )
+            except ValueError as e:
+                logger.error(f"Invalid timestamp format '{self.config.timestamp_format}': {e}")
+                # Fallback to ISO format if timestamp format is invalid
+                timestamp = datetime.fromtimestamp(creation_time).strftime("%Y%m%d_%H%M%S")
+                
             # Build the new filename based on the template
             if self.config.preserve_original_filename:
                 # Replace placeholders in the template
-                new_name = self.config.filename_template.format(
-                    original=original_name,
-                    timestamp=timestamp
-                )
-                return f"{new_name}{extension}"
+                try:
+                    new_name = self.config.filename_template.format(
+                        original=original_name,
+                        timestamp=timestamp
+                    )
+                    return f"{new_name}{extension}"
+                except KeyError as e:
+                    logger.error(f"Invalid placeholder in filename template '{self.config.filename_template}': {e}")
+                    # Fallback to simple concatenation
+                    return f"{original_name}_{timestamp}{extension}"
+                except ValueError as e:
+                    logger.error(f"Invalid filename template '{self.config.filename_template}': {e}")
+                    return f"{original_name}_{timestamp}{extension}"
             else:
                 # Just use timestamp if we're not preserving original name
                 return f"{timestamp}{extension}"
                 
         except Exception as e:
-            logger.error(f"Error generating destination filename for {source_path}: {e}")
+            logger.error(f"Unexpected error generating destination filename for {source_path}: {e}", exc_info=True)
             # Fallback to original filename if anything goes wrong
             return source_path.name
 
     def _create_destination_path(self, source_path: Path, target_dir: Path, source_root: Path) -> Path:
         """
-        Create the complete destination path for a file, maintaining proper directory structure.ning proper directory structure.
+        Create the complete destination path for a file, maintaining proper directory structure.
         
         Args:
             source_path: Original file path
             target_dir: Base destination directory
-            source_root: Root directory of the source (SD card mount point)SD card mount point)
+            source_root: Root directory of the source (SD card mount point)
             
         Returns:
             Complete destination Path object
         """
+        # Validate input parameters
+        if not isinstance(source_path, Path) or not isinstance(target_dir, Path) or not isinstance(source_root, Path):
+            logger.error(f"Invalid parameter types: source_path={type(source_path).__name__}, "
+                        f"target_dir={type(target_dir).__name__}, "
+                        f"source_root={type(source_root).__name__}")
+            # Fallback: return a path in the target directory with original filename
+            try:
+                return target_dir / source_path.name
+            except Exception:
+                return target_dir / "unknown_file"
+        
         try:
             # Generate the new filename according to configuration
-            new_filename = self._generate_destination_filename(source_path)
+            try:
+                new_filename = self._generate_destination_filename(source_path)
+            except Exception as e:
+                logger.error(f"Failed to generate destination filename for {source_path}: {e}")
+                new_filename = source_path.name  # Fall back to original filename
             
             # Get the relative path from the source root, not the entire mount path
             # This ensures we only preserve the directory structure from the SD card root
@@ -1227,22 +1275,40 @@ class FileTransfer:
                 rel_path = source_path.relative_to(source_root)
                 # Get just the directory part, excluding the filename
                 rel_dir = rel_path.parent
-            except ValueError:
+            except ValueError as e:
                 # Fallback if relative_to fails
-                logger.warning(f"Could not determine relative path for {source_path}")
+                logger.warning(f"Could not determine relative path for {source_path}: {e}")
+                rel_dir = Path()
+            except Exception as e:
+                # Catch other unexpected errors with relative path calculation
+                logger.error(f"Unexpected error calculating relative path for {source_path}: {e}")
                 rel_dir = Path()
             
             # Combine target directory with relative directory and new filename
             dest_path = target_dir / rel_dir / new_filename
-            # Ensure parent directories exist
-            dest_path.parent.mkdir(parents=True, exist_ok=True)
             
+            # Ensure parent directories exist
+            try:
+                dest_path.parent.mkdir(parents=True, exist_ok=True)
+            except PermissionError as e:
+                logger.error(f"Permission denied creating directory {dest_path.parent}: {e}")
+                # Fallback to just using the target directory without subdirectories
+                dest_path = target_dir / new_filename
+            except OSError as e:
+                logger.error(f"OS error creating directory {dest_path.parent}: {e}")
+                # Fallback to just using the target directory without subdirectories
+                dest_path = target_dir / new_filename
+                
             return dest_path
             
         except Exception as e:
-            logger.error(f"Error creating destination path for {source_path}: {e}")
+            logger.error(f"Error creating destination path for {source_path}: {e}", exc_info=True)
             # Fallback to simple path in target directory if anything goes wrong
-            # Fallback to simple path in target directory if anything goes wrong
+            try:
+                filename = source_path.name
+            except Exception:
+                filename = "unknown_file"
+            return target_dir / filename
 
     def _process_files(self, source_path: Path, target_dir: Path, 
                     file_list: list, log_file: Path,
