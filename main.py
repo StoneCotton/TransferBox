@@ -17,7 +17,7 @@ from src.core.file_transfer import FileTransfer
 from src.core.logger_setup import setup_logging
 from src.core.sound_manager import SoundManager
 from src.core.path_utils import sanitize_path, validate_destination_path
-from src.core.exceptions import HardwareError, StorageError, StateError
+from src.core.exceptions import HardwareError, StorageError, StateError, FileTransferError
 
 # Initialize logging
 logger = setup_logging()
@@ -152,24 +152,32 @@ class TransferBox:
             raise
 
     def run(self):
-        """Main application loop"""
+        """Main application loop with comprehensive error handling"""
         try:
             self.setup()
             
-            if self.platform == "darwin":
-                from src.platform.macos.initializer_macos import MacOSInitializer
-                self.mac_initializer = MacOSInitializer()
-                self.run_desktop_mode()
-            elif self.platform == "windows":
-                from src.platform.windows.initializer_win import WindowsInitializer
-                self.win_initializer = WindowsInitializer()
-                self.run_desktop_mode()
-            else:  # Raspberry Pi
-                self.run_embedded_mode()
-                
+            try:
+                if self.platform == "darwin":
+                    from src.platform.macos.initializer_macos import MacOSInitializer
+                    self.mac_initializer = MacOSInitializer()
+                    self.run_desktop_mode()
+                elif self.platform == "windows":
+                    from src.platform.windows.initializer_win import WindowsInitializer
+                    self.win_initializer = WindowsInitializer()
+                    self.run_desktop_mode()
+                else:  # Raspberry Pi
+                    self.run_embedded_mode()
+            except ImportError as import_err:
+                logger.error(f"Platform initialization failed: {import_err}")
+                self.display.show_error("Platform Setup Error")
+                raise
+            except (StorageError, StateError) as platform_err:
+                logger.error(f"Platform runtime error: {platform_err}")
+                self.display.show_error(f"Platform Error: {str(platform_err)}")
+                raise
         except Exception as e:
-            logger.error(f"Runtime error: {e}")
-            self.display.show_error(f"Error: {str(e)}")
+            logger.error(f"Critical runtime error: {e}", exc_info=True)
+            self.display.show_error(f"Critical Error: {str(e)}")
         finally:
             self.cleanup()
 
@@ -180,6 +188,7 @@ class TransferBox:
                 # Get destination path from user
                 self.display.show_status("Enter destination path:")
                 raw_destination = input("Enter destination path for transfers: ")
+                
                 try:
                     # Sanitize and validate the input path
                     destination_path = sanitize_path(raw_destination)
@@ -189,15 +198,15 @@ class TransferBox:
                     
                     # Let FileTransfer handle path validation and creation
                     self.storage.set_dump_drive(destination_path)
-                except ValueError as e:
-                    self.display.show_error(str(e))
-                    continue              
-                                
+                except (ValueError, StorageError) as path_err:
+                    self.display.show_error(str(path_err))
+                    continue
+                
                 # Wait for source drive
                 self.display.show_status("Waiting for source drive...")
                 initial_drives = self.storage.get_available_drives()
-                
                 source_drive = self.storage.wait_for_new_drive(initial_drives)
+                
                 if not source_drive or self.stop_event.is_set():
                     continue
                 
@@ -205,16 +214,22 @@ class TransferBox:
                 timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
                 log_file = destination_path / f"transfer_log_{timestamp}.log"
                 
-                success = self.file_transfer.copy_sd_to_dump(
-                    source_drive,
-                    destination_path,
-                    log_file
-                )
-                
-                if success:
-                    self.display.show_status("Transfer complete")
-                else:
-                    self.display.show_error("Transfer failed")
+                try:
+                    success = self.file_transfer.copy_sd_to_dump(
+                        source_drive,
+                        destination_path,
+                        log_file
+                    )
+                    
+                    if success:
+                        self.display.show_status("Transfer complete")
+                    else:
+                        self.display.show_error("Transfer failed")
+                        # Log additional details about transfer failure
+                        logger.warning(f"Transfer failed for source drive: {source_drive}")
+                except FileTransferError as transfer_err:
+                    logger.error(f"File transfer error: {transfer_err}")
+                    self.display.show_error(f"Transfer Error: {str(transfer_err)}")
                 
                 # Wait for source drive removal
                 self.storage.wait_for_drive_removal(source_drive)
@@ -223,8 +238,8 @@ class TransferBox:
                 logger.info("Transfer interrupted by user")
                 self.stop_event.set()
             except Exception as e:
-                logger.error(f"Transfer error: {e}")
-                self.display.show_error(str(e))
+                logger.error(f"Unexpected transfer error: {e}", exc_info=True)
+                self.display.show_error(f"Unexpected Error: {str(e)}")
 
     def run_embedded_mode(self):
         """Run in embedded mode (Raspberry Pi)"""
@@ -245,7 +260,13 @@ class TransferBox:
                     # Main SD card detection and transfer loop
                     while not self.stop_event.is_set():
                         # Ensure we're in standby state
-                        self.state_manager.enter_standby()
+                        try:
+                            self.state_manager.enter_standby()
+                        except StateError as state_err:
+                            logger.error(f"Failed to enter standby state: {state_err}")
+                            self.display.show_error("State Error")
+                            break
+                        
                         self.display.show_status("Ready for transfer")
                         
                         # Wait for source drive
@@ -280,50 +301,75 @@ class TransferBox:
                                     self.display.show_error("Unmount failed")
                             else:
                                 self.display.show_error("Transfer failed")
-                                
-                        except Exception as e:
-                            logger.error(f"Transfer error: {e}")
-                            self.display.show_error(str(e))
+                        
+                        except (FileTransferError, StorageError) as transfer_err:
+                            logger.error(f"Transfer error: {transfer_err}")
+                            self.display.show_error(str(transfer_err))
+                        
                         finally:
                             # Always wait for drive removal before continuing
                             self.storage.wait_for_drive_removal(source_drive)
                             time.sleep(1)  # Small delay to ensure clean state
                             
                             # Return to standby state
-                            self.state_manager.enter_standby()
-                            self.display.show_status("Insert next card")
+                            try:
+                                self.state_manager.enter_standby()
+                            except StateError as state_err:
+                                logger.error(f"Failed to return to standby state: {state_err}")
                             
+                            self.display.show_status("Insert next card")
+                
                 except Exception as e:
-                    logger.error(f"Main loop error: {e}")
+                    logger.error(f"Main loop error: {e}", exc_info=True)
                     self.display.show_error(str(e))
                     time.sleep(2)
-                    self.state_manager.enter_standby()
                     
+                    try:
+                        self.state_manager.enter_standby()
+                    except StateError as state_err:
+                        logger.error(f"Failed to enter standby after main loop error: {state_err}")
+        
+        except Exception as global_err:
+            logger.error(f"Global embedded mode error: {global_err}", exc_info=True)
+        
         finally:
             if hasattr(self, 'pi_initializer'):
-                self.pi_initializer.cleanup()
+                try:
+                    self.pi_initializer.cleanup()
+                except Exception as cleanup_err:
+                    logger.error(f"Cleanup error: {cleanup_err}")
 
     def cleanup(self):
-        """Cleanup resources"""
+        """Cleanup resources with comprehensive error handling"""
         logger.info("Cleaning up resources")
-        self.display.clear()
-        self.sound_manager.cleanup()
-        
-        # Add platform-specific cleanup
-        if self.platform == "raspberry_pi":
-            self.pi_initializer.cleanup()
-        elif self.platform == "darwin":
-            self.mac_initializer.cleanup()
-        elif self.platform == "windows":
-            self.win_initializer.cleanup()
+        try:
+            self.display.clear()
+        except Exception as display_err:
+            logger.error(f"Display cleanup error: {display_err}")
+
+        try:
+            self.sound_manager.cleanup()
+        except Exception as sound_err:
+            logger.error(f"Sound manager cleanup error: {sound_err}")
+
+        # Platform-specific cleanup
+        try:
+            if self.platform == "raspberry_pi" and hasattr(self, 'pi_initializer'):
+                self.pi_initializer.cleanup()
+            elif self.platform == "darwin" and hasattr(self, 'mac_initializer'):
+                self.mac_initializer.cleanup()
+            elif self.platform == "windows" and hasattr(self, 'win_initializer'):
+                self.win_initializer.cleanup()
+        except Exception as platform_cleanup_err:
+            logger.error(f"Platform-specific cleanup error: {platform_cleanup_err}")
 
 def main():
-    """Main entry point"""
+    """Main entry point with comprehensive error handling"""
     try:
         app = TransferBox()
         app.run()
     except Exception as e:
-        logger.critical(f"Application failed: {e}")
+        logger.critical(f"Application failed: {e}", exc_info=True)
         sys.exit(1)
 
 if __name__ == "__main__":
