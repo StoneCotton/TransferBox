@@ -40,3 +40,10 @@ class HardwareError(TransferBoxError):
 class StateError(TransferBoxError):
     """State transition related errors"""
     pass
+
+class DisplayError(TransferBoxError):
+    """Display related errors"""
+    pass
+
+class SoundError(TransferBoxError):
+    """Sound related errors"""
