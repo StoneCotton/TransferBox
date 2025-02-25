@@ -72,7 +72,12 @@ class FileTransfer:
             
         Raises:
             ValueError: If the path is invalid or cannot be converted to absolute
+            TypeError: If the input is not a string
         """
+        if not isinstance(path_str, str):
+            logger.error(f"Invalid type for path: expected string, got {type(path_str).__name__}")
+            raise TypeError(f"Path must be a string, got {type(path_str).__name__}")
+        
         try:
             # Remove any surrounding quotes (single or double)
             cleaned_path = path_str.strip("'\"")
@@ -82,20 +87,35 @@ class FileTransfer:
             
             # Resolve any relative path components and convert to absolute
             if not path.is_absolute():
+                logger.warning(f"Relative path provided: '{path_str}'. Absolute path required.")
                 raise ValueError(f"Path must be absolute: {path_str}")
                 
             # Normalize the path (resolve any .. or . components)
-            normalized_path = path.resolve()
-            
+            try:
+                normalized_path = path.resolve()
+            except RuntimeError as e:
+                # Handle potential recursive symlinks
+                logger.error(f"Failed to resolve path '{path_str}': {e}")
+                raise ValueError(f"Cannot resolve path due to recursive symlinks: {path_str}") from e
+                
             # On Windows, ensure consistent path separator
             if os.name == 'nt':
                 normalized_path = Path(str(normalized_path).replace('/', '\\'))
                 
             return normalized_path
             
+        except ValueError as e:
+            # Re-raise ValueError with original as cause
+            logger.error(f"Invalid path format '{path_str}': {e}")
+            raise
+        except OSError as e:
+            # Operating system errors (permissions, non-existent directories in path)
+            logger.error(f"OS error processing path '{path_str}': {e}")
+            raise ValueError(f"Cannot process path due to system error: {e}") from e
         except Exception as e:
-            logger.error(f"Error sanitizing path '{path_str}': {e}")
-            raise ValueError(f"Invalid path format: {path_str}")
+            # Catch other unexpected exceptions but log with more detail
+            logger.error(f"Unexpected error sanitizing path '{path_str}': {e}", exc_info=True)
+            raise ValueError(f"Invalid path format: {path_str}") from e
         
 
     def _verify_source_access(self, path: Path) -> bool:
@@ -463,16 +483,8 @@ class FileTransfer:
 
             # Verify we found files to transfer
             if not files_to_transfer:
-                logger.warning("No media files found to transfer")
-                if self.platform == "raspberry_pi":
-                    self.display.show_error("No Media Found")
-                    self.display.show_status("Remove Card", line=1)
-                else:
-                    # Desktop mode - can show longer messages
-                    self.display.show_error("No media files found on card")
-                    self.display.show_status("Please remove the card and verify its contents")
-                
-                self._play_sound(success=False)  # Add error sound
+                logger.warning("No files found to transfer")
+                self.display.show_error("No Files Found")
                 return False
 
             # Calculate transfer totals with error handling
@@ -617,39 +629,53 @@ class FileTransfer:
     def _generate_destination_filename(self, source_path: Path) -> str:
         """
         Generate destination filename based on configuration settings.
-        Uses file creation time for timestamp to prevent duplicates.
+        
+        This method implements the file renaming logic according to the configuration:
+        - Can preserve original filename
+        - Can add timestamps in configured format
+        - Uses configured filename template
         
         Args:
             source_path: Original file path
             
         Returns:
-            New filename according to configuration
+            New filename according to configuration settings
         """
         try:
             # Get original filename and extension
             original_name = source_path.stem
             extension = source_path.suffix
             
-            # If rename_with_timestamp is False, return original filename
+            # If we're not renaming with timestamp, just return original name
             if not self.config.rename_with_timestamp:
                 return source_path.name
-            
-            # Get file creation time (using stat)
+                
+            # Get file creation time
             stat_info = source_path.stat()
-            # Use creation time on Windows, or earliest of ctime/mtime on Unix-like systems
-            creation_time = stat_info.st_ctime
-            if hasattr(stat_info, 'st_birthtime'):  # macOS specific
-                creation_time = stat_info.st_birthtime
+            possible_times = [
+                stat_info.st_ctime,  # Creation time (Windows) / Status change time (Unix)
+                stat_info.st_mtime,  # Modification time
+                stat_info.st_atime   # Access time
+            ]
+            creation_time = min(possible_times)
             
-            # Generate timestamp from creation time
-            timestamp = datetime.fromtimestamp(creation_time).strftime(self.config.timestamp_format)
+            # Format timestamp according to configuration
+            timestamp = datetime.fromtimestamp(creation_time).strftime(
+                self.config.timestamp_format
+            )
             
-            # Build new filename according to template
+            # Build the new filename based on the template
             if self.config.preserve_original_filename:
-                return f"{original_name}_{timestamp}{extension}"
+                # Replace placeholders in the template
+                new_name = self.config.filename_template.format(
+                    original=original_name,
+                    timestamp=timestamp
+                )
+                return f"{new_name}{extension}"
             else:
+                # Just use timestamp if we're not preserving original name
                 return f"{timestamp}{extension}"
-            
+                
         except Exception as e:
             logger.error(f"Error generating destination filename for {source_path}: {e}")
             # Fallback to original filename if anything goes wrong
@@ -657,12 +683,12 @@ class FileTransfer:
 
     def _create_destination_path(self, source_path: Path, target_dir: Path, source_root: Path) -> Path:
         """
-        Create the complete destination path for a file, maintaining proper directory structure.
+        Create the complete destination path for a file, maintaining proper directory structure.ning proper directory structure.
         
         Args:
             source_path: Original file path
             target_dir: Base destination directory
-            source_root: Root directory of the source (SD card mount point)
+            source_root: Root directory of the source (SD card mount point)SD card mount point)
             
         Returns:
             Complete destination Path object
@@ -684,7 +710,6 @@ class FileTransfer:
             
             # Combine target directory with relative directory and new filename
             dest_path = target_dir / rel_dir / new_filename
-            
             # Ensure parent directories exist
             dest_path.parent.mkdir(parents=True, exist_ok=True)
             
@@ -693,7 +718,7 @@ class FileTransfer:
         except Exception as e:
             logger.error(f"Error creating destination path for {source_path}: {e}")
             # Fallback to simple path in target directory if anything goes wrong
-            return target_dir / new_filename
+            # Fallback to simple path in target directory if anything goes wrong
 
     def _process_files(self, source_path: Path, target_dir: Path, 
                     file_list: list, log_file: Path,
