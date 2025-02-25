@@ -285,130 +285,308 @@ class FileTransfer:
             
         Raises:
             ValueError: If the path is invalid for the current platform
+            TypeError: If path is not a Path object or cannot be converted to one
         """
+        if not isinstance(path, Path):
+            try:
+                path = Path(path)
+                logger.debug(f"Converted input to Path object: {path}")
+            except TypeError as e:
+                logger.error(f"Cannot convert {type(path).__name__} to Path object: {e}")
+                raise TypeError(f"Path must be a Path object or convertible to one: {e}") from e
+                
         try:
+            system = platform.system().lower()
+            logger.debug(f"Validating path {path} for platform {system}")
+            
             # Handle platform-specific path validation
-            if platform.system().lower() == 'darwin':
+            if system == 'darwin':
                 # For macOS, ensure paths to external drives start with /Volumes/
                 if not str(path).startswith('/Volumes/'):
-                    raise ValueError("External drive paths must start with /Volumes/")
-            elif platform.system().lower() == 'windows':
+                    logger.error(f"macOS external drive path must start with /Volumes/: {path}")
+                    raise ValueError(f"External drive paths on macOS must start with /Volumes/, got: {path}")
+                    
+            elif system == 'windows':
                 # For Windows, ensure path has a drive letter
                 if not path.drive:
-                    raise ValueError("Windows paths must include a drive letter")
-            
+                    logger.error(f"Windows path missing drive letter: {path}")
+                    raise ValueError(f"Windows paths must include a drive letter, got: {path}")
+                    
             # Check if the path's drive/volume exists and is accessible
-            drive_path = Path(path.drive + '\\') if os.name == 'nt' else Path('/Volumes')
+            if system == 'windows':
+                drive_path = Path(path.drive + '\\')
+            elif system == 'darwin':
+                drive_path = Path('/Volumes')
+            else:  # Linux/Raspberry Pi
+                drive_path = Path('/')
+                
             if not drive_path.exists():
+                logger.error(f"Drive/volume not found: {drive_path}")
                 raise ValueError(f"Drive/volume not found: {drive_path}")
                 
-            # Check if we have permission to write to the drive
+            # Check write permissions with better error handling
             try:
                 if not os.access(drive_path, os.W_OK):
+                    logger.error(f"No write permission for drive: {drive_path}")
                     raise ValueError(f"No write permission for drive: {drive_path}")
-            except OSError:
-                # Handle access check failures
-                raise ValueError(f"Cannot verify permissions for drive: {drive_path}")
+            except OSError as e:
+                logger.error(f"Error checking permissions for drive {drive_path}: {e}")
+                raise ValueError(f"Cannot verify permissions for drive: {drive_path}. Error: {e}") from e
                 
+            # Additional checks for path validity
+            try:
+                # Try to normalize the path to catch any format issues
+                normalized_path = path.resolve()
+            except RuntimeError as e:
+                # This catches recursive symlinks
+                logger.error(f"Cannot resolve path due to recursive symlinks: {path}")
+                raise ValueError(f"Invalid path structure (recursive symlinks): {path}") from e
+                
+            logger.info(f"Successfully validated destination path: {path}")
             return path
             
+        except ValueError:
+            # Re-raise ValueError exceptions directly to preserve their specific message
+            raise
+        except PermissionError as e:
+            logger.error(f"Permission error validating path {path}: {e}")
+            raise ValueError(f"Permission denied when validating path: {e}") from e
+        except FileNotFoundError as e:
+            logger.error(f"Path component not found for {path}: {e}")
+            raise ValueError(f"Path component not found: {e}") from e
+        except OSError as e:
+            logger.error(f"OS error validating path {path}: {e}")
+            raise ValueError(f"Operating system error when validating path: {e}") from e
         except Exception as e:
-            logger.error(f"Error validating destination path '{path}': {e}")
-            raise ValueError(str(e))
-
+            # Last resort catch-all
+            logger.error(f"Unexpected error validating destination path '{path}': {e}", exc_info=True)
+            raise ValueError(f"Invalid path format: {e}") from e
 
     def _copy_with_progress(self, src_path: Path, dst_path: Path, 
                         file_number: int, total_files: int,
                         total_transferred: int, total_size: int) -> Tuple[bool, Optional[str]]:
-        """Copy a file with progress updates and metadata preservation"""
-        try:
-            # Get source metadata before copy
-            source_metadata = self.storage.get_file_metadata(src_path)
+        """
+        Copy a file with progress updates and metadata preservation
+        
+        Args:
+            src_path: Source file path
+            dst_path: Destination file path
+            file_number: Current file number in batch
+            total_files: Total number of files to transfer
+            total_transferred: Total bytes transferred so far
+            total_size: Total bytes to transfer
             
-            file_size = src_path.stat().st_size
+        Returns:
+            Tuple of (success_flag, checksum_string): 
+            - success_flag: True if copy and verification succeeded
+            - checksum_string: File checksum if successful, None otherwise
+        """
+        # Track if destination file was created - needed for cleanup on error
+        dst_file_created = False
+        
+        try:
+            # Validate source exists
+            if not src_path.exists():
+                logger.error(f"Source file does not exist: {src_path}")
+                return False, None
+                
+            # Get source metadata before copy
+            try:
+                source_metadata = self.storage.get_file_metadata(src_path)
+            except Exception as e:
+                logger.warning(f"Failed to get source metadata for {src_path}: {e}")
+                source_metadata = None
+            
+            try:
+                file_size = src_path.stat().st_size
+            except (OSError, FileNotFoundError) as e:
+                logger.error(f"Failed to get file size for {src_path}: {e}")
+                return False, None
+                
             xxh64_hash = self.checksum_calculator.create_hash()
             
             # First phase: Copy with progress
-            with open(src_path, 'rb') as src, open(dst_path, 'wb') as dst:
-                bytes_transferred = 0
-                while True:
-                    chunk = src.read(CHUNK_SIZE)
-                    if not chunk:
-                        break
+            try:
+                with open(src_path, 'rb') as src:
+                    try:
+                        # Ensure parent directory exists
+                        dst_path.parent.mkdir(parents=True, exist_ok=True)
                         
-                    dst.write(chunk)
-                    xxh64_hash.update(chunk)
-                    bytes_transferred += len(chunk)
-                    
-                    # Update progress with both file and total progress
-                    if self._current_progress:
-                        self._current_progress.bytes_transferred = bytes_transferred
-                        self._current_progress.current_file_progress = bytes_transferred / file_size
-                        self._current_progress.total_transferred = total_transferred + bytes_transferred
-                        self._current_progress.status = TransferStatus.COPYING
-                        self.display.show_progress(self._current_progress)
-
+                        with open(dst_path, 'wb') as dst:
+                            dst_file_created = True
+                            bytes_transferred = 0
+                            
+                            while True:
+                                try:
+                                    chunk = src.read(CHUNK_SIZE)
+                                    if not chunk:
+                                        break
+                                        
+                                    dst.write(chunk)
+                                    xxh64_hash.update(chunk)
+                                    bytes_transferred += len(chunk)
+                                    
+                                    # Update progress with both file and total progress
+                                    if self._current_progress:
+                                        self._current_progress.bytes_transferred = bytes_transferred
+                                        self._current_progress.current_file_progress = bytes_transferred / file_size
+                                        self._current_progress.total_transferred = total_transferred + bytes_transferred
+                                        self._current_progress.status = TransferStatus.COPYING
+                                        self.display.show_progress(self._current_progress)
+                                        
+                                except MemoryError as e:
+                                    logger.error(f"Memory error processing chunk of {src_path}: {e}")
+                                    self._play_sound(success=False)
+                                    return False, None
+                                except IOError as e:
+                                    logger.error(f"I/O error during file copy of {src_path}: {e}")
+                                    self._play_sound(success=False)
+                                    return False, None
+                                    
+                    except PermissionError as e:
+                        logger.error(f"Permission denied creating destination file {dst_path}: {e}")
+                        self._play_sound(success=False)
+                        return False, None
+                    except IOError as e:
+                        logger.error(f"I/O error opening destination file {dst_path}: {e}")
+                        self._play_sound(success=False)
+                        return False, None
+                        
+            except PermissionError as e:
+                logger.error(f"Permission denied reading source file {src_path}: {e}")
+                self._play_sound(success=False)
+                return False, None
+            except FileNotFoundError as e:
+                logger.error(f"Source file disappeared during copy {src_path}: {e}")
+                self._play_sound(success=False)
+                return False, None
+            except IOError as e:
+                logger.error(f"I/O error opening source file {src_path}: {e}")
+                self._play_sound(success=False)
+                return False, None
+                
             # Second phase: Apply metadata (unchanged)
             if source_metadata:
-                if not self.storage.set_file_metadata(dst_path, source_metadata):
-                    logger.warning(f"Failed to preserve metadata for {dst_path}")
-
-            # Third phase: Verify checksum
-            if self._current_progress:
-                self._current_progress.status = TransferStatus.CHECKSUMMING
-            verify_success = self.checksum_calculator.verify_checksum(
-                dst_path,
-                xxh64_hash.hexdigest(),
-                current_progress=self._current_progress
-            )
-
-            if not verify_success:
-                return False, None
-
-            return True, xxh64_hash.hexdigest()
+                try:
+                    if not self.storage.set_file_metadata(dst_path, source_metadata):
+                        logger.warning(f"Failed to preserve metadata for {dst_path}")
+                except Exception as e:
+                    # Log but continue - metadata failure isn't critical
+                    logger.warning(f"Error setting metadata for {dst_path}: {e}")
             
+            # Third phase: Verify checksum
+            try:
+                if self._current_progress:
+                    self._current_progress.status = TransferStatus.CHECKSUMMING
+                    
+                checksum = xxh64_hash.hexdigest()
+                verify_success = self.checksum_calculator.verify_checksum(
+                    dst_path,
+                    checksum,
+                    current_progress=self._current_progress
+                )
+                
+                if not verify_success:
+                    logger.error(f"Checksum verification failed for {dst_path}")
+                    if dst_path.exists():
+                        try:
+                            # Attempt to delete the corrupted file
+                            dst_path.unlink()
+                            logger.info(f"Removed corrupted file {dst_path}")
+                        except Exception as del_err:
+                            logger.warning(f"Failed to remove corrupted file {dst_path}: {del_err}")
+                    return False, None
+                    
+                return True, checksum
+                
+            except Exception as e:
+                logger.error(f"Error during checksum verification of {dst_path}: {e}")
+                self._play_sound(success=False)
+                return False, None
+                
         except Exception as e:
             self._play_sound(success=False)
-            logger.error(f"Error copying file {src_path}: {e}")
+            logger.error(f"Unexpected error copying file {src_path} to {dst_path}: {e}", exc_info=True)
+            
+            # Cleanup: attempt to remove partial/corrupt destination file if we created it
+            if dst_file_created and dst_path.exists():
+                try:
+                    dst_path.unlink()
+                    logger.info(f"Removed incomplete file {dst_path} after error")
+                except Exception as del_err:
+                    logger.warning(f"Failed to remove incomplete file {dst_path}: {del_err}")
+                    
             return False, None
 
     def _validate_transfer_preconditions(self, destination_path: Path) -> bool:
         """
         Validate preconditions before starting transfer with improved path handling.
+        
+        Args:
+            destination_path: Target path for file transfer
+            
+        Returns:
+            bool: True if destination is valid and ready for transfer, False otherwise
         """
         try:
+            # Check if destination is provided
             if destination_path is None:
+                logger.error("No destination path provided")
                 self.display.show_error("No destination")
                 return False
                 
+            # Check if in utility mode
             if self.state_manager.is_utility():
-                logger.info("Transfer blocked - utility mode")
+                logger.info("Transfer blocked - system is in utility mode")
+                self.display.show_error("In utility mode")
                 return False
-
-            # Convert to Path object to ensure consistent handling
-            dest_path = Path(destination_path)
-            
+                
+            # Convert to Path object for consistent handling
+            try:
+                dest_path = Path(destination_path)
+            except TypeError as e:
+                logger.error(f"Invalid destination path type: {type(destination_path).__name__}, {e}")
+                self.display.show_error("Invalid path type")
+                return False
+                
             # Verify the destination exists and is accessible
             if dest_path.exists():
+                # Destination exists, check if it's a directory
                 if not dest_path.is_dir():
+                    logger.error(f"Destination exists but is not a directory: {dest_path}")
                     self.display.show_error("Not a directory")
                     return False
                     
                 # Check write permissions
                 if not os.access(dest_path, os.W_OK):
+                    logger.error(f"No write permission for destination: {dest_path}")
                     self.display.show_error("Write permission denied")
                     return False
                     
+                # Check for available space
+                try:
+                    # We don't know exact size yet, but check for minimum free space (1GB)
+                    min_space = 1 * 1024 * 1024 * 1024  # 1GB in bytes
+                    if not self.storage.has_enough_space(dest_path, min_space):
+                        logger.error(f"Not enough space in destination: {dest_path}")
+                        self.display.show_error("Not enough space")
+                        return False
+                except Exception as space_err:
+                    # Log but continue - we'll check space again before actual transfer
+                    logger.warning(f"Could not verify free space: {space_err}")
+                    
                 logger.info(f"Using existing directory: {dest_path}")
                 return True
-
+                
             # Path doesn't exist, check parent directory
             parent = dest_path.parent
             if not parent.exists():
+                logger.error(f"Parent directory doesn't exist: {parent}")
                 self.display.show_error("Parent dir missing")
                 return False
                 
             if not os.access(parent, os.W_OK):
+                logger.error(f"No write permission for parent directory: {parent}")
                 self.display.show_error("Parent write denied")
                 return False
                 
@@ -417,13 +595,35 @@ class FileTransfer:
                 dest_path.mkdir(parents=True, exist_ok=True)
                 logger.info(f"Created directory: {dest_path}")
                 return True
+            except PermissionError as e:
+                logger.error(f"Permission denied creating directory {dest_path}: {e}")
+                self.display.show_error("Permission denied")
+                return False
+            except OSError as e:
+                # Handle OS-level errors (disk errors, etc.)
+                logger.error(f"OS error creating directory {dest_path}: {e}")
+                self.display.show_error("Create dir failed")
+                return False
             except Exception as e:
-                logger.error(f"Failed to create directory: {e}")
+                logger.error(f"Failed to create directory {dest_path}: {e}")
                 self.display.show_error("Create dir failed")
                 return False
                 
+        except FileNotFoundError as e:
+            logger.error(f"Path component not found: {e}")
+            self.display.show_error("Path not found")
+            return False
+        except PermissionError as e:
+            logger.error(f"Permission error validating path: {e}")
+            self.display.show_error("Access denied")
+            return False
+        except OSError as e:
+            logger.error(f"OS error validating path: {e}")
+            self.display.show_error("System error")
+            return False
         except Exception as e:
-            logger.error(f"Error validating path: {e}")
+            # Last resort catch-all with detailed logging
+            logger.error(f"Unexpected error validating path: {e}", exc_info=True)
             self.display.show_error("Invalid path")
             return False
 
