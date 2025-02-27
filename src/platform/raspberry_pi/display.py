@@ -11,6 +11,7 @@ from src.platform.raspberry_pi.led_control import (
     set_led_state, 
     set_bar_graph, led_manager 
 )
+from src.core.exceptions import DisplayError, HardwareError
 
 logger = logging.getLogger(__name__)
 
@@ -34,8 +35,13 @@ class RaspberryPiDisplay(DisplayInterface):
             lcd_display.clear()
             logger.info("LCD display initialized successfully")
         except Exception as e:
-            logger.error(f"Failed to initialize LCD display: {e}")
-            raise
+            error_msg = f"Failed to initialize LCD display: {str(e)}"
+            logger.error(error_msg)
+            raise HardwareError(
+                message=error_msg,
+                component="display",
+                error_type="initialization"
+            )
 
     def show_status(self, message: str, line: int = 0) -> None:
         """Display a status message on the LCD display"""
@@ -62,7 +68,13 @@ class RaspberryPiDisplay(DisplayInterface):
                 
                 logger.debug(f"Displayed status on line {line}: {message}")
             except Exception as e:
-                logger.error(f"Error displaying status message: {e}")
+                error_msg = f"Error displaying status message: {str(e)}"
+                logger.error(error_msg)
+                raise DisplayError(
+                    message=error_msg,
+                    display_type="lcd",
+                    error_type="write"
+                )
 
     def show_progress(self, progress: TransferProgress) -> None:
         """Update both LCD display and LED indicators with transfer progress"""
@@ -90,7 +102,16 @@ class RaspberryPiDisplay(DisplayInterface):
                     else:
                         truncated = filename
                         
-                    lcd_display.write(0, 0, truncated)
+                    try:
+                        lcd_display.write(0, 0, truncated)
+                    except Exception as e:
+                        error_msg = f"Failed to display filename: {str(e)}"
+                        logger.error(error_msg)
+                        raise DisplayError(
+                            message=error_msg,
+                            display_type="lcd",
+                            error_type="filename_display"
+                        )
                 
                 # Calculate available space for progress bar
                 # Format: "3/26 #######   " (16 chars total)
@@ -103,40 +124,57 @@ class RaspberryPiDisplay(DisplayInterface):
                 
                 # Combine number and progress bar
                 bottom_line = f"{file_text} {progress_bar}"
-                lcd_display.write(0, 1, bottom_line)
+                try:
+                    lcd_display.write(0, 1, bottom_line)
+                except Exception as e:
+                    error_msg = f"Failed to display progress bar: {str(e)}"
+                    logger.error(error_msg)
+                    raise DisplayError(
+                        message=error_msg,
+                        display_type="lcd",
+                        error_type="progress_display"
+                    )
                 
                 # Update LED status based on transfer state
-                if progress.status == TransferStatus.ERROR:
-                    led_manager.all_leds_off_except(LEDControl.ERROR_LED)
-                    self._copying_led_started = False
-                    self._checksum_led_started = False
-                elif progress.status == TransferStatus.COPYING:
-                    if not self._copying_led_started:
-                        led_manager.all_leds_off_except(None)
-                        led_manager.start_led_blink(LEDControl.PROGRESS_LED)
-                        self._copying_led_started = True
-                        self._checksum_led_started = False
-                elif progress.status == TransferStatus.CHECKSUMMING:
-                    if not self._checksum_led_started:
-                        led_manager.stop_led_blink(LEDControl.PROGRESS_LED)
-                        led_manager.start_led_blink(LEDControl.CHECKSUM_LED)
-                        self._copying_led_started = False
-                        self._checksum_led_started = True
-                elif progress.status == TransferStatus.SUCCESS:
-                    # Stop all blinking LEDs
-                    led_manager.stop_led_blink(LEDControl.PROGRESS_LED)
-                    led_manager.stop_led_blink(LEDControl.CHECKSUM_LED)
-                    led_manager.all_leds_off_except(LEDControl.SUCCESS_LED)
-                    self._copying_led_started = False
-                    self._checksum_led_started = False
+                try:
+                    self._update_led_status(progress.status)
+                except HardwareError:
+                    # Re-raise hardware errors as they're already properly formatted
+                    raise
+                except Exception as e:
+                    error_msg = f"Failed to update LED status indicators: {str(e)}"
+                    logger.error(error_msg)
+                    raise HardwareError(
+                        message=error_msg,
+                        component="led",
+                        error_type="progress_update"
+                    )
                     
                 # Update bar graph during active transfer states
                 if progress.status in (TransferStatus.COPYING, TransferStatus.CHECKSUMMING):
-                    files_progress = (progress.file_number - 1) / progress.total_files * 100
-                    set_bar_graph(files_progress)
+                    try:
+                        files_progress = (progress.file_number - 1) / progress.total_files * 100
+                        set_bar_graph(files_progress)
+                    except Exception as e:
+                        error_msg = f"Failed to update progress bar graph: {str(e)}"
+                        logger.error(error_msg)
+                        raise HardwareError(
+                            message=error_msg,
+                            component="led",
+                            error_type="bar_graph"
+                        )
                 
+            except (DisplayError, HardwareError):
+                # Re-raise these exceptions as they're already properly formatted
+                raise
             except Exception as e:
-                logger.error(f"Error updating progress display: {e}")
+                error_msg = f"Unexpected error updating progress display: {str(e)}"
+                logger.error(error_msg)
+                raise DisplayError(
+                    message=error_msg,
+                    display_type="lcd",
+                    error_type="progress_update"
+                )
 
     def show_error(self, message: str) -> None:
         """Display error message on LCD"""
@@ -148,7 +186,13 @@ class RaspberryPiDisplay(DisplayInterface):
                 led_manager.all_leds_off_except(LEDControl.ERROR_LED)
                 logger.error(f"Error displayed: {message}")
             except Exception as e:
-                logger.error(f"Error showing error message: {e}")
+                error_msg = f"Failed to display error message: {str(e)}"
+                logger.error(error_msg)
+                raise DisplayError(
+                    message=error_msg,
+                    display_type="lcd",
+                    error_type="error_display"
+                )
 
     def clear(self) -> None:
         """Clear both LCD and LEDs"""
@@ -165,8 +209,13 @@ class RaspberryPiDisplay(DisplayInterface):
                 self._checksum_led_started = False
                 logger.debug("Display and LEDs cleared")
             except Exception as e:
-                logger.error(f"Error clearing display: {e}")
-
+                error_msg = f"Failed to clear display and LEDs: {str(e)}"
+                logger.error(error_msg)
+                raise HardwareError(
+                    message=error_msg,
+                    component="display",
+                    error_type="clear"
+                )
 
     def _update_led_status(self, status: TransferStatus) -> None:
         """Update LED status without affecting display"""
@@ -193,4 +242,10 @@ class RaspberryPiDisplay(DisplayInterface):
                 self._checksum_led_started = False
                 
         except Exception as e:
-            logger.error(f"Error updating LED status: {e}")
+            error_msg = f"Failed to update LED status: {str(e)}"
+            logger.error(error_msg)
+            raise HardwareError(
+                message=error_msg,
+                component="led",
+                error_type="status_update"
+            )
