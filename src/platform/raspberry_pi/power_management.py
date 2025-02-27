@@ -8,6 +8,7 @@ from threading import Thread, Event
 import lgpio
 import subprocess
 from pathlib import Path
+from src.core.exceptions import HardwareError, TransferBoxError
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +40,16 @@ class PowerManager:
         except lgpio.error as e:
             logger.error(f"GPIO setup error: {e}")
             self.close_gpio()
-            raise
+            raise HardwareError(
+                f"Failed to initialize GPIO: {str(e)}",
+                component="gpio",
+                error_type="initialization",
+                recovery_steps=[
+                    "Check GPIO permissions",
+                    "Verify hardware connections",
+                    "Restart system if persistent"
+                ]
+            )
 
     def close_gpio(self) -> None:
         """Close GPIO resources"""
@@ -51,6 +61,16 @@ class PowerManager:
                 lgpio.gpiochip_close(self.h)
             except lgpio.error as e:
                 logger.warning(f"Error while closing GPIO: {e}")
+                raise HardwareError(
+                    f"Failed to close GPIO resources: {str(e)}",
+                    component="gpio",
+                    error_type="cleanup",
+                    recovery_steps=[
+                        "Check if resources are in use",
+                        "Force cleanup if necessary",
+                        "Restart system if persistent"
+                    ]
+                )
             finally:
                 self.h = None
 
@@ -69,7 +89,16 @@ class PowerManager:
             return voltage
         except Exception as e:
             logger.error(f"Error reading voltage: {e}")
-            return 0.0
+            raise HardwareError(
+                f"Failed to read battery voltage: {str(e)}",
+                component="battery",
+                error_type="measurement",
+                recovery_steps=[
+                    "Check I2C connection",
+                    "Verify battery is connected",
+                    "Check UPS HAT hardware"
+                ]
+            )
 
     def read_capacity(self) -> float:
         """Read battery capacity percentage"""
@@ -80,23 +109,60 @@ class PowerManager:
             return min(capacity, 100.0)
         except Exception as e:
             logger.error(f"Error reading capacity: {e}")
-            return 0.0
+            raise HardwareError(
+                f"Failed to read battery capacity: {str(e)}",
+                component="battery",
+                error_type="measurement",
+                recovery_steps=[
+                    "Check I2C connection",
+                    "Verify battery is connected",
+                    "Check UPS HAT hardware"
+                ]
+            )
 
     def check_ac_power(self) -> bool:
         """Check if AC power is connected"""
         if self.h is None:
-            logger.error("GPIO chip handle is not valid.")
-            return False
+            raise HardwareError(
+                "GPIO chip handle is not valid",
+                component="gpio",
+                error_type="initialization",
+                recovery_steps=[
+                    "Reinitialize GPIO",
+                    "Check hardware connections",
+                    "Restart system if persistent"
+                ]
+            )
         return lgpio.gpio_read(self.h, self.PLD_PIN) == 0
 
     def beep_buzzer(self) -> None:
         """Activate buzzer for alert"""
         if self.h is None:
-            logger.error("GPIO chip handle is not valid. Cannot beep buzzer.")
-            return
-        lgpio.gpio_write(self.h, self.BUZZER_PIN, 1)
-        time.sleep(0.1)
-        lgpio.gpio_write(self.h, self.BUZZER_PIN, 0)
+            raise HardwareError(
+                "GPIO chip handle is not valid",
+                component="buzzer",
+                error_type="initialization",
+                recovery_steps=[
+                    "Reinitialize GPIO",
+                    "Check buzzer connections",
+                    "Verify buzzer hardware"
+                ]
+            )
+        try:
+            lgpio.gpio_write(self.h, self.BUZZER_PIN, 1)
+            time.sleep(0.1)
+            lgpio.gpio_write(self.h, self.BUZZER_PIN, 0)
+        except lgpio.error as e:
+            raise HardwareError(
+                f"Failed to control buzzer: {str(e)}",
+                component="buzzer",
+                error_type="control",
+                recovery_steps=[
+                    "Check buzzer connections",
+                    "Verify GPIO permissions",
+                    "Test buzzer hardware"
+                ]
+            )
 
     def safe_shutdown(self) -> None:
         """Perform a safe system shutdown"""
@@ -122,6 +188,16 @@ class PowerManager:
             logger.error(f"Failed to execute shutdown command: {e}")
             logger.error(f"Command output: {e.output}")
             logger.error(f"Command stderr: {e.stderr}")
+            raise HardwareError(
+                f"System shutdown failed: {str(e)}",
+                component="system",
+                error_type="power",
+                recovery_steps=[
+                    "Check shutdown script permissions",
+                    "Verify sudo access",
+                    "Try manual shutdown"
+                ]
+            )
 
     def safe_reboot(self) -> None:
         """Perform a safe system reboot"""
@@ -134,7 +210,16 @@ class PowerManager:
                 lgpio.gpio_claim_output(self.h, self.GPIO_PORT, 0)
             except lgpio.error as e:
                 logger.error(f"Failed to re-initialize GPIO: {e}")
-                return
+                raise HardwareError(
+                    f"Failed to initialize GPIO for reboot: {str(e)}",
+                    component="gpio",
+                    error_type="initialization",
+                    recovery_steps=[
+                        "Check GPIO permissions",
+                        "Verify hardware connections",
+                        "Try manual reboot"
+                    ]
+                )
         
         try:
             lgpio.gpio_write(self.h, self.GPIO_PORT, 1)
@@ -142,6 +227,16 @@ class PowerManager:
             lgpio.gpio_write(self.h, self.GPIO_PORT, 0)
         except lgpio.error as e:
             logger.error(f"Failed to perform GPIO operations: {e}")
+            raise HardwareError(
+                f"Failed to control GPIO for reboot: {str(e)}",
+                component="gpio",
+                error_type="control",
+                recovery_steps=[
+                    "Check GPIO permissions",
+                    "Verify hardware connections",
+                    "Try manual reboot"
+                ]
+            )
         finally:
             self.close_gpio()
         
@@ -149,6 +244,16 @@ class PowerManager:
             subprocess.run(['sudo', 'reboot'], check=True)
         except subprocess.CalledProcessError as e:
             logger.error(f"Failed to execute reboot command: {e}")
+            raise HardwareError(
+                f"System reboot failed: {str(e)}",
+                component="system",
+                error_type="power",
+                recovery_steps=[
+                    "Check reboot permissions",
+                    "Verify sudo access",
+                    "Try manual reboot"
+                ]
+            )
 
     def monitor_power(self) -> None:
         """Monitor power status continuously"""
@@ -158,12 +263,22 @@ class PowerManager:
         print_interval = 15
 
         while not self.stop_event.is_set() and not self.shutdown_event.is_set():
-            current_time = time.time()
-            voltage = self.read_voltage()
-            capacity = self.read_capacity()
-            ac_power = self.check_ac_power()
+            try:
+                current_time = time.time()
+                try:
+                    voltage = self.read_voltage()
+                    capacity = self.read_capacity()
+                    ac_power = self.check_ac_power()
+                except HardwareError as e:
+                    logger.error(f"Failed to read power status: {e}")
+                    if e.component == "battery" and e.error_type == "measurement":
+                        # For battery measurement errors, we can continue monitoring with a delay
+                        time.sleep(5)
+                        continue
+                    else:
+                        # For other hardware errors, we should propagate them
+                        raise
 
-            if voltage is not None and capacity is not None:
                 if current_time - last_print_time >= print_interval:
                     status_message = f"Battery: {voltage:.2f}V, {capacity:.1f}%"
                     logger.info(status_message)
@@ -176,15 +291,36 @@ class PowerManager:
                 
                 if capacity < 15:
                     if current_time - last_beep_time >= beep_interval:
-                        logger.warning("Battery below 15%, beeping buzzer")
-                        self.beep_buzzer()
-                        last_beep_time = current_time
+                        try:
+                            logger.warning("Battery below 15%, beeping buzzer")
+                            self.beep_buzzer()
+                            last_beep_time = current_time
+                        except HardwareError as e:
+                            if e.component == "buzzer":
+                                # Non-critical error, just log it
+                                logger.error(f"Failed to beep buzzer: {e}")
                 
                 if voltage < 3.25:
                     logger.critical("Battery critically low!")
-                    time.sleep(10)
-                    self.safe_shutdown()
+                    time.sleep(10)  # Give time for logs to be written
+                    try:
+                        self.safe_shutdown()
+                    except HardwareError as e:
+                        logger.critical(f"Failed to initiate safe shutdown: {e}")
+                        # Try emergency shutdown as last resort
+                        try:
+                            subprocess.run(['sudo', 'shutdown', '-h', 'now'], check=True)
+                        except subprocess.CalledProcessError:
+                            logger.critical("Emergency shutdown failed. System at risk!")
                     break
+            
+            except Exception as e:
+                logger.error(f"Error in power monitoring loop: {e}")
+                if isinstance(e, HardwareError):
+                    # For hardware errors, we should stop monitoring
+                    raise
+                # For other unexpected errors, continue monitoring with a delay
+                time.sleep(5)
             
             time.sleep(5)
 
