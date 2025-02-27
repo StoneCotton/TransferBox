@@ -14,6 +14,7 @@ from pathlib import Path
 from src.core.path_utils import sanitize_path, get_safe_path
 from src.core.interfaces.storage_inter import StorageInterface
 from src.platform.raspberry_pi.led_control import LEDControl, set_led_state
+from src.core.exceptions import StorageError, FileTransferError, ChecksumError
 
 
 logger = logging.getLogger(__name__)
@@ -63,12 +64,23 @@ class RaspberryPiStorage(StorageInterface):
         
         Returns:
             List of Paths to mounted drives
+            
+        Raises:
+            StorageError: If there is an error accessing or listing drives
         """
         try:
             return self.get_mounted_drives_lsblk()
         except Exception as e:
             logger.error(f"Error getting available drives: {e}")
-            return []
+            raise StorageError(
+                f"Failed to get available drives: {str(e)}", 
+                error_type="mount",
+                recovery_steps=[
+                    "Check drive connections",
+                    "Verify drive mounting",
+                    "Check system mount points"
+                ]
+            )
 
     def get_drive_info(self, path: Path) -> Dict[str, int]:
         """
@@ -79,6 +91,9 @@ class RaspberryPiStorage(StorageInterface):
             
         Returns:
             Dictionary containing 'total', 'used', and 'free' space in bytes
+            
+        Raises:
+            StorageError: If there is an error getting drive information
         """
         try:
             statvfs = os.statvfs(path)
@@ -91,9 +106,25 @@ class RaspberryPiStorage(StorageInterface):
                 'used': used,
                 'free': free
             }
-        except Exception as e:
+        except OSError as e:
             logger.error(f"Error getting drive info for {path}: {e}")
-            return {'total': 0, 'used': 0, 'free': 0}
+            raise StorageError(
+                f"Failed to get drive information: {str(e)}", 
+                path=path,
+                error_type="mount",
+                recovery_steps=[
+                    "Check if drive is mounted",
+                    "Verify drive permissions",
+                    "Check filesystem health"
+                ]
+            )
+        except Exception as e:
+            logger.error(f"Unexpected error getting drive info for {path}: {e}")
+            raise StorageError(
+                f"Failed to get drive information: {str(e)}", 
+                path=path,
+                error_type="unknown"
+            )
 
     def is_drive_mounted(self, path: Path) -> bool:
         """
@@ -115,7 +146,10 @@ class RaspberryPiStorage(StorageInterface):
             path: Path to the drive to unmount
                 
         Returns:
-            True if successful or already unmounted, False if unmount fails
+            True if successful or already unmounted
+            
+        Raises:
+            StorageError: If unmounting fails
         """
         try:
             # Check if already unmounted
@@ -199,11 +233,12 @@ class RaspberryPiStorage(StorageInterface):
                         return True
                     
                     # If both fail, log the error and try again
-                    logger.warning(
+                    error_msg = (
                         f"Unmount attempt {attempt + 1} failed:\n"
                         f"udisksctl error: {udisks_result.stderr if device_name else 'Not attempted'}\n"
                         f"umount error: {umount_result.stderr}"
                     )
+                    logger.warning(error_msg)
                     
                     # Check if the drive is actually unmounted despite the error
                     if not path.exists() or not path.is_mount():
@@ -219,18 +254,43 @@ class RaspberryPiStorage(StorageInterface):
                     logger.error(f"Error during unmount attempt {attempt + 1}: {e}")
                     if attempt < max_attempts - 1:
                         time.sleep(2)
+                    else:
+                        raise StorageError(
+                            f"Failed to unmount drive after {max_attempts} attempts: {str(e)}",
+                            path=path,
+                            error_type="mount",
+                            recovery_steps=[
+                                "Check if any programs are using the drive",
+                                "Try force unmounting the drive",
+                                "Restart the system if problems persist"
+                            ]
+                        )
             
             # Final check if the drive is actually unmounted
             if not path.exists() or not path.is_mount():
                 logger.info(f"Drive {path} is now unmounted after all attempts")
                 return True
                 
-            logger.error(f"Failed to unmount {path} after {max_attempts} attempts")
-            return False
+            raise StorageError(
+                f"Failed to unmount {path} after {max_attempts} attempts",
+                path=path,
+                error_type="mount",
+                recovery_steps=[
+                    "Check if any programs are using the drive",
+                    "Try force unmounting the drive",
+                    "Restart the system if problems persist"
+                ]
+            )
                     
+        except StorageError:
+            raise
         except Exception as e:
             logger.error(f"Error during unmount of {path}: {e}")
-            return False
+            raise StorageError(
+                f"Unexpected error unmounting drive: {str(e)}",
+                path=path,
+                error_type="unknown"
+            )
 
     def get_dump_drive(self) -> Optional[Path]:
         """
@@ -247,6 +307,15 @@ class RaspberryPiStorage(StorageInterface):
         """
         Wait for a new drive with improved path handling.
         Ensures proper handling of paths with spaces and special characters.
+        
+        Args:
+            initial_drives: List of initially mounted drives
+            
+        Returns:
+            Path to new drive if found, None otherwise
+            
+        Raises:
+            StorageError: If there is an error detecting or accessing new drives
         """
         try:
             while True:
@@ -273,15 +342,36 @@ class RaspberryPiStorage(StorageInterface):
                                 return safe_path
                             else:
                                 logger.warning(f"Drive detected but not accessible: {safe_path}")
+                                raise StorageError(
+                                    f"New drive detected but not accessible: {safe_path}",
+                                    path=safe_path,
+                                    error_type="permission",
+                                    recovery_steps=[
+                                        "Check drive permissions",
+                                        "Verify drive is properly mounted",
+                                        "Check filesystem health"
+                                    ]
+                                )
+                        except StorageError:
+                            raise
                         except Exception as e:
                             logger.error(f"Error verifying drive access: {path}, {e}")
-                            continue
+                            raise StorageError(
+                                f"Error verifying new drive: {str(e)}",
+                                path=path,
+                                error_type="mount"
+                            )
                             
                 time.sleep(1)  # Short sleep to prevent busy-waiting
                 
+        except StorageError:
+            raise
         except Exception as e:
             logger.error(f"Error detecting new drive: {e}")
-            return None
+            raise StorageError(
+                f"Unexpected error detecting new drive: {str(e)}",
+                error_type="unknown"
+            )
 
     def has_enough_space(self, path: Path, required_size: int) -> bool:
         """
@@ -349,6 +439,9 @@ class RaspberryPiStorage(StorageInterface):
             
         Returns:
             Dictionary containing available metadata
+            
+        Raises:
+            StorageError: If there is an error accessing file metadata
         """
         try:
             stat_info = os.stat(path, follow_symlinks=False)
@@ -357,18 +450,13 @@ class RaspberryPiStorage(StorageInterface):
             # Base metadata that exFAT supports
             metadata = {
                 'filesystem': fs_type,
-                'filename': path.name,  # exFAT supports long filenames up to 255 chars
-                
-                # exFAT has better timestamp resolution than FAT32
-                # It supports timestamps from 1980 to 2116 with 10ms precision
+                'filename': path.name,
                 'created_time': self._get_creation_time(path),
                 'modified_time': stat_info.st_mtime,
                 'accessed_time': stat_info.st_atime,
-                
-                # exFAT supports these basic attributes
                 'is_readonly': bool(stat_info.st_mode & stat.S_IREAD),
                 'is_hidden': path.name.startswith('.'),
-                'is_system': False,  # Rarely used on Linux
+                'is_system': False,
                 'is_directory': path.is_dir()
             }
             
@@ -381,33 +469,51 @@ class RaspberryPiStorage(StorageInterface):
                 logger.debug(f"Could not get exFAT-specific attributes: {e}")
             
             # If we're copying from a non-exFAT source, store additional metadata
-            # that we might want to preserve in alternate ways
             if fs_type != 'exfat':
-                metadata['original_mode'] = stat_info.st_mode
-                metadata['original_uid'] = stat_info.st_uid
-                metadata['original_gid'] = stat_info.st_gid
-                
-                # Store ownership information by name (more portable)
                 try:
-                    metadata['original_owner'] = pwd.getpwuid(stat_info.st_uid).pw_name
-                    metadata['original_group'] = grp.getgrgid(stat_info.st_gid).gr_name
-                except KeyError:
-                    pass
+                    metadata['original_mode'] = stat_info.st_mode
+                    metadata['original_uid'] = stat_info.st_uid
+                    metadata['original_gid'] = stat_info.st_gid
                     
-                # If source has extended attributes, store them for potential alternate preservation
-                try:
-                    import xattr
-                    attrs = xattr.xattr(str(path))
-                    if attrs:
-                        metadata['original_xattrs'] = {name: attrs[name] for name in attrs}
-                except ImportError:
-                    pass
+                    # Store ownership information by name (more portable)
+                    try:
+                        metadata['original_owner'] = pwd.getpwuid(stat_info.st_uid).pw_name
+                        metadata['original_group'] = grp.getgrgid(stat_info.st_gid).gr_name
+                    except KeyError:
+                        pass
+                        
+                    # If source has extended attributes, store them for potential alternate preservation
+                    try:
+                        import xattr
+                        attrs = xattr.xattr(str(path))
+                        if attrs:
+                            metadata['original_xattrs'] = {name: attrs[name] for name in attrs}
+                    except ImportError:
+                        pass
+                except Exception as e:
+                    logger.warning(f"Could not get additional metadata for {path}: {e}")
             
             return metadata
             
+        except OSError as e:
+            logger.error(f"Error accessing metadata for {path}: {e}")
+            raise StorageError(
+                f"Failed to access file metadata: {str(e)}",
+                path=path,
+                error_type="permission",
+                recovery_steps=[
+                    "Check file permissions",
+                    "Verify file exists",
+                    "Check filesystem mount status"
+                ]
+            )
         except Exception as e:
             logger.error(f"Error getting metadata for {path}: {e}")
-            return {}
+            raise StorageError(
+                f"Unexpected error getting file metadata: {str(e)}",
+                path=path,
+                error_type="unknown"
+            )
     
     def set_file_metadata(self, path: Path, metadata: Dict[str, Any]) -> bool:
         """
