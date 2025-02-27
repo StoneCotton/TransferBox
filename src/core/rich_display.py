@@ -23,6 +23,7 @@ from typing import Optional
 
 from src.core.interfaces.display import DisplayInterface
 from src.core.interfaces.types import TransferProgress, TransferStatus
+from src.core.exceptions import DisplayError
 
 logger = logging.getLogger(__name__)
 
@@ -240,7 +241,18 @@ class RichDisplay(DisplayInterface):
                 self.layout["progress"].update(self.progress)
 
             except Exception as e:
-                logger.error(f"Error updating progress: {e}")
+                error_msg = f"Error updating progress display: {str(e)}"
+                logger.error(error_msg)
+                raise DisplayError(
+                    message=error_msg,
+                    display_type="rich",
+                    error_type="progress_update",
+                    recovery_steps=[
+                        "Check if display is properly initialized",
+                        "Verify progress data is valid",
+                        "Restart the display interface"
+                    ]
+                ) from e
 
     def _cleanup_progress(self) -> None:
             """
@@ -287,11 +299,18 @@ class RichDisplay(DisplayInterface):
                     logger.debug("Progress display cleaned up successfully")
                     
                 except Exception as e:
-                    logger.error(f"Error during progress cleanup: {e}")
-                    # Ensure state is reset even if cleanup fails
-                    self.in_transfer_mode = False
-                    self.in_proxy_mode = False
-                    self.live = None
+                    error_msg = f"Error during progress display cleanup: {str(e)}"
+                    logger.error(error_msg)
+                    raise DisplayError(
+                        message=error_msg,
+                        display_type="rich",
+                        error_type="cleanup",
+                        recovery_steps=[
+                            "Force reset display interface",
+                            "Clear console manually",
+                            "Restart the application"
+                        ]
+                    ) from e
 
     def show_status(self, message: str, line: int = 0) -> None:
         """Display a status message."""
@@ -307,7 +326,18 @@ class RichDisplay(DisplayInterface):
             
             logger.debug(f"Status: {message}")
         except Exception as e:
-            logger.error(f"Error showing status: {e}")
+            error_msg = f"Error displaying status message: {str(e)}"
+            logger.error(error_msg)
+            raise DisplayError(
+                message=error_msg,
+                display_type="rich",
+                error_type="status_update",
+                recovery_steps=[
+                    "Check console output stream",
+                    "Verify display layout is properly initialized",
+                    "Ensure status message is valid"
+                ]
+            ) from e
 
     def show_error(self, message: str) -> None:
         """Display an error message."""
@@ -323,7 +353,18 @@ class RichDisplay(DisplayInterface):
             
             logger.error(f"Display error: {message}")
         except Exception as e:
-            logger.error(f"Error showing error message: {e}")
+            error_msg = f"Error displaying error message: {str(e)}"
+            logger.error(error_msg)
+            raise DisplayError(
+                message=error_msg,
+                display_type="rich",
+                error_type="error_display",
+                recovery_steps=[
+                    "Check console error stream",
+                    "Verify display layout is properly initialized",
+                    "Ensure error message is valid"
+                ]
+            ) from e
 
     def clear(self) -> None:
         """Clear the display"""
@@ -337,4 +378,15 @@ class RichDisplay(DisplayInterface):
                 
                 logger.debug("Display cleared")
             except Exception as e:
-                logger.error(f"Error clearing display: {e}")
+                error_msg = f"Error clearing display: {str(e)}"
+                logger.error(error_msg)
+                raise DisplayError(
+                    message=error_msg,
+                    display_type="rich",
+                    error_type="clear",
+                    recovery_steps=[
+                        "Force reset display interface",
+                        "Clear console manually",
+                        "Restart the display service"
+                    ]
+                ) from e
