@@ -6,6 +6,7 @@ from pathlib import Path
 import yaml
 import logging
 from datetime import datetime
+from src.core.exceptions import ConfigError
 
 logger = logging.getLogger(__name__)
 
@@ -109,12 +110,27 @@ class ConfigManager:
         
         Returns:
             Path to configuration file
+            
+        Raises:
+            ConfigError: If unable to find or create configuration file
         """
         # Check specified path first
         if self.config_path:
-            if not self.config_path.is_file():
-                self._generate_default_config(self.config_path)
-            return self.config_path
+            try:
+                if not self.config_path.is_file():
+                    self._generate_default_config(self.config_path)
+                return self.config_path
+            except PermissionError as e:
+                raise ConfigError(
+                    f"No permission to access or create config at {self.config_path}",
+                    config_key=None,
+                    recovery_steps=["Try a different location with appropriate permissions"]
+                ) from e
+            except OSError as e:
+                raise ConfigError(
+                    f"System error accessing or creating config at {self.config_path}: {e}",
+                    config_key=None
+                ) from e
         
         # Search default locations
         for path in self.DEFAULT_CONFIG_PATHS:
@@ -123,8 +139,29 @@ class ConfigManager:
         
         # No config found, create in first default location
         default_path = self.DEFAULT_CONFIG_PATHS[0]
-        self._generate_default_config(default_path)
-        return default_path
+        try:
+            self._generate_default_config(default_path)
+            return default_path
+        except PermissionError as e:
+            # Try next default paths if first fails
+            for path in self.DEFAULT_CONFIG_PATHS[1:]:
+                try:
+                    self._generate_default_config(path)
+                    return path
+                except Exception:
+                    continue
+                    
+            # If all attempts fail, raise error with all attempted paths
+            attempted_paths = ", ".join(str(p) for p in self.DEFAULT_CONFIG_PATHS)
+            raise ConfigError(
+                f"Permission denied creating configuration file at any default location. Tried: {attempted_paths}",
+                recovery_steps=["Run with appropriate permissions", "Specify a writable config path"]
+            ) from e
+        except OSError as e:
+            raise ConfigError(
+                f"Failed to create default configuration: {e}",
+                recovery_steps=["Check filesystem permissions", "Ensure parent directories exist"]
+            ) from e
 
     def _generate_default_config(self, path: Path) -> None:
         """
@@ -136,6 +173,9 @@ class ConfigManager:
         
         Args:
             path: Path where to create the config file
+            
+        Raises:
+            ConfigError: When unable to create configuration file
         """
         # Create default config instance
         default_config = TransferConfig()
@@ -170,26 +210,48 @@ class ConfigManager:
         }
         
         # Ensure directory exists
-        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+        except PermissionError as e:
+            raise ConfigError(
+                f"Permission denied creating directory structure for config at {path.parent}",
+                recovery_steps=["Run with appropriate permissions", "Choose a different config location"]
+            ) from e
+        except OSError as e:
+            raise ConfigError(
+                f"Failed to create directory for config: {e}",
+                recovery_steps=["Check if the path is valid", "Verify the filesystem is writable"]
+            ) from e
         
         # Write configuration with comments
-        with open(path, 'w') as f:
-            for key, value in config_with_comments.items():
-                if value is None:  # This is a section comment
-                    f.write(f"{key}\n")
-                else:
-                    # Format the value appropriately
-                    if isinstance(value, str):
-                        # Quote string values that contain special characters
-                        if any(char in value for char in '{}%'):
-                            formatted_value = f'"{value}"'
-                        else:
-                            formatted_value = value
+        try:
+            with open(path, 'w') as f:
+                for key, value in config_with_comments.items():
+                    if value is None:  # This is a section comment
+                        f.write(f"{key}\n")
                     else:
-                        formatted_value = str(value).lower()  # Convert True/False to lowercase
-                        
-                    f.write(f"{key}: {formatted_value}\n")
-        
+                        # Format the value appropriately
+                        if isinstance(value, str):
+                            # Quote string values that contain special characters
+                            if any(char in value for char in '{}%'):
+                                formatted_value = f'"{value}"'
+                            else:
+                                formatted_value = value
+                        else:
+                            formatted_value = str(value).lower()  # Convert True/False to lowercase
+                            
+                        f.write(f"{key}: {formatted_value}\n")
+        except PermissionError as e:
+            raise ConfigError(
+                f"Permission denied writing to config file at {path}",
+                recovery_steps=["Run with appropriate permissions", "Choose a different config location"]
+            ) from e
+        except IOError as e:
+            raise ConfigError(
+                f"I/O error writing to config file: {e}",
+                recovery_steps=["Check disk space", "Verify the filesystem is writable"]
+            ) from e
+            
         logger.info(f"Generated default configuration file at {path}")
 
     def _parse_config(self, raw_config: Dict[str, Any]) -> TransferConfig:
@@ -205,30 +267,263 @@ class ConfigManager:
                 
         Returns:
             Validated TransferConfig object
+            
+        Raises:
+            ConfigError: If validation fails for specific configuration options
         """
         # Start with default values
         config = TransferConfig()
         
         try:
             # File handling settings
-            config.rename_with_timestamp = raw_config.get('rename_with_timestamp', 
-                                                        config.rename_with_timestamp)
-            config.preserve_original_filename = raw_config.get('preserve_original_filename',
-                                                            config.preserve_original_filename)
-            config.filename_template = raw_config.get('filename_template',
-                                                    config.filename_template)
-            config.timestamp_format = raw_config.get('timestamp_format',
-                                                config.timestamp_format)
+            self._parse_bool_option(
+                raw_config, 'rename_with_timestamp', config,
+                lambda v: setattr(config, 'rename_with_timestamp', v)
+            )
+            
+            self._parse_bool_option(
+                raw_config, 'preserve_original_filename', config,
+                lambda v: setattr(config, 'preserve_original_filename', v)
+            )
+            
+            self._parse_string_option(
+                raw_config, 'filename_template', config,
+                lambda v: setattr(config, 'filename_template', v),
+                "{original}_{timestamp}"
+            )
+            
+            self._parse_string_option(
+                raw_config, 'timestamp_format', config, 
+                lambda v: setattr(config, 'timestamp_format', v),
+                "%Y%m%d_%H%M%S"
+            )
             
             # Media transfer settings
-            config.media_only_transfer = raw_config.get('media_only_transfer',
-                                                    config.media_only_transfer)
-            config.preserve_folder_structure = raw_config.get('preserve_folder_structure',
-                                                            config.preserve_folder_structure)
+            self._parse_bool_option(
+                raw_config, 'media_only_transfer', config,
+                lambda v: setattr(config, 'media_only_transfer', v)
+            )
+            
+            self._parse_bool_option(
+                raw_config, 'preserve_folder_structure', config,
+                lambda v: setattr(config, 'preserve_folder_structure', v)
+            )
             
             # Parse media extensions
-            extensions_str = raw_config.get('media_extensions', '')
-            if extensions_str:
+            self._parse_media_extensions(raw_config, config)
+            
+            # Directory structure settings
+            self._parse_bool_option(
+                raw_config, 'create_date_folders', config,
+                lambda v: setattr(config, 'create_date_folders', v)
+            )
+            
+            # Validate date format string
+            date_format = raw_config.get('date_folder_format', config.date_folder_format)
+
+            # First check if the format contains any invalid specifiers
+            if not self._is_valid_date_format(date_format):
+                logger.warning(f"Invalid date format '{date_format}', using default")
+                raise ConfigError(
+                    f"Invalid date format: {date_format}",
+                    config_key="date_folder_format", 
+                    invalid_value=date_format,
+                    expected_type="valid strftime format string"
+                )
+
+            # Then also try using it with strftime as a second validation
+            try:
+                datetime.now().strftime(date_format)
+                # If we get here, the format is valid
+                config.date_folder_format = date_format
+            except (ValueError, TypeError) as e:
+                # This catches exceptions from strftime for invalid formats
+                logger.warning(f"Invalid date format '{date_format}', using default")
+                raise ConfigError(
+                    f"Invalid date format: {date_format}",
+                    config_key="date_folder_format", 
+                    invalid_value=date_format,
+                    expected_type="valid strftime format string"
+                ) from e
+            except Exception as e:
+                # For any other exception, also raise a ConfigError
+                logger.error(f"Unexpected error validating date format: {e}")
+                raise ConfigError(
+                    f"Invalid date format caused an unexpected error: {e}",
+                    config_key="date_folder_format", 
+                    invalid_value=date_format,
+                    expected_type="valid strftime format string"
+                ) from e
+                
+            self._parse_bool_option(
+                raw_config, 'create_device_folders', config,
+                lambda v: setattr(config, 'create_device_folders', v)
+            )
+            
+            # Validate device folder template
+            template = raw_config.get('device_folder_template', config.device_folder_template)
+            if not '{device_name}' in template:
+                logger.warning("Device folder template must contain {device_name}")
+                raise ConfigError(
+                    "Device folder template must contain {device_name} placeholder",
+                    config_key="device_folder_template",
+                    invalid_value=template
+                )
+            config.device_folder_template = template
+            
+            # Proxy generation settings
+            self._parse_bool_option(
+                raw_config, 'generate_proxies', config,
+                lambda v: setattr(config, 'generate_proxies', v)
+            )
+            
+            self._parse_string_option(
+                raw_config, 'proxy_subfolder', config,
+                lambda v: setattr(config, 'proxy_subfolder', v),
+                "proxies"
+            )
+                                                
+            # Sanitize proxy subfolder name
+            config.proxy_subfolder = config.proxy_subfolder.strip().replace('/', '_')
+            if not config.proxy_subfolder:
+                config.proxy_subfolder = "proxies"
+                
+            self._parse_bool_option(
+                raw_config, 'include_proxy_watermark', config,
+                lambda v: setattr(config, 'include_proxy_watermark', v)
+            )
+            
+            self._parse_string_option(
+                raw_config, 'proxy_watermark_path', config,
+                lambda v: setattr(config, 'proxy_watermark_path', v),
+                "assets/watermark.png"
+            )
+            
+            # Parse sound settings
+            self._parse_bool_option(
+                raw_config, 'enable_sounds', config,
+                lambda v: setattr(config, 'enable_sounds', v)
+            )
+            
+            self._parse_int_option(
+                raw_config, 'sound_volume', config,
+                lambda v: setattr(config, 'sound_volume', max(0, min(100, v))),
+                50, 0, 100
+            )
+            
+            self._parse_string_option(
+                raw_config, 'success_sound_path', config,
+                lambda v: setattr(config, 'success_sound_path', v),
+                "sounds/success.mp3"
+            )
+            
+            self._parse_string_option(
+                raw_config, 'error_sound_path', config,
+                lambda v: setattr(config, 'error_sound_path', v),
+                "sounds/error.mp3"
+            )
+                
+            return config
+            
+        except ConfigError:
+            # Re-raise config errors for specific settings
+            raise
+        except Exception as e:
+            logger.error(f"Error parsing configuration: {e}")
+            # Rather than just logging and returning default config, raise
+            # a proper ConfigError that can be handled upstream
+            raise ConfigError(
+                f"Unexpected error while parsing configuration: {e}",
+                recovery_steps=["Verify configuration file format is valid YAML"]
+            ) from e
+
+    def _parse_bool_option(self, raw_config, key, config, setter, default=None):
+        """Parse boolean option with validation"""
+        if key in raw_config:
+            value = raw_config[key]
+            if default is None:
+                default = getattr(config, key)
+                
+            if not isinstance(value, bool):
+                try:
+                    # Try to convert string "true"/"false" to boolean
+                    if isinstance(value, str):
+                        if value.lower() == "true":
+                            value = True
+                        elif value.lower() == "false":
+                            value = False
+                        else:
+                            raise ValueError(f"Cannot convert '{value}' to boolean")
+                    else:
+                        # Convert numeric values (0=False, anything else=True)
+                        value = bool(value)
+                except (ValueError, TypeError) as e:
+                    logger.warning(f"Invalid boolean value for {key}: {value}, using default {default}")
+                    raise ConfigError(
+                        f"Invalid boolean value: {value}",
+                        config_key=key,
+                        invalid_value=value,
+                        expected_type="boolean"
+                    ) from e
+            
+            setter(value)
+            
+    def _parse_int_option(self, raw_config, key, config, setter, default=None, min_val=None, max_val=None):
+        """Parse integer option with validation and range checking"""
+        if key in raw_config:
+            value = raw_config[key]
+            if default is None:
+                default = getattr(config, key)
+                
+            if not isinstance(value, int):
+                try:
+                    value = int(value)
+                except (ValueError, TypeError) as e:
+                    logger.warning(f"Invalid integer value for {key}: {value}, using default {default}")
+                    raise ConfigError(
+                        f"Invalid integer value: {value}",
+                        config_key=key,
+                        invalid_value=value,
+                        expected_type="integer"
+                    ) from e
+                    
+            # Apply range constraints if specified
+            if min_val is not None and value < min_val:
+                logger.warning(f"Value for {key} is below minimum ({value} < {min_val}), using minimum")
+                value = min_val
+                
+            if max_val is not None and value > max_val:
+                logger.warning(f"Value for {key} is above maximum ({value} > {max_val}), using maximum")
+                value = max_val
+                
+            setter(value)
+            
+    def _parse_string_option(self, raw_config, key, config, setter, default=None):
+        """Parse string option with validation"""
+        if key in raw_config:
+            value = raw_config[key]
+            if default is None:
+                default = getattr(config, key)
+                
+            if not isinstance(value, str):
+                try:
+                    value = str(value)
+                except (ValueError, TypeError) as e:
+                    logger.warning(f"Invalid string value for {key}: {value}, using default {default}")
+                    raise ConfigError(
+                        f"Invalid string value: {value}",
+                        config_key=key,
+                        invalid_value=value,
+                        expected_type="string"
+                    ) from e
+                    
+            setter(value)
+            
+    def _parse_media_extensions(self, raw_config, config):
+        """Parse media extensions with validation"""
+        extensions_str = raw_config.get('media_extensions', None)
+        if extensions_str:
+            try:
                 if isinstance(extensions_str, str):
                     # Split comma-separated string and clean up extensions
                     extensions = [ext.strip().lower() for ext in extensions_str.split(',')]
@@ -243,58 +538,20 @@ class ConfigManager:
                         ext if ext.startswith('.') else f'.{ext}'
                         for ext in extensions_str
                     ]
-            
-            # Directory structure settings (newly added parsing)
-            config.create_date_folders = raw_config.get('create_date_folders',
-                                                    config.create_date_folders)
-            config.date_folder_format = raw_config.get('date_folder_format',
-                                                    config.date_folder_format)
-            
-            # Validate date format string
-            try:
-                # Test the date format string
-                datetime.now().strftime(config.date_folder_format)
-            except ValueError as e:
-                logger.warning(f"Invalid date format '{config.date_folder_format}', using default")
-                config.date_folder_format = "%Y/%m/%d"
-                
-            config.create_device_folders = raw_config.get('create_device_folders',
-                                                        config.create_device_folders)
-            config.device_folder_template = raw_config.get('device_folder_template',
-                                                        config.device_folder_template)
-            
-            # Validate device folder template
-            if not '{device_name}' in config.device_folder_template:
-                logger.warning("Device folder template must contain {device_name}")
-                config.device_folder_template = "{device_name}"
-            
-            # Proxy generation settings (newly added parsing)
-            config.generate_proxies = raw_config.get('generate_proxies',
-                                                config.generate_proxies)
-            config.proxy_subfolder = raw_config.get('proxy_subfolder',
-                                                config.proxy_subfolder)
-                                                
-            # Sanitize proxy subfolder name
-            config.proxy_subfolder = config.proxy_subfolder.strip().replace('/', '_')
-            if not config.proxy_subfolder:
-                config.proxy_subfolder = "proxies"
-                
-            config.include_proxy_watermark = raw_config.get('include_proxy_watermark',
-                                                        config.include_proxy_watermark)
-            config.proxy_watermark_path = raw_config.get('proxy_watermark_path',
-                                                    config.proxy_watermark_path)
-            
-            # Validate watermark path format
-            if not isinstance(config.proxy_watermark_path, str):
-                logger.warning("Invalid watermark path format")
-                config.proxy_watermark_path = "assets/watermark.png"
-                
-            return config
-            
-        except Exception as e:
-            logger.error(f"Error parsing configuration: {e}")
-            logger.info("Falling back to default configuration")
-            return TransferConfig()
+                else:
+                    raise ConfigError(
+                        f"Invalid media extensions format: {extensions_str}",
+                        config_key="media_extensions",
+                        invalid_value=extensions_str,
+                        expected_type="comma-separated string or list"
+                    )
+            except (ValueError, TypeError) as e:
+                logger.warning(f"Error parsing media extensions: {e}")
+                raise ConfigError(
+                    f"Invalid media extensions: {extensions_str}",
+                    config_key="media_extensions",
+                    invalid_value=extensions_str
+                ) from e
 
     def load_config(self) -> TransferConfig:
         """
@@ -302,14 +559,33 @@ class ConfigManager:
         
         Returns:
             TransferConfig object with loaded settings
+            
+        Raises:
+            ConfigError: If unable to load or parse configuration
         """
         try:
             # Find or create configuration file
             config_file = self._find_or_create_config()
             
             # Load YAML configuration
-            with open(config_file, 'r') as f:
-                self._raw_config = yaml.safe_load(f) or {}
+            try:
+                with open(config_file, 'r') as f:
+                    self._raw_config = yaml.safe_load(f) or {}
+            except yaml.YAMLError as e:
+                raise ConfigError(
+                    f"Invalid YAML in configuration file: {e}",
+                    recovery_steps=["Check configuration file syntax", "Use valid YAML format"]
+                ) from e
+            except PermissionError as e:
+                raise ConfigError(
+                    f"Permission denied reading configuration file: {config_file}",
+                    recovery_steps=["Check file permissions", "Try running with elevated privileges"]
+                ) from e
+            except IOError as e:
+                raise ConfigError(
+                    f"I/O error reading configuration file: {e}",
+                    recovery_steps=["Verify file exists and is accessible"]
+                ) from e
             
             logger.info(f"Loaded configuration from {config_file}")
             
@@ -322,9 +598,13 @@ class ConfigManager:
             
             return config
             
+        except ConfigError:
+            # Re-raise ConfigError for proper handling upstream
+            raise
         except Exception as e:
-            logger.error(f"Error loading configuration: {e}")
+            logger.error(f"Unexpected error loading configuration: {e}")
             logger.info("Falling back to default configuration")
+            # Still provide a usable config, but log the issue
             return TransferConfig()
 
     def _log_active_configuration(self) -> None:
@@ -367,10 +647,13 @@ class ConfigManager:
             Current TransferConfig object
         
         Raises:
-            RuntimeError: If configuration hasn't been loaded
+            ConfigError: If configuration hasn't been loaded
         """
         if self._config is None:
-            raise RuntimeError("Configuration not loaded. Call load_config() first.")
+            raise ConfigError(
+                "Configuration not loaded. Call load_config() first.",
+                recovery_steps=["Call load_config() before accessing configuration"]
+            )
         return self._config
     
     def save_config(self, config: TransferConfig, path: Optional[Path] = None) -> None:
@@ -382,19 +665,116 @@ class ConfigManager:
             path: Optional path to save to. If None, uses current config_path
             
         Raises:
-            ValueError: If no path is specified and no current config_path
+            ConfigError: If no path is specified and no current config_path,
+                    or if unable to save configuration
         """
         save_path = path or self.config_path
         if not save_path:
-            raise ValueError("No configuration path specified")
+            raise ConfigError(
+                "No configuration path specified",
+                config_key=None,
+                recovery_steps=["Provide a path when calling save_config()"]
+            )
             
-        # Convert config to dictionary
-        config_dict = config.to_dict()
-        
-        # Ensure directory exists
-        save_path.parent.mkdir(parents=True, exist_ok=True)
-        
-        # Save to file with comments preserved
-        self._generate_default_config(save_path)
+        try:
+            # Ensure directory exists
+            save_path.parent.mkdir(parents=True, exist_ok=True)
             
-        logger.info(f"Configuration saved to {save_path}")
+            # Convert the provided config to a dictionary
+            config_dict = config.to_dict()
+            
+            # Define configuration structure with comments but use the provided config values
+            config_with_comments = {
+                "# File handling - Control how files are renamed and processed": None,
+                "rename_with_timestamp": config.rename_with_timestamp,
+                "preserve_original_filename": config.preserve_original_filename,
+                "filename_template": config.filename_template,
+                "timestamp_format": config.timestamp_format,
+                
+                "\n# Media transfer settings - Control which files are transferred": None,
+                "media_only_transfer": config.media_only_transfer,
+                "preserve_folder_structure": config.preserve_folder_structure,
+                "media_extensions": config_dict["media_extensions"],  # This is already formatted in to_dict()
+                
+                "\n# Directory structure settings - Control how files are organized": None,
+                "create_date_folders": config.create_date_folders,
+                "date_folder_format": config.date_folder_format,
+                "create_device_folders": config.create_device_folders,
+                "device_folder_template": config.device_folder_template,
+                
+                "\n# Proxy generation settings - Control video proxy creation": None,
+                "generate_proxies": config.generate_proxies,
+                "proxy_subfolder": config.proxy_subfolder,
+                "include_proxy_watermark": config.include_proxy_watermark,
+                "proxy_watermark_path": config.proxy_watermark_path,
+                
+                "\n# Sound settings": None,
+                "enable_sounds": config.enable_sounds,
+                "sound_volume": config.sound_volume,
+                "success_sound_path": config.success_sound_path,
+                "error_sound_path": config.error_sound_path
+            }
+            
+            # Write configuration with comments
+            with open(save_path, 'w') as f:
+                for key, value in config_with_comments.items():
+                    if value is None:  # This is a section comment
+                        f.write(f"{key}\n")
+                    else:
+                        # Format the value appropriately
+                        if isinstance(value, str):
+                            # Quote string values that contain special characters
+                            if any(char in value for char in '{}%'):
+                                formatted_value = f'"{value}"'
+                            else:
+                                formatted_value = value
+                        else:
+                            formatted_value = str(value).lower()  # Convert True/False to lowercase
+                            
+                        f.write(f"{key}: {formatted_value}\n")
+                
+            logger.info(f"Configuration saved to {save_path}")
+            
+        except PermissionError as e:
+            raise ConfigError(
+                f"Permission denied creating or writing to configuration file: {save_path}",
+                config_key=None,
+                recovery_steps=["Check file system permissions", "Try a different location"]
+            ) from e
+        except OSError as e:
+            raise ConfigError(
+                f"Failed to save configuration: {e}",
+                config_key=None,
+                recovery_steps=["Check disk space", "Verify path validity"]
+            ) from e
+        
+    def _is_valid_date_format(self, format_string):
+        """
+        Validate a date format string by checking for valid format specifiers.
+        
+        Args:
+            format_string: The date format string to validate
+            
+        Returns:
+            bool: True if the format is valid, False otherwise
+        """
+        # Set of valid format specifiers for strftime
+        valid_specifiers = {
+            '%a', '%A', '%w', '%d', '%b', '%B', '%m', '%y', '%Y', '%H', '%I', '%p',
+            '%M', '%S', '%f', '%z', '%Z', '%j', '%U', '%W', '%c', '%x', '%X', '%%'
+        }
+        
+        # Check each potential format specifier in the string
+        i = 0
+        while i < len(format_string):
+            if format_string[i] == '%' and i + 1 < len(format_string):
+                # Found a potential format specifier
+                spec = format_string[i:i+2]
+                if spec not in valid_specifiers:
+                    return False
+                i += 2
+            else:
+                # Not a format specifier, just skip
+                i += 1
+        
+        return True
