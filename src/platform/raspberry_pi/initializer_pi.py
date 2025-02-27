@@ -11,6 +11,7 @@ from .led_control import setup_leds, cleanup_leds
 from .lcd_display import setup_lcd
 from .menu_setup import MenuManager
 from .button_handler import ButtonHandler
+from src.core.exceptions import HardwareError, DisplayError, StateError
 
 logger = logging.getLogger(__name__)
 
@@ -49,13 +50,27 @@ class RaspberryPiInitializer(PlatformInitializer):
             power_manager.start_monitoring()
             logger.info("Hardware initialization complete")
         except Exception as e:
-            logger.error(f"Hardware initialization failed: {e}")
-            raise
+            error_msg = f"Hardware initialization failed: {str(e)}"
+            logger.error(error_msg)
+            raise HardwareError(
+                message=error_msg,
+                component="system",
+                error_type="initialization"
+            )
 
     def initialize_display(self) -> None:
         """Initialize the display system"""
-        self.display = RaspberryPiDisplay()
-        self.display.clear()
+        try:
+            self.display = RaspberryPiDisplay()
+            self.display.clear()
+        except Exception as e:
+            error_msg = f"Display initialization failed: {str(e)}"
+            logger.error(error_msg)
+            raise DisplayError(
+                message=error_msg,
+                display_type="lcd",
+                error_type="initialization"
+            )
 
     def initialize_storage(self) -> None:
         """Initialize the storage system"""
@@ -73,40 +88,74 @@ class RaspberryPiInitializer(PlatformInitializer):
             logger.info("Button handling initialized")
             
         except Exception as e:
-            logger.error(f"Failed to initialize buttons: {e}", exc_info=True)
-            raise
+            error_msg = f"Failed to initialize buttons: {str(e)}"
+            logger.error(error_msg, exc_info=True)
+            raise HardwareError(
+                message=error_msg,
+                component="button",
+                error_type="initialization"
+            )
 
     def cleanup(self) -> None:
         """Cleanup all Raspberry Pi specific resources"""
+        cleanup_errors = []
+        
         try:
             # Signal button thread to stop
             if hasattr(self, 'main_stop_event'):
                 self.main_stop_event.set()
                 if self.button_thread and self.button_thread.is_alive():
                     self.button_thread.join(timeout=2)
+                    if self.button_thread.is_alive():
+                        cleanup_errors.append("Button thread failed to stop")
             
             # Cleanup buttons
-            if hasattr(self, 'back_button') and self.back_button:
-                self.back_button.close()
-            if hasattr(self, 'up_button') and self.up_button:
-                self.up_button.close()
-            if hasattr(self, 'down_button') and self.down_button:
-                self.down_button.close()
-            if hasattr(self, 'ok_button') and self.ok_button:
-                self.ok_button.close()
+            for button_name in ['back_button', 'up_button', 'down_button', 'ok_button']:
+                if hasattr(self, button_name) and getattr(self, button_name):
+                    try:
+                        getattr(self, button_name).close()
+                    except Exception as e:
+                        cleanup_errors.append(f"Failed to cleanup {button_name}: {str(e)}")
             
             # Cleanup hardware
-            cleanup_leds()
-            power_manager.stop_monitoring()
+            try:
+                cleanup_leds()
+            except Exception as e:
+                cleanup_errors.append(f"Failed to cleanup LEDs: {str(e)}")
+                
+            try:
+                power_manager.stop_monitoring()
+            except Exception as e:
+                cleanup_errors.append(f"Failed to stop power monitoring: {str(e)}")
             
             # Clear display
             if hasattr(self, 'display') and self.display:
-                self.display.clear()
+                try:
+                    self.display.clear()
+                except Exception as e:
+                    cleanup_errors.append(f"Failed to clear display: {str(e)}")
+                
+            if cleanup_errors:
+                error_msg = "Multiple cleanup errors occurred: " + "; ".join(cleanup_errors)
+                logger.error(error_msg)
+                raise HardwareError(
+                    message=error_msg,
+                    component="system",
+                    error_type="cleanup"
+                )
                 
             logger.info("Raspberry Pi cleanup completed")
             
+        except HardwareError:
+            raise
         except Exception as e:
-            logger.error(f"Error during cleanup: {e}")
+            error_msg = f"Unexpected error during cleanup: {str(e)}"
+            logger.error(error_msg)
+            raise HardwareError(
+                message=error_msg,
+                component="system",
+                error_type="cleanup"
+            )
 
     def handle_utility_mode(self, enable: bool) -> None:
         """
@@ -123,19 +172,39 @@ class RaspberryPiInitializer(PlatformInitializer):
                 logger.debug("Clearing menu handlers")
                 self.clear_button_handlers()
         except Exception as e:
-            logger.error(f"Error handling utility mode: {e}")
+            error_msg = f"Error handling utility mode transition: {str(e)}"
+            logger.error(error_msg)
+            raise StateError(
+                message=error_msg,
+                current_state="normal" if not enable else "utility",
+                target_state="utility" if enable else "normal"
+            )
 
     def assign_menu_handlers(self) -> None:
         """Assign button handlers for menu navigation"""
         if not self.button_handler:
-            logger.error("Button handler not initialized")
-            return
+            error_msg = "Button handler not initialized"
+            logger.error(error_msg)
+            raise HardwareError(
+                message=error_msg,
+                component="button",
+                error_type="configuration"
+            )
 
-        logger.debug("Assigning menu handlers")
-        self.up_button.when_pressed = self.button_handler.navigate_up
-        self.down_button.when_pressed = self.button_handler.navigate_down
-        self.ok_button.when_pressed = self.button_handler.select_option
-        self.back_button.when_pressed = self.button_handler.exit_menu
+        try:
+            logger.debug("Assigning menu handlers")
+            self.up_button.when_pressed = self.button_handler.navigate_up
+            self.down_button.when_pressed = self.button_handler.navigate_down
+            self.ok_button.when_pressed = self.button_handler.select_option
+            self.back_button.when_pressed = self.button_handler.exit_menu
+        except Exception as e:
+            error_msg = f"Failed to assign menu handlers: {str(e)}"
+            logger.error(error_msg)
+            raise HardwareError(
+                message=error_msg,
+                component="button",
+                error_type="configuration"
+            )
 
     def clear_button_handlers(self) -> None:
         """Clear all button handlers"""
