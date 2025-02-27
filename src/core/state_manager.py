@@ -7,6 +7,7 @@ from datetime import timedelta
 from typing import Optional
 from pathlib import Path
 from .interfaces.display import DisplayInterface
+from .exceptions import StateError, DisplayError, TransferBoxError
 
 logger = logging.getLogger(__name__)
 
@@ -16,7 +17,7 @@ class SystemState(Enum):
     TRANSFER = auto()
     UTILITY = auto()  # Only used for Raspberry Pi
 
-class StateTransitionError(Exception):
+class StateTransitionError(StateError):
     """Exception raised for invalid state transitions"""
     pass
 
@@ -36,13 +37,21 @@ class StateManager:
         
         Args:
             display: Display interface for showing status messages
+            
+        Raises:
+            DisplayError: If display interface initialization fails
         """
-        self.display = display
-        self.current_state = SystemState.STANDBY
-        self.transfer_start_time: Optional[float] = None
-        self.total_transfer_time: float = 0.0
-        self.pending_unmount: Optional[Path] = None
-        logger.info("State manager initialized in STANDBY state")
+        try:
+            self.display = display
+            self.current_state = SystemState.STANDBY
+            self.transfer_start_time: Optional[float] = None
+            self.total_transfer_time: float = 0.0
+            self.pending_unmount: Optional[Path] = None
+            logger.info("State manager initialized in STANDBY state")
+        except Exception as e:
+            raise DisplayError(f"Failed to initialize display interface: {str(e)}", 
+                             display_type="lcd",
+                             error_type="initialization")
         
     def get_current_state(self) -> SystemState:
         """
@@ -106,6 +115,9 @@ class StateManager:
         """
         Enter standby state.
         Always allowed from any state.
+        
+        Raises:
+            DisplayError: If display update fails
         """
         try:
             prev_state = self.current_state
@@ -113,14 +125,24 @@ class StateManager:
             
             # Only update display if we weren't already in standby
             if prev_state != SystemState.STANDBY:
-                self.display.show_status("Standby")
-                time.sleep(0.05)  # Small delay between lines
-                self.display.show_status("Input Card", line=1)
+                try:
+                    self.display.show_status("Standby")
+                    time.sleep(0.05)  # Small delay between lines
+                    self.display.show_status("Input Card", line=1)
+                except Exception as e:
+                    raise DisplayError(f"Failed to update display in standby: {str(e)}", 
+                                     display_type="lcd", 
+                                     error_type="update")
                 
             logger.info(f"Entering standby state from {prev_state}")
             
+        except DisplayError:
+            raise  # Re-raise display errors
         except Exception as e:
             logger.error(f"Error entering standby state: {e}")
+            raise StateError(f"Failed to enter standby state: {str(e)}", 
+                           current_state=prev_state, 
+                           target_state=SystemState.STANDBY)
         
     def enter_transfer(self) -> None:
         """
@@ -128,25 +150,40 @@ class StateManager:
         Only allowed from STANDBY state.
         
         Raises:
-            StateTransitionError: If transition is not allowed
+            StateError: If transition is not allowed
+            DisplayError: If display update fails
         """
+        prev_state = self.current_state
         try:
             logger.info(f"Transfer state requested while in {self.current_state}")
             
             if not self._can_enter_transfer():
                 msg = f"Cannot enter transfer state from {self.current_state}"
                 logger.warning(msg)
-                raise StateTransitionError(msg)
+                raise StateError(msg, 
+                               current_state=self.current_state,
+                               target_state=SystemState.TRANSFER)
                 
             self.current_state = SystemState.TRANSFER
             self.transfer_start_time = time.time()
-            self.display.show_status("Transfer Mode")
+            
+            try:
+                self.display.show_status("Transfer Mode")
+            except Exception as e:
+                raise DisplayError(f"Failed to update display for transfer mode: {str(e)}", 
+                                 display_type="lcd",
+                                 error_type="update")
+                                 
             logger.info("Entering transfer state")
             
+        except (StateError, DisplayError):
+            raise  # Re-raise known errors
         except Exception as e:
             logger.error(f"Error entering transfer state: {e}")
-            if not isinstance(e, StateTransitionError):
-                self.enter_standby()  # Only fallback on non-state errors
+            self.current_state = prev_state  # Restore previous state
+            raise StateError(f"Failed to enter transfer state: {str(e)}", 
+                           current_state=prev_state,
+                           target_state=SystemState.TRANSFER)
         
     def exit_transfer(self, pending_unmount: Optional[Path] = None) -> None:
         """
@@ -154,11 +191,18 @@ class StateManager:
         
         Args:
             pending_unmount: Optional path to drive that still needs unmounting
+            
+        Raises:
+            StateError: If not in transfer state
+            DisplayError: If display update fails
         """
         try:
             if self.current_state != SystemState.TRANSFER:
-                logger.warning("Attempting to exit transfer state when not in transfer state")
-                return
+                msg = "Attempting to exit transfer state when not in transfer state"
+                logger.warning(msg)
+                raise StateError(msg,
+                               current_state=self.current_state,
+                               target_state=SystemState.STANDBY)
                 
             if self.transfer_start_time is not None:
                 end_time = time.time()
@@ -175,9 +219,13 @@ class StateManager:
             self.enter_standby()
             self.transfer_start_time = None
             
+        except (StateError, DisplayError):
+            raise  # Re-raise known errors
         except Exception as e:
             logger.error(f"Error exiting transfer state: {e}")
-            self.enter_standby()
+            raise StateError(f"Failed to exit transfer state: {str(e)}",
+                           current_state=SystemState.TRANSFER,
+                           target_state=SystemState.STANDBY)
         
     def enter_utility(self) -> bool:
         """
@@ -185,14 +233,21 @@ class StateManager:
         Only allowed from STANDBY state.
         
         Returns:
-            bool: True if successfully entered utility state, False otherwise
+            bool: True if successfully entered utility state
+            
+        Raises:
+            StateError: If transition is not allowed
         """
+        prev_state = self.current_state
         try:
             logger.info(f"Attempting to enter utility state from current state: {self.current_state}")
             
             if not self._can_enter_utility():
-                logger.warning("Cannot enter utility state from current state")
-                return False
+                msg = "Cannot enter utility state from current state"
+                logger.warning(msg)
+                raise StateError(msg,
+                               current_state=self.current_state,
+                               target_state=SystemState.UTILITY)
                 
             # Change state before updating display
             self.current_state = SystemState.UTILITY
@@ -201,10 +256,14 @@ class StateManager:
             logger.info("Successfully entered utility state")
             return True
             
+        except StateError:
+            raise  # Re-raise state errors
         except Exception as e:
             logger.error(f"Failed to enter utility state: {e}")
-            self.enter_standby()  # Fallback to standby on error
-            return False
+            self.current_state = prev_state  # Restore previous state
+            raise StateError(f"Failed to enter utility state: {str(e)}",
+                           current_state=prev_state,
+                           target_state=SystemState.UTILITY)
 
     def exit_utility(self) -> bool:
         """
@@ -213,34 +272,47 @@ class StateManager:
         Always returns to STANDBY state.
         
         Returns:
-            bool: True if successfully exited utility state, False otherwise
+            bool: True if successfully exited utility state
+            
+        Raises:
+            StateError: If not in utility state
+            DisplayError: If display update fails
         """
+        prev_state = self.current_state
         try:
             logger.info(f"Attempting to exit utility state from current state: {self.current_state}")
             
             if self.current_state != SystemState.UTILITY:
-                logger.warning("Not in utility state, cannot exit")
-                return False
+                msg = "Not in utility state, cannot exit"
+                logger.warning(msg)
+                raise StateError(msg,
+                               current_state=self.current_state,
+                               target_state=SystemState.STANDBY)
                 
             # First change state
             self.current_state = SystemState.STANDBY
             
-            # Then update display with both lines
-            self.display.show_status("Standby")
-            time.sleep(0.05)  # Small delay between lines
-            self.display.show_status("Input Card", line=1)
+            try:
+                # Then update display with both lines
+                self.display.show_status("Standby")
+                time.sleep(0.05)  # Small delay between lines
+                self.display.show_status("Input Card", line=1)
+            except Exception as e:
+                raise DisplayError(f"Failed to update display while exiting utility: {str(e)}",
+                                 display_type="lcd",
+                                 error_type="update")
             
             logger.info("Successfully exited utility state")
             return True
             
+        except (StateError, DisplayError):
+            raise  # Re-raise known errors
         except Exception as e:
             logger.error(f"Failed to exit utility state: {e}")
-            # Force standby state on error
-            self.current_state = SystemState.STANDBY
-            self.display.show_status("Standby")
-            time.sleep(0.05)
-            self.display.show_status("Input Card", line=1)
-            return False
+            self.current_state = prev_state  # Restore previous state
+            raise StateError(f"Failed to exit utility state: {str(e)}",
+                           current_state=prev_state,
+                           target_state=SystemState.STANDBY)
 
     def get_current_transfer_time(self) -> float:
         """
