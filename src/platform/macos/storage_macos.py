@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import List, Dict, Optional, Any, Union
 from src.core.interfaces.storage_inter import StorageInterface
 from src.core.path_utils import sanitize_path, validate_destination_path
+from src.core.exceptions import StorageError
 
 logger = logging.getLogger(__name__)
 
@@ -20,21 +21,28 @@ class MacOSStorage(StorageInterface):
 
     def get_available_drives(self) -> List[Path]:
         """Get list of mounted volumes"""
-        volumes = Path("/Volumes")
-        return [p for p in volumes.iterdir() if p.is_mount()]
+        try:
+            volumes = Path("/Volumes")
+            return [p for p in volumes.iterdir() if p.is_mount()]
+        except PermissionError as e:
+            logger.error(f"Permission denied accessing Volumes directory: {e}")
+            raise StorageError("Cannot access Volumes directory", path=volumes) from e
+        except FileNotFoundError as e:
+            logger.error(f"Volumes directory not found: {e}")
+            raise StorageError("Volumes directory does not exist", path=volumes) from e
+        except Exception as e:
+            logger.error(f"Unexpected error detecting available drives: {e}")
+            raise StorageError("Failed to detect available drives") from e
 
     def get_drive_info(self, path: Path) -> Dict[str, int]:
         """
         Get storage information with improved NAS support for macOS.
-        
         On macOS, we use 'df -k' which reports sizes in 1024-byte (1K) blocks,
         then convert to bytes for consistency with the rest of the system.
-        
         Args:
-            path: Path to check space on
-            
+        path: Path to check space on
         Returns:
-            Dictionary containing total, used, and free space in bytes
+        Dictionary containing total, used, and free space in bytes
         """
         try:
             # First try using df command - on macOS we use -k for 1K blocks
@@ -44,7 +52,6 @@ class MacOSStorage(StorageInterface):
                 text=True,
                 check=True
             )
-            
             # Parse df output - last line has our data
             # Format is: Filesystem 1K-blocks Used Available Capacity Mounted on
             lines = result.stdout.strip().split('\n')
@@ -76,24 +83,28 @@ class MacOSStorage(StorageInterface):
             used = total - free
             
             return {'total': total, 'used': used, 'free': free}
-            
+        
         except subprocess.CalledProcessError as e:
             logger.error(f"Error running df command: {e}")
-            # Try one more time with the parent directory if the target directory doesn't exist yet
             try:
                 parent_path = path.parent
                 logger.info(f"Retrying space check with parent directory: {parent_path}")
                 return self.get_drive_info(parent_path)
             except Exception as parent_error:
                 logger.error(f"Error checking parent directory space: {parent_error}")
-                raise
+                raise StorageError(f"Unable to get drive info for {path}", path=path) from parent_error
+        
         except Exception as e:
             logger.error(f"Error checking space on {path}: {e}")
-            raise
+            raise StorageError(f"Unexpected error getting drive info for {path}", path=path) from e
 
     def is_drive_mounted(self, path: Path) -> bool:
         """Check if path is a mount point"""
-        return path.is_mount()
+        try:
+            return path.is_mount()
+        except Exception as e:
+            logger.error(f"Error checking mount status for {path}: {e}")
+            raise StorageError(f"Failed to check mount status", path=path) from e
 
     def unmount_drive(self, path: Path) -> bool:
         """Unmount a drive using diskutil"""
@@ -103,7 +114,7 @@ class MacOSStorage(StorageInterface):
             
             # Try unmounting with diskutil
             subprocess.run(
-                ['diskutil', 'unmount', str(path)], 
+                ['diskutil', 'unmount', str(path)],
                 check=True,
                 capture_output=True,
                 text=True
@@ -114,26 +125,30 @@ class MacOSStorage(StorageInterface):
             
             logger.info(f"Successfully unmounted {path}")
             return True
+        
         except subprocess.CalledProcessError as e:
             logger.error(f"Failed to unmount {path}: {e.stderr}")
-            return False
+            raise StorageError(f"Unmount failed", path=path) from e
+        
         except Exception as e:
             logger.error(f"Error during unmount of {path}: {e}")
-            return False
+            raise StorageError(f"Unexpected unmount error", path=path) from e
 
     def get_dump_drive(self) -> Optional[Path]:
         """Get the dump drive location"""
-        return self.dump_drive_mountpoint
+        try:
+            return self.dump_drive_mountpoint
+        except Exception as e:
+            logger.error(f"Error retrieving dump drive: {e}")
+            raise StorageError("Failed to retrieve dump drive") from e
 
     def set_dump_drive(self, path: Union[Path, str]) -> None:
         """
         Set the destination drive for file dumps.
-        
         Args:
-            path: Path to the destination directory
-            
+        path: Path to the destination directory
         Raises:
-            ValueError: If path is invalid or not writable
+        StorageError: If path is invalid or not writable
         """
         try:
             # Sanitize the path if it's a string
@@ -152,22 +167,21 @@ class MacOSStorage(StorageInterface):
                 while not parent.exists():
                     parent = parent.parent
                 if not os.access(parent, os.W_OK):
-                    raise ValueError(f"No write permission for directory: {parent}")
+                    raise StorageError(f"No write permission for directory: {parent}", path=parent)
             
             self.dump_drive_mountpoint = path
-            
+        
         except Exception as e:
-            raise ValueError(str(e))
+            logger.error(f"Error setting dump drive: {e}")
+            raise StorageError(f"Failed to set dump drive: {str(e)}", path=path) from e
 
     def wait_for_new_drive(self, initial_drives: List[Path]) -> Optional[Path]:
         """
         Wait for a new drive to be mounted in /Volumes.
-        
         Args:
-            initial_drives: List of initially mounted drives
-            
+        initial_drives: List of initially mounted drives
         Returns:
-            Path to new drive if detected, None if timeout or error
+        Path to new drive if detected, None if timeout or error
         """
         try:
             while True:
@@ -180,38 +194,35 @@ class MacOSStorage(StorageInterface):
                     new_drive = next(iter(new_drives))
                     logger.info(f"New drive detected: {new_drive}")
                     return new_drive
-                    
+        
         except Exception as e:
             logger.error(f"Error detecting new drive: {e}")
-            return None
+            raise StorageError("Failed to detect new drive", path=Path("/Volumes")) from e
 
     def wait_for_drive_removal(self, path: Path) -> None:
         """
         Wait for a drive to be unmounted from /Volumes.
-        
         Args:
-            path: Path to the drive to monitor
+        path: Path to the drive to monitor
         """
         try:
             while path.exists() and path.is_mount():
                 logger.debug(f"Waiting for {path} to be removed...")
                 time.sleep(5)
-                
+            
             logger.info(f"Drive {path} has been removed")
-                
         except Exception as e:
             logger.error(f"Error monitoring drive removal: {e}")
+            raise StorageError(f"Failed to monitor drive removal", path=path) from e
 
     def has_enough_space(self, path: Path, required_size: int) -> bool:
         """
         Check if a path has enough free space with improved error handling.
-        
         Args:
-            path: Path to check
-            required_size: Required space in bytes
-            
+        path: Path to check
+        required_size: Required space in bytes
         Returns:
-            True if enough space available, False otherwise
+        True if enough space available, False otherwise
         """
         try:
             drive_info = self.get_drive_info(path)
@@ -224,19 +235,17 @@ class MacOSStorage(StorageInterface):
             
             # Add 5% safety margin for filesystem overhead
             required_with_margin = int(required_size * 1.05)
-            
             has_space = free_space >= required_with_margin
+            
             if not has_space:
                 needed = (required_with_margin - free_space) / (1024**3)
                 logger.warning(f"Insufficient space - needs {needed:.2f} GB more")
             
             return has_space
-            
+        
         except Exception as e:
             logger.error(f"Error checking space on {path}: {e}")
-            # If we can't check space reliably, we should warn but allow transfer
-            logger.warning("Unable to verify space - proceeding with transfer")
-            return True
+            raise StorageError(f"Failed to check available space", path=path) from e
         
     def get_file_metadata(self, path: Path) -> Dict[str, Any]:
         """Get file metadata using macOS native APIs"""
@@ -262,12 +271,12 @@ class MacOSStorage(StorageInterface):
             except ImportError:
                 logger.warning("xattr module not available - extended attributes won't be preserved")
                 metadata['xattrs'] = {}
-                
-            return metadata
             
+            return metadata
+        
         except Exception as e:
             logger.error(f"Error getting metadata for {path}: {e}")
-            return {}
+            raise StorageError(f"Failed to retrieve file metadata", path=path) from e
             
     def set_file_metadata(self, path: Path, metadata: Dict[str, Any]) -> bool:
         """Set file metadata using macOS native APIs"""
@@ -300,9 +309,9 @@ class MacOSStorage(StorageInterface):
                         attrs[name] = value
                 except ImportError:
                     logger.warning("xattr module not available - extended attributes won't be preserved")
-                    
-            return True
             
+            return True
+        
         except Exception as e:
             logger.error(f"Error setting metadata for {path}: {e}")
-            return False
+            raise StorageError(f"Failed to set file metadata", path=path) from e

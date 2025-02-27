@@ -1,5 +1,6 @@
 # src/platform/raspberry_pi/lcd_display.py
 
+from core.exceptions import DisplayError, HardwareError
 import smbus
 import time
 import subprocess
@@ -18,20 +19,37 @@ class LCDDisplay:
         Args:
             i2c_bus: I2C bus number
             address: I2C device address
+            
+        Raises:
+            HardwareError: If SMBus initialization fails
         """
-        self.bus = smbus.SMBus(i2c_bus)
+        try:
+            self.bus = smbus.SMBus(i2c_bus)
+        except Exception as e:
+            raise HardwareError(
+                f"Failed to initialize I2C bus {i2c_bus}: {str(e)}", 
+                component="display",
+                error_type="i2c"
+            )
         self.BLEN = 1
         self.LCD_ADDR = address
         self.line_content = ["", ""]  # Track current content of each line
 
     def write_word(self, addr: int, data: int) -> None:
         """Write a word to the LCD controller."""
-        temp = data
-        if self.BLEN == 1:
-            temp |= 0x08
-        else:
-            temp &= 0xF7
-        self.bus.write_byte(addr, temp)
+        try:
+            temp = data
+            if self.BLEN == 1:
+                temp |= 0x08
+            else:
+                temp &= 0xF7
+            self.bus.write_byte(addr, temp)
+        except Exception as e:
+            raise DisplayError(
+                f"Failed to write word to LCD: {str(e)}", 
+                display_type="lcd",
+                error_type="communication"
+            )
 
     def send_command(self, comm: int) -> None:
         """Send a command to the LCD."""
@@ -83,7 +101,8 @@ class LCDDisplay:
             bl: Backlight state (0 or 1)
         
         Raises:
-            IOError: If LCD not found or initialization fails
+            HardwareError: If LCD device not found on I2C bus
+            DisplayError: If LCD initialization sequence fails
         """
         try:
             i2c_list = self.i2c_scan()
@@ -93,29 +112,49 @@ class LCDDisplay:
                 elif '27' in i2c_list:
                     self.LCD_ADDR = 0x27
                 else:
-                    raise IOError("I2C address 0x27 or 0x3f not found.")
+                    raise HardwareError(
+                        "LCD device not found on I2C bus",
+                        component="display",
+                        error_type="not_found"
+                    )
             else:
                 self.LCD_ADDR = addr
                 if str(hex(addr)).strip('0x') not in i2c_list:
-                    raise IOError(f"I2C address {str(hex(addr))} not found.")
+                    raise HardwareError(
+                        f"LCD device not found at address {str(hex(addr))}",
+                        component="display",
+                        error_type="not_found"
+                    )
                     
             self.BLEN = bl
-            self.send_command(0x33)
-            time.sleep(0.005)
-            self.send_command(0x32)
-            time.sleep(0.005)
-            self.send_command(0x28)
-            time.sleep(0.005)
-            self.send_command(0x0C)
-            time.sleep(0.005)
-            self.send_command(0x01)
-            self.send_command(0x06)
-            self.clear()
-            logger.info("LCD initialized successfully")
+            try:
+                self.send_command(0x33)
+                time.sleep(0.005)
+                self.send_command(0x32)
+                time.sleep(0.005)
+                self.send_command(0x28)
+                time.sleep(0.005)
+                self.send_command(0x0C)
+                time.sleep(0.005)
+                self.send_command(0x01)
+                self.send_command(0x06)
+                self.clear()
+                logger.info("LCD initialized successfully")
+            except Exception as e:
+                raise DisplayError(
+                    f"LCD initialization sequence failed: {str(e)}",
+                    display_type="lcd",
+                    error_type="initialization"
+                )
             
-        except Exception as e:
-            logger.error(f"LCD initialization failed: {e}")
+        except (HardwareError, DisplayError):
             raise
+        except Exception as e:
+            raise DisplayError(
+                f"Unexpected error during LCD initialization: {str(e)}",
+                display_type="lcd",
+                error_type="unknown"
+            )
 
     def clear(self) -> None:
         """Clear the LCD display."""
@@ -130,6 +169,9 @@ class LCDDisplay:
             x: Column position (0-15)
             y: Row position (0-1)
             string: Text to display
+            
+        Raises:
+            DisplayError: If writing to LCD fails
         """
         try:
             x = max(0, min(15, x))
@@ -151,7 +193,11 @@ class LCDDisplay:
                 self.send_data(ord(char))
                 
         except Exception as e:
-            logger.error(f"Failed to write to LCD: {e}")
+            raise DisplayError(
+                f"Failed to write text to LCD: {str(e)}",
+                display_type="lcd",
+                error_type="write"
+            )
 
     def set_backlight(self, state: bool) -> None:
         """
@@ -159,9 +205,19 @@ class LCDDisplay:
         
         Args:
             state: True for on, False for off
+            
+        Raises:
+            DisplayError: If setting backlight fails
         """
-        self.BLEN = int(state)
-        self.write_word(self.LCD_ADDR, 0x08 if state else 0x00)
+        try:
+            self.BLEN = int(state)
+            self.write_word(self.LCD_ADDR, 0x08 if state else 0x00)
+        except Exception as e:
+            raise DisplayError(
+                f"Failed to set LCD backlight: {str(e)}",
+                display_type="lcd",
+                error_type="backlight"
+            )
 
     def update_progress(self, file_number: int, file_count: int, 
                        progress: int, last_progress: int = 0) -> int:
@@ -205,10 +261,16 @@ class LCDDisplay:
 lcd_display = LCDDisplay()
 
 def setup_lcd() -> None:
-    """Initialize the LCD display singleton."""
+    """
+    Initialize the LCD display singleton.
+    
+    Raises:
+        HardwareError: If LCD hardware initialization fails
+        DisplayError: If LCD display initialization fails
+    """
     try:
         lcd_display.init_lcd()
         logger.info("LCD initialized successfully")
-    except Exception as e:
-        logger.error(f"Failed to initialize LCD: {e}")
+    except (HardwareError, DisplayError) as e:
+        logger.error(f"Failed to initialize LCD: {str(e)}")
         raise

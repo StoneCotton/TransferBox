@@ -6,6 +6,7 @@ import logging
 from enum import IntEnum
 from typing import List, Optional, Dict
 from .pi74HC595 import pi74HC595
+from core.exceptions import HardwareError
 
 logger = logging.getLogger(__name__)
 
@@ -36,22 +37,40 @@ class LEDManager:
             st_pin: Storage/latch pin
             sh_pin: Shift pin
             daisy_chain: Number of daisy-chained shift registers
+        
+        Raises:
+            HardwareError: If initialization of shift register fails
         """
-        self.shift_register = pi74HC595(DS=ds_pin, ST=st_pin, SH=sh_pin, daisy_chain=daisy_chain)
-        self.led_state = [0] * 16
-        self.cleanup_performed = False
-        self._active_threads: List[Thread] = []
-        self._blink_events: Dict[int, Event] = {}  # Track blink events for each LED
+        try:
+            self.shift_register = pi74HC595(DS=ds_pin, ST=st_pin, SH=sh_pin, daisy_chain=daisy_chain)
+            self.led_state = [0] * 16
+            self.cleanup_performed = False
+            self._active_threads: List[Thread] = []
+            self._blink_events: Dict[int, Event] = {}  # Track blink events for each LED
+        except Exception as e:
+            raise HardwareError(
+                f"Failed to initialize LED manager: {str(e)}", 
+                component="led",
+                error_type="initialization"
+            )
 
     def setup_leds(self) -> None:
-        """Initialize all LEDs to off state"""
+        """
+        Initialize all LEDs to off state
+        
+        Raises:
+            HardwareError: If LED setup fails
+        """
         try:
             self.led_state = [0] * 16
             self.shift_register.set_by_list(self.led_state)
             logger.info("LEDs setup completed")
         except Exception as e:
-            logger.error(f"LED setup failed: {e}")
-            raise
+            raise HardwareError(
+                f"LED setup failed: {str(e)}", 
+                component="led",
+                error_type="setup"
+            )
 
     def set_led_state(self, led_index: int, state: bool) -> None:
         """
@@ -60,48 +79,75 @@ class LEDManager:
         Args:
             led_index: LED position in shift register
             state: True for on, False for off
+            
+        Raises:
+            HardwareError: If setting LED state fails
         """
         try:
             if self.cleanup_performed:
-                logger.debug(f"Ignoring LED state change after cleanup")
+                logger.debug("Ignoring LED state change after cleanup")
                 return
                 
             self.led_state[led_index] = 1 if state else 0
             self.shift_register.set_by_list(self.led_state)
             logger.debug(f"LED {led_index} set to {'ON' if state else 'OFF'}")
         except Exception as e:
-            logger.error(f"Failed to set LED {led_index}: {e}")
+            raise HardwareError(
+                f"Failed to set LED {led_index}: {str(e)}", 
+                component="led",
+                error_type="state_change"
+            )
 
     def start_led_blink(self, led_index: int, blink_speed: float = 0.5) -> None:
-        """Start LED blinking in separate thread."""
-        # Stop any existing blink for this LED
-        self.stop_led_blink(led_index)
+        """
+        Start LED blinking in separate thread.
         
-        stop_event = Event()
-        self._blink_events[led_index] = stop_event
-        
-        def blink_loop():
-            while not stop_event.is_set() and not self.cleanup_performed:
-                # Only update the LED state, don't trigger display updates
-                try:
-                    # Store original state of all LEDs
-                    original_states = self.led_state.copy()
-                    self.led_state[led_index] = 1
-                    self.shift_register.set_by_list(self.led_state)
-                    time.sleep(blink_speed)
-                    if stop_event.is_set() or self.cleanup_performed:
-                        break
-                    self.led_state[led_index] = 0
-                    self.shift_register.set_by_list(self.led_state)
-                    time.sleep(blink_speed)
-                except Exception as e:
-                    logger.error(f"Error in LED blink loop: {e}")
-                    break
+        Args:
+            led_index: LED to blink
+            blink_speed: Time between blinks in seconds
+            
+        Raises:
+            HardwareError: If starting LED blink fails
+        """
+        try:
+            # Stop any existing blink for this LED
+            self.stop_led_blink(led_index)
+            
+            stop_event = Event()
+            self._blink_events[led_index] = stop_event
+            
+            def blink_loop():
+                while not stop_event.is_set() and not self.cleanup_performed:
+                    try:
+                        # Store original state of all LEDs
+                        original_states = self.led_state.copy()
+                        self.led_state[led_index] = 1
+                        self.shift_register.set_by_list(self.led_state)
+                        time.sleep(blink_speed)
+                        if stop_event.is_set() or self.cleanup_performed:
+                            break
+                        self.led_state[led_index] = 0
+                        self.shift_register.set_by_list(self.led_state)
+                        time.sleep(blink_speed)
+                    except Exception as e:
+                        logger.error(f"Error in LED blink loop: {e}")
+                        raise HardwareError(
+                            f"LED blink loop failed: {str(e)}", 
+                            component="led",
+                            error_type="blink_operation"
+                        )
 
-        blink_thread = Thread(target=blink_loop)
-        blink_thread.daemon = True
-        blink_thread.start()
-        self._active_threads.append(blink_thread)
+            blink_thread = Thread(target=blink_loop)
+            blink_thread.daemon = True
+            blink_thread.start()
+            self._active_threads.append(blink_thread)
+            
+        except Exception as e:
+            raise HardwareError(
+                f"Failed to start LED blink for LED {led_index}: {str(e)}", 
+                component="led",
+                error_type="blink_start"
+            )
 
     def stop_led_blink(self, led_index: int) -> None:
         """Stop LED from blinking and turn it off"""
@@ -130,11 +176,18 @@ class LEDManager:
         
         Args:
             progress: Progress value (0-100)
+            
+        Raises:
+            HardwareError: If setting bar graph fails
+            ValueError: If progress value is invalid
         """
         try:
             if self.cleanup_performed:
-                logger.debug(f"Ignoring bar graph update after cleanup")
+                logger.debug("Ignoring bar graph update after cleanup")
                 return
+                
+            if not 0 <= progress <= 100:
+                raise ValueError(f"Progress value must be between 0 and 100, got {progress}")
                 
             progress = max(0, min(100, progress))
             bar_leds = LEDControl.get_bar_graph_leds()
@@ -148,11 +201,22 @@ class LEDManager:
                 
             self.shift_register.set_by_list(self.led_state)
             
+        except ValueError as e:
+            raise e
         except Exception as e:
-            logger.error(f"Failed to update bar graph: {e}")
+            raise HardwareError(
+                f"Failed to update bar graph: {str(e)}", 
+                component="led",
+                error_type="bar_graph_update"
+            )
 
     def cleanup(self) -> None:
-        """Clean up LED resources"""
+        """
+        Clean up LED resources
+        
+        Raises:
+            HardwareError: If cleanup fails
+        """
         if not self.cleanup_performed:
             try:
                 # Stop all blinking threads
@@ -170,7 +234,11 @@ class LEDManager:
                 self.cleanup_performed = True
                 
             except Exception as e:
-                logger.error(f"Error during LED cleanup: {e}")
+                raise HardwareError(
+                    f"Error during LED cleanup: {str(e)}", 
+                    component="led",
+                    error_type="cleanup"
+                )
         else:
             logger.debug("LED cleanup already performed")
 

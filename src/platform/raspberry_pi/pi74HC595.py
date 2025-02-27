@@ -4,6 +4,7 @@ import logging
 from typing import List, Union
 from gpiozero import OutputDevice, Device
 from gpiozero.pins.lgpio import LGPIOFactory
+from src.core.exceptions import HardwareError, TransferBoxError
 
 # Set gpiozero to use lgpio
 Device.pin_factory = LGPIOFactory()
@@ -47,24 +48,50 @@ class pi74HC595:
             logger.info(f"Initialized 74HC595 with {daisy_chain} registers")
             
         except Exception as e:
-            logger.error(f"Failed to initialize 74HC595: {e}")
+            error_msg = f"Failed to initialize 74HC595 shift register"
+            logger.error(f"{error_msg}: {str(e)}")
             self.cleanup()
-            raise
+            raise HardwareError(
+                message=error_msg,
+                component="shift_register",
+                error_type="initialization",
+            ) from e
 
     def _tick_clock(self) -> None:
         """Generate clock pulse"""
-        self.clock_pin.on()
-        self.clock_pin.off()
+        try:
+            self.clock_pin.on()
+            self.clock_pin.off()
+        except Exception as e:
+            raise HardwareError(
+                message="Failed to generate clock pulse",
+                component="shift_register",
+                error_type="clock_signal"
+            ) from e
 
     def _latch_data(self) -> None:
         """Latch data to output"""
-        self.latch_pin.on()
-        self.latch_pin.off()
+        try:
+            self.latch_pin.on()
+            self.latch_pin.off()
+        except Exception as e:
+            raise HardwareError(
+                message="Failed to latch data",
+                component="shift_register",
+                error_type="latch_signal"
+            ) from e
 
     def _write_bit(self, bit: int) -> None:
         """Write a single bit to the shift register"""
-        self.data_pin.value = bool(bit)
-        self._tick_clock()
+        try:
+            self.data_pin.value = bool(bit)
+            self._tick_clock()
+        except Exception as e:
+            raise HardwareError(
+                message=f"Failed to write bit value {bit}",
+                component="shift_register",
+                error_type="data_signal"
+            ) from e
 
     def set_by_list(self, values: List[Union[int, bool]]) -> None:
         """
@@ -82,7 +109,7 @@ class pi74HC595:
                 elif val in (0, 1):
                     binary_values.append(val)
                 else:
-                    raise ValueError("Values must be 0, 1, or boolean")
+                    raise ValueError(f"Invalid value {val}. Values must be 0, 1, or boolean")
             
             # Pad or truncate to match register size
             target_length = 8 * self.daisy_chain
@@ -96,16 +123,29 @@ class pi74HC595:
             self._latch_data()
             self.current = binary_values[::-1]  # Store in original order
             
+        except ValueError as e:
+            raise TransferBoxError(
+                message=str(e),
+                recoverable=True,
+                recovery_steps=["Ensure all values are either 0, 1, or boolean"]
+            ) from e
         except Exception as e:
-            logger.error(f"Error setting values: {e}")
-            raise
+            raise HardwareError(
+                message="Failed to set shift register values",
+                component="shift_register",
+                error_type="data_write"
+            ) from e
 
     def clear(self) -> None:
         """Clear all outputs to zero"""
         try:
             self.set_by_list([0] * 8 * self.daisy_chain)
         except Exception as e:
-            logger.error(f"Error clearing registers: {e}")
+            raise HardwareError(
+                message="Failed to clear shift register outputs",
+                component="shift_register",
+                error_type="clear_operation"
+            ) from e
 
     def cleanup(self) -> None:
         """Clean up GPIO resources"""
@@ -116,4 +156,8 @@ class pi74HC595:
             self.clock_pin.close()
             logger.info("74HC595 cleanup completed")
         except Exception as e:
-            logger.error(f"Error during cleanup: {e}")
+            raise HardwareError(
+                message="Failed to cleanup shift register resources",
+                component="shift_register",
+                error_type="cleanup"
+            ) from e

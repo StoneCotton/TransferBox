@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import List, Dict, Optional, Any, Union
 from src.core.interfaces.storage_inter import StorageInterface
 from src.core.path_utils import sanitize_path, validate_destination_path
+from src.core.exceptions import StorageError, ConfigError, FileTransferError
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +30,8 @@ class WindowsStorage(StorageInterface):
             path: Path to set as dump drive location
                 
         Raises:
-            ValueError: If drive or path is invalid or inaccessible
+            StorageError: If drive is invalid, inaccessible, or has insufficient space
+            ConfigError: If path configuration is invalid
         """
         try:
             # Sanitize the path if it's a string
@@ -58,7 +60,12 @@ class WindowsStorage(StorageInterface):
                         win32file.DRIVE_RAMDISK: "RAM Disk"
                     }
                     type_name = drive_type_names.get(drive_type, f"Unknown Type ({drive_type})")
-                    raise ValueError(f"Drive {drive_path} is not a valid storage drive (Type: {type_name})")
+                    raise StorageError(
+                        f"Drive {drive_path} is not a valid storage drive (Type: {type_name})",
+                        path=drive_path,
+                        device=type_name,
+                        error_type="mount"
+                    )
                 
                 # Get drive free space
                 sectors_per_cluster, bytes_per_sector, free_clusters, total_clusters = \
@@ -67,18 +74,35 @@ class WindowsStorage(StorageInterface):
                 free_bytes = sectors_per_cluster * bytes_per_sector * free_clusters
                 if free_bytes < 1024 * 1024 * 100:  # 100MB minimum
                     free_gb = free_bytes / (1024 * 1024 * 1024)
-                    raise ValueError(f"Drive {drive_path} has insufficient space ({free_gb:.2f} GB free)")
+                    raise StorageError(
+                        f"Drive {drive_path} has insufficient space ({free_gb:.2f} GB free)",
+                        path=drive_path,
+                        error_type="space"
+                    )
                 
             except ImportError:
                 logger.warning("win32file not available - skipping detailed drive checks")
+            except StorageError:
+                raise
+            except Exception as e:
+                raise StorageError(
+                    f"Failed to validate drive {drive_path}: {str(e)}",
+                    path=drive_path,
+                    error_type="mount"
+                )
             
             # Store the validated path
             self.dump_drive_mountpoint = path
             logger.info(f"Set dump drive to {path}")
             
+        except StorageError:
+            raise
         except Exception as e:
-            logger.error(f"Error setting dump drive: {e}")
-            raise ValueError(str(e))
+            raise ConfigError(
+                f"Invalid dump drive configuration: {str(e)}",
+                config_key="dump_drive",
+                invalid_value=str(path)
+            )
 
     def get_available_drives(self) -> List[Path]:
         """Get list of available drive letters"""
@@ -105,15 +129,25 @@ class WindowsStorage(StorageInterface):
                 None
             )
             if ret == 0:
-                raise OSError("Failed to get drive information")
+                raise StorageError(
+                    f"Failed to get drive information for {root_drive}",
+                    path=root_drive,
+                    error_type="mount"
+                )
             return {
                 'total': total.value,
                 'free': free.value,
                 'used': total.value - free.value
             }
+        except StorageError:
+            raise
         except Exception as e:
             logger.error(f"Error getting drive info for {path}: {e}")
-            raise
+            raise StorageError(
+                f"Failed to get drive information: {str(e)}",
+                path=path,
+                error_type="mount"
+            )
 
     def is_drive_mounted(self, path: Path) -> bool:
         """Check if drive is mounted"""
@@ -131,21 +165,27 @@ class WindowsStorage(StorageInterface):
             path: Path to the drive to eject
                 
         Returns:
-            True if successful, False otherwise
+            True if successful
+            
+        Raises:
+            StorageError: If drive ejection fails
         """
         try:
             # First sync to ensure all writes are complete
-            subprocess.run(['fsutil', 'volume', 'flush', str(path)], check=True, capture_output=True)
+            try:
+                subprocess.run(['fsutil', 'volume', 'flush', str(path)], check=True, capture_output=True)
+            except subprocess.CalledProcessError as e:
+                raise StorageError(
+                    f"Failed to flush drive {path}: {e.stderr.decode()}",
+                    path=path,
+                    error_type="mount"
+                )
             
             # Allow system time to complete flush
-            time.sleep(2)  # Increased from 1 to 2 seconds
+            time.sleep(2)
             
             # Get volume name (e.g., "F:" from "F:\" or "F:/")
             volume_name = str(path.drive).rstrip(':\\/')
-            
-            # Use Windows API directly through ctypes
-            import ctypes
-            import ctypes.wintypes
             
             # Define necessary Windows API constants
             GENERIC_READ = 0x80000000
@@ -170,8 +210,12 @@ class WindowsStorage(StorageInterface):
             )
 
             if h_device == -1:
-                logger.error(f"Failed to open device {device_path}")
-                return False
+                raise StorageError(
+                    f"Failed to open device {device_path}",
+                    path=path,
+                    device=device_path,
+                    error_type="mount"
+                )
 
             try:
                 # Send eject command
@@ -189,31 +233,41 @@ class WindowsStorage(StorageInterface):
 
                 if result == 0:
                     error = ctypes.get_last_error()
-                    logger.error(f"DeviceIoControl failed with error {error}")
-                    return False
+                    raise StorageError(
+                        f"Failed to eject drive {path} (Error: {error})",
+                        path=path,
+                        error_type="mount"
+                    )
 
                 # Give the system more time to process the eject command
-                time.sleep(3)  # Increased from 2 to 3 seconds
+                time.sleep(3)
 
                 # Multiple verification attempts with longer delays
-                max_attempts = 5  # Increased from 3 to 5 attempts
+                max_attempts = 5
                 for attempt in range(max_attempts):
                     if not self.is_drive_mounted(path):
                         logger.info(f"Successfully ejected {path} on attempt {attempt + 1}")
                         return True
                     logger.debug(f"Eject verification attempt {attempt + 1} of {max_attempts}")
-                    time.sleep(1.5)  # Increased from 1 to 1.5 seconds between checks
+                    time.sleep(1.5)
 
-                logger.error(f"Drive {path} still accessible after {max_attempts} verification attempts")
-                return False
+                raise StorageError(
+                    f"Drive {path} still accessible after {max_attempts} verification attempts",
+                    path=path,
+                    error_type="mount"
+                )
 
             finally:
-                # Always close the device handle
                 ctypes.windll.kernel32.CloseHandle(h_device)
 
+        except StorageError:
+            raise
         except Exception as e:
-            logger.error(f"Error during ejection of {path}: {e}")
-            return False
+            raise StorageError(
+                f"Error during ejection of {path}: {str(e)}",
+                path=path,
+                error_type="mount"
+            )
 
     def get_dump_drive(self) -> Optional[Path]:
         """Get the dump drive location"""
@@ -389,47 +443,80 @@ class WindowsStorage(StorageInterface):
             
             try:
                 # Set file attributes
-                win32file.SetFileAttributes(str(path), metadata['attributes'])
+                try:
+                    win32file.SetFileAttributes(str(path), metadata['attributes'])
+                except Exception as e:
+                    raise StorageError(
+                        f"Failed to set file attributes: {str(e)}",
+                        path=path,
+                        error_type="permission"
+                    )
                 
                 # Set timestamps
-                win32file.SetFileTime(
-                    handle,
-                    self._datetime_to_filetime(metadata['creation_time']),
-                    self._datetime_to_filetime(metadata['access_time']),
-                    self._datetime_to_filetime(metadata['write_time'])
-                )
+                try:
+                    win32file.SetFileTime(
+                        handle,
+                        self._datetime_to_filetime(metadata['creation_time']),
+                        self._datetime_to_filetime(metadata['access_time']),
+                        self._datetime_to_filetime(metadata['write_time'])
+                    )
+                except Exception as e:
+                    raise StorageError(
+                        f"Failed to set file timestamps: {str(e)}",
+                        path=path,
+                        error_type="permission"
+                    )
                 
                 # Set security descriptor
-                security_info = win32security.GetFileSecurity(
-                    str(path),
-                    win32security.OWNER_SECURITY_INFORMATION |
-                    win32security.GROUP_SECURITY_INFORMATION |
-                    win32security.DACL_SECURITY_INFORMATION
-                )
-                
-                security_info.SetSecurityDescriptorOwner(metadata['security_descriptor'])
-                security_info.SetSecurityDescriptorDacl(1, metadata['acl'], 0)
-                
-                win32security.SetFileSecurity(
-                    str(path),
-                    win32security.OWNER_SECURITY_INFORMATION |
-                    win32security.GROUP_SECURITY_INFORMATION |
-                    win32security.DACL_SECURITY_INFORMATION,
-                    security_info
-                )
+                try:
+                    security_info = win32security.GetFileSecurity(
+                        str(path),
+                        win32security.OWNER_SECURITY_INFORMATION |
+                        win32security.GROUP_SECURITY_INFORMATION |
+                        win32security.DACL_SECURITY_INFORMATION
+                    )
+                    
+                    security_info.SetSecurityDescriptorOwner(metadata['security_descriptor'])
+                    security_info.SetSecurityDescriptorDacl(1, metadata['acl'], 0)
+                    
+                    win32security.SetFileSecurity(
+                        str(path),
+                        win32security.OWNER_SECURITY_INFORMATION |
+                        win32security.GROUP_SECURITY_INFORMATION |
+                        win32security.DACL_SECURITY_INFORMATION,
+                        security_info
+                    )
+                except Exception as e:
+                    raise StorageError(
+                        f"Failed to set file security: {str(e)}",
+                        path=path,
+                        error_type="permission"
+                    )
                 
                 # Restore alternative data streams
-                if metadata['streams']:
-                    self._set_alternative_streams(path, metadata['streams'])
+                if metadata.get('streams'):
+                    try:
+                        self._set_alternative_streams(path, metadata['streams'])
+                    except Exception as e:
+                        raise StorageError(
+                            f"Failed to set alternative streams: {str(e)}",
+                            path=path,
+                            error_type="io"
+                        )
                 
                 return True
                 
             finally:
                 win32file.CloseHandle(handle)
                 
+        except StorageError:
+            raise
         except Exception as e:
-            logger.error(f"Error setting metadata for {path}: {e}")
-            return False
+            raise StorageError(
+                f"Error setting metadata for {path}: {str(e)}",
+                path=path,
+                error_type="permission"
+            )
         
     def _datetime_to_filetime(self, dt) -> int:
         """Convert datetime to Windows FILETIME"""

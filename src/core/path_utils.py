@@ -7,6 +7,7 @@ import stat
 import urllib.parse
 from pathlib import Path
 from typing import Union
+from .exceptions import StorageError, FileTransferError
 
 logger = logging.getLogger(__name__)
 
@@ -115,7 +116,7 @@ def _validate_macos_path(path: Path, storage) -> Path:
         Validated Path object
         
     Raises:
-        ValueError: If path is invalid
+        StorageError: If path is invalid or inaccessible
     """
     try:
         # Handle paths starting with /Users/
@@ -127,14 +128,26 @@ def _validate_macos_path(path: Path, storage) -> Path:
                     while not parent.exists():
                         parent = parent.parent
                     if not _check_unix_write_permission(parent):
-                        raise ValueError(f"No write permission for parent directory: {parent}")
+                        raise StorageError(
+                            f"No write permission for parent directory: {parent}",
+                            path=parent,
+                            error_type="permission"
+                        )
                 else:
-                    raise ValueError(f"No write permission for path: {path}")
+                    raise StorageError(
+                        f"No write permission for path: {path}",
+                        path=path,
+                        error_type="permission"
+                    )
             return path
 
         # For external drives on macOS, path should start with /Volumes/
         if not str(path).startswith('/Volumes/'):
-            raise ValueError("External drive paths must start with /Volumes/")
+            raise StorageError(
+                "External drive paths must start with /Volumes/",
+                path=path,
+                error_type="mount"
+            )
             
         # Get volume root (e.g., /Volumes/DriveName)
         volume_path = Path('/Volumes')
@@ -143,11 +156,19 @@ def _validate_macos_path(path: Path, storage) -> Path:
             
         # Check if volume exists
         if not volume_path.exists():
-            raise ValueError(f"Volume not found: {volume_path}")
+            raise StorageError(
+                f"Volume not found: {volume_path}",
+                path=volume_path,
+                error_type="mount"
+            )
             
         # Check volume permissions
         if not _check_unix_write_permission(volume_path):
-            raise ValueError(f"No write permission for volume: {volume_path}")
+            raise StorageError(
+                f"No write permission for volume: {volume_path}",
+                path=volume_path,
+                error_type="permission"
+            )
             
         # Check if we can write to the target directory or its parent
         if not _check_unix_write_permission(path):
@@ -156,16 +177,24 @@ def _validate_macos_path(path: Path, storage) -> Path:
                 while not parent.exists():
                     parent = parent.parent
                 if not _check_unix_write_permission(parent):
-                    raise ValueError(f"No write permission for parent directory: {parent}")
+                    raise StorageError(
+                        f"No write permission for parent directory: {parent}",
+                        path=parent,
+                        error_type="permission"
+                    )
             else:
-                raise ValueError(f"No write permission for path: {path}")
+                raise StorageError(
+                    f"No write permission for path: {path}",
+                    path=path,
+                    error_type="permission"
+                )
             
         return path
         
-    except ValueError as e:
-        raise ValueError(str(e))
+    except StorageError:
+        raise
     except Exception as e:
-        raise ValueError(f"Invalid macOS path: {str(e)}")
+        raise StorageError(f"Invalid macOS path: {str(e)}", path=path)
 
 def _validate_linux_path(path: Path, storage) -> Path:
     """
@@ -179,12 +208,12 @@ def _validate_linux_path(path: Path, storage) -> Path:
         Validated Path object
         
     Raises:
-        ValueError: If path is invalid
+        StorageError: If path is invalid or inaccessible
     """
     try:
         # Ensure path is absolute
         if not path.is_absolute():
-            raise ValueError("Path must be absolute")
+            raise StorageError("Path must be absolute", path=path)
 
         # Handle /media paths specifically
         if str(path).startswith('/media/'):
@@ -197,12 +226,20 @@ def _validate_linux_path(path: Path, storage) -> Path:
                 # Check if the user directory exists
                 user_path = Path('/media') / user_name
                 if not user_path.exists():
-                    raise ValueError(f"Media user path not found: {user_path}")
+                    raise StorageError(
+                        f"Media user path not found: {user_path}",
+                        path=user_path,
+                        error_type="mount"
+                    )
                 
                 # For volume paths, be more lenient as they might not exist yet
                 volume_path = user_path / volume_name
                 if volume_path.exists() and not os.access(volume_path, os.W_OK):
-                    raise ValueError(f"No write permission for volume: {volume_path}")
+                    raise StorageError(
+                        f"No write permission for volume: {volume_path}",
+                        path=volume_path,
+                        error_type="permission"
+                    )
 
         # Check mount point permissions
         mount_point = path
@@ -212,11 +249,19 @@ def _validate_linux_path(path: Path, storage) -> Path:
             mount_point = mount_point.parent
 
         if not os.access(mount_point, os.W_OK):
-            raise ValueError(f"No write permission for mount point: {mount_point}")
+            raise StorageError(
+                f"No write permission for mount point: {mount_point}",
+                path=mount_point,
+                error_type="permission"
+            )
 
         # If path exists, check direct permissions
         if path.exists() and not os.access(path, os.W_OK):
-            raise ValueError(f"No write permission for path: {path}")
+            raise StorageError(
+                f"No write permission for path: {path}",
+                path=path,
+                error_type="permission"
+            )
 
         # If path doesn't exist, check parent directory
         if not path.exists():
@@ -224,21 +269,41 @@ def _validate_linux_path(path: Path, storage) -> Path:
             while not parent.exists():
                 parent = parent.parent
             if not os.access(parent, os.W_OK):
-                raise ValueError(f"No write permission for parent directory: {parent}")
+                raise StorageError(
+                    f"No write permission for parent directory: {parent}",
+                    path=parent,
+                    error_type="permission"
+                )
 
         return path
 
-    except ValueError as e:
-        raise ValueError(str(e))
+    except StorageError:
+        raise
     except Exception as e:
-        raise ValueError(f"Invalid Linux path: {str(e)}")
+        raise StorageError(f"Invalid Linux path: {str(e)}", path=path)
 
 def _validate_windows_path(path: Path, storage) -> Path:
-    """Validate Windows-specific path requirements"""
+    """
+    Validate Windows-specific path requirements
+    
+    Args:
+        path: Path to validate
+        storage: StorageInterface instance
+        
+    Returns:
+        Validated Path object
+        
+    Raises:
+        StorageError: If path is invalid or inaccessible
+    """
     try:
         # Check for drive letter
         if not path.drive:
-            raise ValueError("Windows paths must include a drive letter")
+            raise StorageError(
+                "Windows paths must include a drive letter",
+                path=path,
+                error_type="mount"
+            )
         
         # Split path into drive and remainder for separate validation
         drive_part = path.drive  # e.g., "C:"
@@ -248,7 +313,10 @@ def _validate_windows_path(path: Path, storage) -> Path:
         invalid_chars = '<>"|?*'
         found_invalid = next((char for char in invalid_chars if char in path_part), None)
         if found_invalid:
-            raise ValueError(f"Invalid character '{found_invalid}' in path")
+            raise StorageError(
+                f"Invalid character '{found_invalid}' in path",
+                path=path
+            )
         
         # Check drive accessibility and type
         try:
@@ -266,30 +334,32 @@ def _validate_windows_path(path: Path, storage) -> Path:
                     win32file.DRIVE_RAMDISK: "RAM Disk"
                 }
                 type_name = drive_types.get(drive_type, f"Unknown Type ({drive_type})")
-                raise ValueError(f"Drive {drive_path} is not a valid storage drive (Type: {type_name})")
+                raise StorageError(
+                    f"Drive {drive_path} is not a valid storage drive (Type: {type_name})",
+                    path=drive_path,
+                    error_type="mount"
+                )
         except ImportError:
             logger.warning("win32file not available - skipping drive type check")
             
         # Check write permissions
         if not _check_windows_write_permission(path.drive + '\\'):
-            raise ValueError(f"No write permission for drive: {path.drive}")
+            raise StorageError(
+                f"No write permission for drive: {path.drive}",
+                path=Path(path.drive),
+                error_type="permission"
+            )
             
         return path
         
-    except ValueError as e:
-        raise ValueError(str(e))
+    except StorageError:
+        raise
     except Exception as e:
-        raise ValueError(f"Invalid Windows path: {str(e)}")
+        raise StorageError(f"Invalid Windows path: {str(e)}", path=path)
 
 def sanitize_path(path_str: str) -> Path:
     """
     Sanitize a path string with improved handling of special characters.
-    
-    This function handles:
-    - URL-encoded characters (like %20 or \x20)
-    - Spaces in paths
-    - Special characters
-    - Platform-specific path separators
     
     Args:
         path_str: Raw path string that might contain special characters
@@ -298,7 +368,7 @@ def sanitize_path(path_str: str) -> Path:
         Path object representing a sanitized path
         
     Raises:
-        ValueError: If the path is invalid or cannot be sanitized
+        FileTransferError: If the path is invalid or cannot be sanitized
     """
     try:
         # First, handle any URL-encoded characters
@@ -355,7 +425,10 @@ def sanitize_path(path_str: str) -> Path:
 
     except Exception as e:
         logger.error(f"Error sanitizing path '{path_str}': {e}")
-        raise ValueError(f"Invalid path format: {path_str}")
+        raise FileTransferError(
+            f"Invalid path format: {path_str}",
+            error_type="io"
+        )
 
 def validate_destination_path(path: Path, storage) -> Path:
     """
@@ -369,7 +442,7 @@ def validate_destination_path(path: Path, storage) -> Path:
         Validated Path object
         
     Raises:
-        ValueError: If the path is invalid
+        StorageError: If the path is invalid or inaccessible
     """
     try:
         system = platform.system().lower()
@@ -382,11 +455,16 @@ def validate_destination_path(path: Path, storage) -> Path:
         elif system == 'linux':
             return _validate_linux_path(path, storage)
         else:
-            raise ValueError(f"Unsupported platform: {system}")
+            raise StorageError(
+                f"Unsupported platform: {system}",
+                error_type="mount"
+            )
             
+    except StorageError:
+        raise
     except Exception as e:
         logger.error(f"Error validating destination path '{path}': {e}")
-        raise ValueError(str(e))
+        raise StorageError(str(e), path=path)
 
 def get_safe_path(unsafe_path: Union[str, Path]) -> Path:
     """
@@ -400,7 +478,7 @@ def get_safe_path(unsafe_path: Union[str, Path]) -> Path:
         Safe Path object
         
     Raises:
-        ValueError: If the path cannot be safely converted
+        FileTransferError: If the path cannot be safely converted
     """
     try:
         # First sanitize the path
@@ -419,4 +497,7 @@ def get_safe_path(unsafe_path: Union[str, Path]) -> Path:
 
     except Exception as e:
         logger.error(f"Error converting path: {e}")
-        raise ValueError(f"Cannot safely convert path: {unsafe_path}")
+        raise FileTransferError(
+            f"Cannot safely convert path: {unsafe_path}",
+            error_type="io"
+        )
