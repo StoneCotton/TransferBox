@@ -11,14 +11,20 @@ class TransferBoxError(Exception):
 class ConfigError(TransferBoxError):
     """Configuration related errors"""
     
-    def __init__(self, message, config_key=None, invalid_value=None, expected_type=None, *args):
+    def __init__(self, message, config_key=None, invalid_value=None, expected_type=None, recovery_steps=None, *args):
         self.config_key = config_key
         self.invalid_value = invalid_value
         self.expected_type = expected_type
-        recovery_steps = ["Check configuration file format", "Verify configuration values"]
-        if config_key:
-            recovery_steps.append(f"Validate the '{config_key}' setting")
-        super().__init__(message, recoverable=True, recovery_steps=recovery_steps, *args)
+        
+        # If recovery_steps is provided, use it; otherwise, generate default steps
+        if recovery_steps:
+            steps = recovery_steps
+        else:
+            steps = ["Check configuration file format", "Verify configuration values"]
+            if config_key:
+                steps.append(f"Validate the '{config_key}' setting")
+                
+        super().__init__(message, recoverable=True, recovery_steps=steps, *args)
 
 class StorageError(TransferBoxError):
     """Storage device related errors"""
