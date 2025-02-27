@@ -3,6 +3,7 @@
 import logging
 from src.core.interfaces.platform import PlatformInitializer
 from src.core.rich_display import RichDisplay
+from src.core.exceptions import HardwareError, DisplayError, StorageError
 from .storage_win import WindowsStorage
 
 logger = logging.getLogger(__name__)
@@ -12,22 +13,46 @@ class WindowsInitializer(PlatformInitializer):
     
     def initialize_hardware(self) -> None:
         """No hardware initialization needed for Windows"""
-        logger.debug("Windows hardware initialization (no-op)")
-        pass
+        try:
+            logger.debug("Windows hardware initialization (no-op)")
+        except Exception as e:
+            raise HardwareError(
+                f"Unexpected error during Windows hardware initialization: {str(e)}",
+                component="system",
+                error_type="initialization"
+            )
     
     def initialize_display(self) -> None:
         """Initialize Rich-based display"""
-        logger.info("Initializing Rich display")
-        self.display = RichDisplay()
-        self.display.clear()
+        try:
+            logger.info("Initializing Rich display")
+            self.display = RichDisplay()
+            self.display.clear()
+        except Exception as e:
+            raise DisplayError(
+                f"Failed to initialize Rich display: {str(e)}",
+                display_type="rich",
+                error_type="initialization"
+            )
     
     def initialize_storage(self) -> None:
         """Initialize storage detection"""
-        logger.info("Initializing Windows storage")
-        self.storage = WindowsStorage()
+        try:
+            logger.info("Initializing Windows storage")
+            self.storage = WindowsStorage()
+        except Exception as e:
+            raise StorageError(
+                f"Failed to initialize Windows storage: {str(e)}",
+                error_type="initialization"
+            )
     
     def cleanup(self) -> None:
         """Perform any necessary cleanup"""
-        logger.info("Performing Windows cleanup")
-        if self.display:
-            self.display.clear()
+        try:
+            logger.info("Performing Windows cleanup")
+            if hasattr(self, 'display') and self.display:
+                self.display.clear()
+        except Exception as e:
+            logger.error(f"Error during cleanup: {str(e)}")
+            # We don't raise here since cleanup should not throw errors
+            # but we log the issue for debugging purposes
