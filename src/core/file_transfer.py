@@ -518,9 +518,131 @@ class FileTransfer:
                     
             return False, None
 
+    def _check_utility_mode(self) -> bool:
+        """
+        Check if system is in utility mode.
+        
+        Returns:
+            bool: True if validation passes (not in utility mode), False otherwise
+        """
+        if self.state_manager.is_utility():
+            logger.info("Transfer blocked - system is in utility mode")
+            self.display.show_error("In utility mode")
+            return False
+        return True
+
+    def _validate_destination_path_type(self, destination_path: Path) -> Optional[Path]:
+        """
+        Validate and convert destination path to Path object.
+        
+        Args:
+            destination_path: Path to validate
+            
+        Returns:
+            Optional[Path]: Valid Path object or None if validation fails
+        """
+        if destination_path is None:
+            logger.error("No destination path provided")
+            self.display.show_error("No destination")
+            return None
+            
+        try:
+            return Path(destination_path)
+        except TypeError as e:
+            logger.error(f"Invalid destination path type: {type(destination_path).__name__}, {e}")
+            self.display.show_error("Invalid path type")
+            return None
+
+    def _validate_existing_destination(self, dest_path: Path) -> bool:
+        """
+        Validate an existing destination directory.
+        
+        Args:
+            dest_path: Path to validate
+            
+        Returns:
+            bool: True if validation passes, False otherwise
+        """
+        # Check if it's a directory
+        if not dest_path.is_dir():
+            logger.error(f"Destination exists but is not a directory: {dest_path}")
+            self.display.show_error("Not a directory")
+            return False
+            
+        # Check write permissions
+        if not os.access(dest_path, os.W_OK):
+            logger.error(f"No write permission for destination: {dest_path}")
+            self.display.show_error("Write permission denied")
+            return False
+            
+        # Check for available space
+        try:
+            min_space = 1 * 1024 * 1024 * 1024  # 1GB in bytes
+            if not self.storage.has_enough_space(dest_path, min_space):
+                logger.error(f"Not enough space in destination: {dest_path}")
+                self.display.show_error("Not enough space")
+                return False
+        except Exception as space_err:
+            # Log but continue - we'll check space again before actual transfer
+            logger.warning(f"Could not verify free space: {space_err}")
+            
+        logger.info(f"Using existing directory: {dest_path}")
+        return True
+
+    def _validate_parent_directory(self, dest_path: Path) -> bool:
+        """
+        Validate parent directory for a non-existent destination.
+        
+        Args:
+            dest_path: Path whose parent should be validated
+            
+        Returns:
+            bool: True if parent directory is valid, False otherwise
+        """
+        parent = dest_path.parent
+        
+        if not parent.exists():
+            logger.error(f"Parent directory doesn't exist: {parent}")
+            self.display.show_error("Parent dir missing")
+            return False
+            
+        if not os.access(parent, os.W_OK):
+            logger.error(f"No write permission for parent directory: {parent}")
+            self.display.show_error("Parent write denied")
+            return False
+            
+        return True
+
+    def _create_destination_directory(self, dest_path: Path) -> bool:
+        """
+        Create the destination directory.
+        
+        Args:
+            dest_path: Directory to create
+            
+        Returns:
+            bool: True if directory was created successfully, False otherwise
+        """
+        try:
+            dest_path.mkdir(parents=True, exist_ok=True)
+            logger.info(f"Created directory: {dest_path}")
+            return True
+        except PermissionError as e:
+            logger.error(f"Permission denied creating directory {dest_path}: {e}")
+            self.display.show_error("Permission denied")
+            return False
+        except OSError as e:
+            logger.error(f"OS error creating directory {dest_path}: {e}")
+            self.display.show_error("Create dir failed")
+            return False
+        except Exception as e:
+            logger.error(f"Failed to create directory {dest_path}: {e}")
+            self.display.show_error("Create dir failed")
+            return False
+
     def _validate_transfer_preconditions(self, destination_path: Path) -> bool:
         """
-        Validate preconditions before starting transfer with improved path handling.
+        Validate preconditions before starting transfer.
         
         Args:
             destination_path: Target path for file transfer
@@ -529,85 +651,24 @@ class FileTransfer:
             bool: True if destination is valid and ready for transfer, False otherwise
         """
         try:
-            # Check if destination is provided
-            if destination_path is None:
-                logger.error("No destination path provided")
-                self.display.show_error("No destination")
+            # Check utility mode first
+            if not self._check_utility_mode():
                 return False
                 
-            # Check if in utility mode
-            if self.state_manager.is_utility():
-                logger.info("Transfer blocked - system is in utility mode")
-                self.display.show_error("In utility mode")
+            # Validate and convert path
+            dest_path = self._validate_destination_path_type(destination_path)
+            if dest_path is None:
                 return False
                 
-            # Convert to Path object for consistent handling
-            try:
-                dest_path = Path(destination_path)
-            except TypeError as e:
-                logger.error(f"Invalid destination path type: {type(destination_path).__name__}, {e}")
-                self.display.show_error("Invalid path type")
-                return False
-                
-            # Verify the destination exists and is accessible
+            # Handle existing vs non-existing destination
             if dest_path.exists():
-                # Destination exists, check if it's a directory
-                if not dest_path.is_dir():
-                    logger.error(f"Destination exists but is not a directory: {dest_path}")
-                    self.display.show_error("Not a directory")
-                    return False
-                    
-                # Check write permissions
-                if not os.access(dest_path, os.W_OK):
-                    logger.error(f"No write permission for destination: {dest_path}")
-                    self.display.show_error("Write permission denied")
-                    return False
-                    
-                # Check for available space
-                try:
-                    # We don't know exact size yet, but check for minimum free space (1GB)
-                    min_space = 1 * 1024 * 1024 * 1024  # 1GB in bytes
-                    if not self.storage.has_enough_space(dest_path, min_space):
-                        logger.error(f"Not enough space in destination: {dest_path}")
-                        self.display.show_error("Not enough space")
-                        return False
-                except Exception as space_err:
-                    # Log but continue - we'll check space again before actual transfer
-                    logger.warning(f"Could not verify free space: {space_err}")
-                    
-                logger.info(f"Using existing directory: {dest_path}")
-                return True
+                return self._validate_existing_destination(dest_path)
                 
-            # Path doesn't exist, check parent directory
-            parent = dest_path.parent
-            if not parent.exists():
-                logger.error(f"Parent directory doesn't exist: {parent}")
-                self.display.show_error("Parent dir missing")
+            # For non-existing destination, validate parent and create
+            if not self._validate_parent_directory(dest_path):
                 return False
                 
-            if not os.access(parent, os.W_OK):
-                logger.error(f"No write permission for parent directory: {parent}")
-                self.display.show_error("Parent write denied")
-                return False
-                
-            # Try to create the directory
-            try:
-                dest_path.mkdir(parents=True, exist_ok=True)
-                logger.info(f"Created directory: {dest_path}")
-                return True
-            except PermissionError as e:
-                logger.error(f"Permission denied creating directory {dest_path}: {e}")
-                self.display.show_error("Permission denied")
-                return False
-            except OSError as e:
-                # Handle OS-level errors (disk errors, etc.)
-                logger.error(f"OS error creating directory {dest_path}: {e}")
-                self.display.show_error("Create dir failed")
-                return False
-            except Exception as e:
-                logger.error(f"Failed to create directory {dest_path}: {e}")
-                self.display.show_error("Create dir failed")
-                return False
+            return self._create_destination_directory(dest_path)
                 
         except FileNotFoundError as e:
             logger.error(f"Path component not found: {e}")
@@ -622,7 +683,6 @@ class FileTransfer:
             self.display.show_error("System error")
             return False
         except Exception as e:
-            # Last resort catch-all with detailed logging
             logger.error(f"Unexpected error validating path: {e}", exc_info=True)
             self.display.show_error("Invalid path")
             return False
@@ -943,14 +1003,16 @@ class FileTransfer:
             self._log_failure(log_file, src_file, None, f"Unknown error: {e}")
             return False, None, f"{src_file} (error)"
 
-    def _process_transfer_results(self, transfer_start_time: datetime, log_file, 
-                                total_files: int, failures: List[str], source_path: Path, 
-                                total_size: int) -> Tuple[bool, bool]:
-        """Process transfer results and handle unmounting."""
-        transfer_success = len(failures) == 0
-        unmount_success = False
+    def _log_transfer_completion(self, transfer_start_time: datetime, log_file, total_files: int, failures: List[str]) -> None:
+        """
+        Log transfer completion details to the log file.
         
-        # Update log with completion info
+        Args:
+            transfer_start_time: When the transfer started
+            log_file: Log file to write to
+            total_files: Total number of files processed
+            failures: List of failed transfers
+        """
         try:
             with open(log_file, 'a', encoding='utf-8') as log:
                 # Log completion time
@@ -969,34 +1031,82 @@ class FileTransfer:
                         log.write(f"  ... and {len(failures) - 10} more\n")
         except Exception as e:
             logger.error(f"Error updating log file with completion info: {e}")
+
+    def _update_final_progress(self, total_size: int, success: bool) -> None:
+        """
+        Update the final progress display.
+        
+        Args:
+            total_size: Total size of transferred files
+            success: Whether the transfer was successful
+        """
+        if self._current_progress:
+            self._current_progress.status = TransferStatus.SUCCESS if success else TransferStatus.ERROR
+            self._current_progress.total_transferred = total_size
+            self.display.show_progress(self._current_progress)
+
+    def _handle_drive_unmount(self, source_path: Path) -> bool:
+        """
+        Attempt to unmount the source drive.
+        
+        Args:
+            source_path: Path to the source drive
+            
+        Returns:
+            bool: True if unmount successful or not needed, False if unmount failed
+        """
+        if not self.storage.is_drive_mounted(source_path):
+            return True
+            
+        try:
+            if self.storage.unmount_drive(source_path):
+                self.display.show_status("Safe to remove card")
+                return True
+            else:
+                logger.warning(f"Failed to unmount drive: {source_path}")
+                self.display.show_error("Unmount failed")
+                return False
+        except Exception as e:
+            logger.error(f"Error unmounting drive {source_path}: {e}")
+            self.display.show_error("Unmount error")
+            return False
+
+    def _process_transfer_results(self, transfer_start_time: datetime, log_file, 
+                                total_files: int, failures: List[str], source_path: Path, 
+                                total_size: int) -> Tuple[bool, bool]:
+        """
+        Process transfer results and handle unmounting.
+        
+        Args:
+            transfer_start_time: When the transfer started
+            log_file: Log file to write to
+            total_files: Total number of files processed
+            failures: List of failed transfers
+            source_path: Path to the source drive
+            total_size: Total size of transferred files
+            
+        Returns:
+            Tuple of (success_flag, unmount_success): 
+            - success_flag: True if transfer succeeded
+            - unmount_success: True if unmount succeeded or wasn't needed
+        """
+        transfer_success = len(failures) == 0
+        
+        # Log completion details
+        self._log_transfer_completion(transfer_start_time, log_file, total_files, failures)
         
         if transfer_success:
             logger.info("Transfer completed successfully")
             self._play_sound(success=True)
             
             # Update final progress
-            if self._current_progress:
-                self._current_progress.status = TransferStatus.SUCCESS
-                self._current_progress.total_transferred = total_size
-                self.display.show_progress(self._current_progress)
+            self._update_final_progress(total_size, True)
             
             # Handle unmounting
-            if self.storage.is_drive_mounted(source_path):
-                try:
-                    if self.storage.unmount_drive(source_path):
-                        unmount_success = True
-                        self.display.show_status("Safe to remove card")
-                    else:
-                        logger.warning(f"Failed to unmount drive: {source_path}")
-                        self.display.show_error("Unmount failed")
-                except Exception as e:
-                    logger.error(f"Error unmounting drive {source_path}: {e}")
-                    self.display.show_error("Unmount error")
-            else:
-                unmount_success = True
-                self.display.show_status("Safe to remove card")
+            unmount_success = self._handle_drive_unmount(source_path)
         else:
             self._play_sound(success=False)
+            self._update_final_progress(total_size, False)
             
             # Create more informative error message
             if len(failures) == total_files:
@@ -1008,6 +1118,8 @@ class FileTransfer:
             # Log first few failures for debugging
             for i, failure in enumerate(failures[:5]):
                 logger.error(f"  Failed file {i+1}: {failure}")
+            
+            unmount_success = False
         
         return transfer_success, unmount_success
 
