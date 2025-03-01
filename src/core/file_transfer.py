@@ -385,138 +385,243 @@ class FileTransfer:
         dst_file_created = False
         
         try:
-            # Validate source exists
-            if not src_path.exists():
-                logger.error(f"Source file does not exist: {src_path}")
+            # Validate source and prepare for copy
+            if not self._validate_source_file(src_path):
                 return False, None
                 
             # Get source metadata before copy
-            try:
-                source_metadata = self.storage.get_file_metadata(src_path)
-            except Exception as e:
-                logger.warning(f"Failed to get source metadata for {src_path}: {e}")
-                source_metadata = None
+            source_metadata = self._get_source_metadata(src_path)
             
-            try:
-                file_size = src_path.stat().st_size
-            except (OSError, FileNotFoundError) as e:
-                logger.error(f"Failed to get file size for {src_path}: {e}")
+            # Get file size
+            file_size = self._get_file_size(src_path)
+            if file_size is None:
                 return False, None
                 
+            # Initialize hash calculator
             xxh64_hash = self.checksum_calculator.create_hash()
             
-            # First phase: Copy with progress
-            try:
-                with open(src_path, 'rb') as src:
-                    try:
-                        # Ensure parent directory exists
-                        dst_path.parent.mkdir(parents=True, exist_ok=True)
-                        
-                        with open(dst_path, 'wb') as dst:
-                            dst_file_created = True
-                            bytes_transferred = 0
-                            
-                            while True:
-                                try:
-                                    chunk = src.read(CHUNK_SIZE)
-                                    if not chunk:
-                                        break
-                                        
-                                    dst.write(chunk)
-                                    xxh64_hash.update(chunk)
-                                    bytes_transferred += len(chunk)
-                                    
-                                    # Update progress with both file and total progress
-                                    if self._current_progress:
-                                        self._current_progress.bytes_transferred = bytes_transferred
-                                        self._current_progress.current_file_progress = bytes_transferred / file_size
-                                        self._current_progress.total_transferred = total_transferred + bytes_transferred
-                                        self._current_progress.status = TransferStatus.COPYING
-                                        self.display.show_progress(self._current_progress)
-                                        
-                                except MemoryError as e:
-                                    logger.error(f"Memory error processing chunk of {src_path}: {e}")
-                                    self._play_sound(success=False)
-                                    return False, None
-                                except IOError as e:
-                                    logger.error(f"I/O error during file copy of {src_path}: {e}")
-                                    self._play_sound(success=False)
-                                    return False, None
-                                    
-                    except PermissionError as e:
-                        logger.error(f"Permission denied creating destination file {dst_path}: {e}")
-                        self._play_sound(success=False)
-                        return False, None
-                    except IOError as e:
-                        logger.error(f"I/O error opening destination file {dst_path}: {e}")
-                        self._play_sound(success=False)
-                        return False, None
-                        
-            except PermissionError as e:
-                logger.error(f"Permission denied reading source file {src_path}: {e}")
-                self._play_sound(success=False)
-                return False, None
-            except FileNotFoundError as e:
-                logger.error(f"Source file disappeared during copy {src_path}: {e}")
-                self._play_sound(success=False)
-                return False, None
-            except IOError as e:
-                logger.error(f"I/O error opening source file {src_path}: {e}")
-                self._play_sound(success=False)
-                return False, None
-                
-            # Second phase: Apply metadata (unchanged)
-            if source_metadata:
-                try:
-                    if not self.storage.set_file_metadata(dst_path, source_metadata):
-                        logger.warning(f"Failed to preserve metadata for {dst_path}")
-                except Exception as e:
-                    # Log but continue - metadata failure isn't critical
-                    logger.warning(f"Error setting metadata for {dst_path}: {e}")
+            # Perform the actual file copy with progress updates
+            copy_result = self._perform_file_copy(
+                src_path, dst_path, file_size, xxh64_hash,
+                file_number, total_files, total_transferred
+            )
             
-            # Third phase: Verify checksum
-            try:
-                if self._current_progress:
-                    self._current_progress.status = TransferStatus.CHECKSUMMING
-                    
-                checksum = xxh64_hash.hexdigest()
-                verify_success = self.checksum_calculator.verify_checksum(
-                    dst_path,
-                    checksum,
-                    current_progress=self._current_progress
-                )
-                
-                if not verify_success:
-                    logger.error(f"Checksum verification failed for {dst_path}")
-                    if dst_path.exists():
-                        try:
-                            # Attempt to delete the corrupted file
-                            dst_path.unlink()
-                            logger.info(f"Removed corrupted file {dst_path}")
-                        except Exception as del_err:
-                            logger.warning(f"Failed to remove corrupted file {dst_path}: {del_err}")
-                    return False, None
-                    
-                return True, checksum
-                
-            except Exception as e:
-                logger.error(f"Error during checksum verification of {dst_path}: {e}")
-                self._play_sound(success=False)
+            if not copy_result:
                 return False, None
+                
+            dst_file_created = True
+                
+            # Apply metadata if available
+            self._apply_metadata(dst_path, source_metadata)
+            
+            # Verify checksum
+            checksum = xxh64_hash.hexdigest()
+            if not self._verify_file_checksum(dst_path, checksum):
+                return False, None
+                    
+            return True, checksum
                 
         except Exception as e:
             self._play_sound(success=False)
             logger.error(f"Unexpected error copying file {src_path} to {dst_path}: {e}", exc_info=True)
             
             # Cleanup: attempt to remove partial/corrupt destination file if we created it
-            if dst_file_created and dst_path.exists():
-                try:
-                    dst_path.unlink()
-                    logger.info(f"Removed incomplete file {dst_path} after error")
-                except Exception as del_err:
-                    logger.warning(f"Failed to remove incomplete file {dst_path}: {del_err}")
+            if dst_file_created:
+                self._cleanup_destination_file(dst_path)
                     
             return False, None
+            
+    def _validate_source_file(self, src_path: Path) -> bool:
+        """
+        Validate that source file exists.
+        
+        Args:
+            src_path: Source file path
+            
+        Returns:
+            bool: True if source file exists, False otherwise
+        """
+        if not src_path.exists():
+            logger.error(f"Source file does not exist: {src_path}")
+            return False
+        return True
+        
+    def _get_source_metadata(self, src_path: Path) -> Optional[Any]:
+        """
+        Get metadata from source file.
+        
+        Args:
+            src_path: Source file path
+            
+        Returns:
+            Optional[Any]: File metadata if available, None otherwise
+        """
+        try:
+            return self.storage.get_file_metadata(src_path)
+        except Exception as e:
+            logger.warning(f"Failed to get source metadata for {src_path}: {e}")
+            return None
+            
+    def _get_file_size(self, src_path: Path) -> Optional[int]:
+        """
+        Get size of source file.
+        
+        Args:
+            src_path: Source file path
+            
+        Returns:
+            Optional[int]: File size in bytes if available, None on error
+        """
+        try:
+            return src_path.stat().st_size
+        except (OSError, FileNotFoundError) as e:
+            logger.error(f"Failed to get file size for {src_path}: {e}")
+            return None
+            
+    def _perform_file_copy(self, src_path: Path, dst_path: Path, 
+                          file_size: int, hash_obj,
+                          file_number: int, total_files: int, 
+                          total_transferred: int) -> bool:
+        """
+        Copy file with progress updates and hash calculation.
+        
+        Args:
+            src_path: Source file path
+            dst_path: Destination file path
+            file_size: Size of source file in bytes
+            hash_obj: Hash object to update during copy
+            file_number: Current file number in batch
+            total_files: Total number of files to transfer
+            total_transferred: Total bytes transferred so far
+            
+        Returns:
+            bool: True if copy succeeded, False otherwise
+        """
+        try:
+            with open(src_path, 'rb') as src:
+                try:
+                    # Ensure parent directory exists
+                    dst_path.parent.mkdir(parents=True, exist_ok=True)
+                    
+                    with open(dst_path, 'wb') as dst:
+                        bytes_transferred = 0
+                        
+                        while True:
+                            try:
+                                chunk = src.read(CHUNK_SIZE)
+                                if not chunk:
+                                    break
+                                    
+                                dst.write(chunk)
+                                hash_obj.update(chunk)
+                                bytes_transferred += len(chunk)
+                                
+                                # Update progress with both file and total progress
+                                self._update_copy_progress(
+                                    bytes_transferred, file_size,
+                                    total_transferred, file_number,
+                                    total_files
+                                )
+                                    
+                            except (MemoryError, IOError) as e:
+                                logger.error(f"Error processing chunk of {src_path}: {e}")
+                                self._play_sound(success=False)
+                                return False
+                                
+                except (PermissionError, IOError) as e:
+                    logger.error(f"Error with destination file {dst_path}: {e}")
+                    self._play_sound(success=False)
+                    return False
+                    
+        except (PermissionError, FileNotFoundError, IOError) as e:
+            logger.error(f"Error with source file {src_path}: {e}")
+            self._play_sound(success=False)
+            return False
+            
+        return True
+        
+    def _update_copy_progress(self, bytes_transferred: int, file_size: int,
+                             total_transferred: int, file_number: int,
+                             total_files: int) -> None:
+        """
+        Update progress information during file copy.
+        
+        Args:
+            bytes_transferred: Bytes transferred for current file
+            file_size: Total size of current file
+            total_transferred: Total bytes transferred in batch so far
+            file_number: Current file number in batch
+            total_files: Total number of files in batch
+        """
+        if self._current_progress:
+            self._current_progress.bytes_transferred = bytes_transferred
+            self._current_progress.current_file_progress = bytes_transferred / file_size
+            self._current_progress.total_transferred = total_transferred + bytes_transferred
+            self._current_progress.status = TransferStatus.COPYING
+            self.display.show_progress(self._current_progress)
+            
+    def _apply_metadata(self, dst_path: Path, metadata) -> None:
+        """
+        Apply metadata to destination file.
+        
+        Args:
+            dst_path: Destination file path
+            metadata: Metadata to apply
+        """
+        if metadata:
+            try:
+                if not self.storage.set_file_metadata(dst_path, metadata):
+                    logger.warning(f"Failed to preserve metadata for {dst_path}")
+            except Exception as e:
+                # Log but continue - metadata failure isn't critical
+                logger.warning(f"Error setting metadata for {dst_path}: {e}")
+                
+    def _verify_file_checksum(self, dst_path: Path, checksum: str) -> bool:
+        """
+        Verify file checksum.
+        
+        Args:
+            dst_path: Destination file path
+            checksum: Expected checksum
+            
+        Returns:
+            bool: True if checksum verification succeeded, False otherwise
+        """
+        try:
+            if self._current_progress:
+                self._current_progress.status = TransferStatus.CHECKSUMMING
+                
+            verify_success = self.checksum_calculator.verify_checksum(
+                dst_path,
+                checksum,
+                current_progress=self._current_progress
+            )
+            
+            if not verify_success:
+                logger.error(f"Checksum verification failed for {dst_path}")
+                self._cleanup_destination_file(dst_path)
+                return False
+                
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error during checksum verification of {dst_path}: {e}")
+            self._play_sound(success=False)
+            return False
+            
+    def _cleanup_destination_file(self, dst_path: Path) -> None:
+        """
+        Clean up destination file after failed transfer.
+        
+        Args:
+            dst_path: Destination file path to clean up
+        """
+        if dst_path.exists():
+            try:
+                dst_path.unlink()
+                logger.info(f"Removed corrupted/incomplete file {dst_path}")
+            except Exception as del_err:
+                logger.warning(f"Failed to remove file {dst_path}: {del_err}")
 
     def _check_utility_mode(self) -> bool:
         """
