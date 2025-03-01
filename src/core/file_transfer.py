@@ -21,6 +21,8 @@ from .directory_handler import DirectoryHandler
 logger = logging.getLogger(__name__)
 
 CHUNK_SIZE = 32 * 1024 * 1024  # 32MB chunks for efficient large file handling
+BUFFER_SIZE = 8 * 1024 * 1024  # 8MB buffer for improved I/O performance
+TEMP_FILE_EXTENSION = ".TBPART"  # Temporary file extension during transfer
 
 class FileTransferError(Exception):
     """Custom exception for file transfer errors"""
@@ -484,6 +486,7 @@ class FileTransfer:
                           total_transferred: int) -> bool:
         """
         Copy file with progress updates and hash calculation.
+        Uses buffered I/O and temporary files for safer transfers.
         
         Args:
             src_path: Source file path
@@ -498,12 +501,15 @@ class FileTransfer:
             bool: True if copy succeeded, False otherwise
         """
         try:
-            with open(src_path, 'rb') as src:
+            # Create a temporary destination path with .TBPART extension
+            temp_dst_path = dst_path.with_suffix(dst_path.suffix + TEMP_FILE_EXTENSION)
+            
+            # Ensure parent directory exists
+            temp_dst_path.parent.mkdir(parents=True, exist_ok=True)
+            
+            with open(src_path, 'rb', buffering=BUFFER_SIZE) as src:
                 try:
-                    # Ensure parent directory exists
-                    dst_path.parent.mkdir(parents=True, exist_ok=True)
-                    
-                    with open(dst_path, 'wb') as dst:
+                    with open(temp_dst_path, 'wb', buffering=BUFFER_SIZE) as dst:
                         bytes_transferred = 0
                         
                         while True:
@@ -526,12 +532,31 @@ class FileTransfer:
                             except (MemoryError, IOError) as e:
                                 logger.error(f"Error processing chunk of {src_path}: {e}")
                                 self._play_sound(success=False)
+                                # Clean up the temporary file
+                                self._cleanup_destination_file(temp_dst_path)
                                 return False
                                 
                 except (PermissionError, IOError) as e:
-                    logger.error(f"Error with destination file {dst_path}: {e}")
+                    logger.error(f"Error with destination file {temp_dst_path}: {e}")
                     self._play_sound(success=False)
+                    # Clean up the temporary file
+                    self._cleanup_destination_file(temp_dst_path)
                     return False
+                    
+            # If we got here, the file was successfully copied to the temporary location
+            # Now rename it to the final destination
+            try:
+                # If the destination file already exists (unlikely but possible), remove it first
+                if dst_path.exists():
+                    dst_path.unlink()
+                # Rename the temporary file to the final destination
+                temp_dst_path.rename(dst_path)
+            except (PermissionError, IOError) as e:
+                logger.error(f"Error renaming temporary file {temp_dst_path} to {dst_path}: {e}")
+                self._play_sound(success=False)
+                # Clean up the temporary file
+                self._cleanup_destination_file(temp_dst_path)
+                return False
                     
         except (PermissionError, FileNotFoundError, IOError) as e:
             logger.error(f"Error with source file {src_path}: {e}")
@@ -611,17 +636,17 @@ class FileTransfer:
             
     def _cleanup_destination_file(self, dst_path: Path) -> None:
         """
-        Clean up destination file after failed transfer.
+        Safely remove a destination file if it exists.
         
         Args:
-            dst_path: Destination file path to clean up
+            dst_path: Path to the file to remove
         """
-        if dst_path.exists():
-            try:
+        try:
+            if dst_path.exists():
+                logger.info(f"Cleaning up incomplete file: {dst_path}")
                 dst_path.unlink()
-                logger.info(f"Removed corrupted/incomplete file {dst_path}")
-            except Exception as del_err:
-                logger.warning(f"Failed to remove file {dst_path}: {del_err}")
+        except Exception as e:
+            logger.warning(f"Failed to clean up file {dst_path}: {e}")
 
     def _check_utility_mode(self) -> bool:
         """
@@ -1055,6 +1080,18 @@ class FileTransfer:
                 self._log_failure(log_file, src_file, None, f"Path error: {e}")
                 return False, None, f"{src_file} (path error)"
             
+            # Check if a .TBPART file exists from a previous interrupted transfer
+            temp_dst_path = dst_path.with_suffix(dst_path.suffix + TEMP_FILE_EXTENSION)
+            if temp_dst_path.exists():
+                logger.warning(f"Found incomplete transfer file: {temp_dst_path}")
+                try:
+                    temp_dst_path.unlink()
+                    logger.info(f"Removed incomplete file: {temp_dst_path}")
+                except Exception as e:
+                    logger.error(f"Failed to remove incomplete file {temp_dst_path}: {e}")
+                    self._log_failure(log_file, src_file, temp_dst_path, f"Failed to remove incomplete file: {e}")
+                    return False, None, f"{src_file} (cleanup error)"
+            
             logger.info(f"Processing file {file_number}/{total_files}: {src_file.name}")
             
             # Initialize progress tracking
@@ -1092,6 +1129,15 @@ class FileTransfer:
                         
                 return True, file_size, None
             else:
+                # Check if a .TBPART file was left behind after a failed transfer
+                temp_dst_path = dst_path.with_suffix(dst_path.suffix + TEMP_FILE_EXTENSION)
+                if temp_dst_path.exists():
+                    try:
+                        temp_dst_path.unlink()
+                        logger.info(f"Cleaned up incomplete file after failed transfer: {temp_dst_path}")
+                    except Exception as e:
+                        logger.warning(f"Failed to clean up incomplete file {temp_dst_path}: {e}")
+                
                 self._log_failure(log_file, src_file, dst_path, "Checksum verification failed")
                 return False, None, str(src_file)
                 
@@ -1257,53 +1303,47 @@ class FileTransfer:
 
     def copy_sd_to_dump(self, source_path: Path, destination_path: Path, log_file: Path) -> bool:
         """
-        Copy files from source to destination with comprehensive validation and error handling.
-        
-        This function manages the complete transfer process including:
-        - Source and destination validation
-        - File detection and filtering
-        - Directory structure creation
-        - File copying with progress tracking
-        - Checksum generation and verification
-        - MHL (Media Hash List) creation
-        - Safe unmounting of source drive
+        Copy files from SD card to dump drive.
         
         Args:
-            source_path: Path to source drive (e.g., SD card)
-            destination_path: Path where files should be copied
-            log_file: Path for transfer log file
+            source_path: Path to source drive (SD card)
+            destination_path: Path to destination drive (dump drive)
+            log_file: Path to log file
             
         Returns:
-            bool: True if transfer successful, False if any critical operation fails
+            bool: True if transfer was successful, False otherwise
         """
-        # Track status for cleanup in finally block
+        # Initialize variables used in finally block to prevent UnboundLocalError
+        transfer_started = False
         transfer_success = False
         unmount_success = False
-        transfer_started = False
         
         try:
-            # Phase 1: Validation and preparation
+            # Check for and clean up any interrupted transfers from previous sessions
+            self._recover_interrupted_transfers(destination_path)
+            
+            # Phase 1: Enter transfer state (only once)
+            transfer_started = self._enter_transfer_state()
+            if not transfer_started:
+                return False
+                
+            # Phase 2: Validation and preparation
             if not self._prepare_for_transfer(source_path, destination_path):
                 return False
                 
-            # Phase 2: Setup transfer environment
+            # Phase 3: Setup transfer environment
             setup_result = self._setup_transfer_environment(source_path, destination_path)
             if not setup_result:
                 return False
                 
             timestamp, target_dir, mhl_data = setup_result
                 
-            # Phase 3: Identify and prepare files
+            # Phase 4: Identify and prepare files
             file_prep_result = self._prepare_files_for_transfer(source_path, destination_path, target_dir)
             if not file_prep_result:
                 return False
                 
             files_to_transfer, total_size, total_files = file_prep_result
-                
-            # Phase 4: Enter transfer state
-            transfer_started = self._enter_transfer_state()
-            if not transfer_started:
-                return False
                 
             # Phase 5: Initialize logging
             transfer_start_time = self._initialize_transfer_log(log_file, source_path, target_dir, total_files, total_size)
@@ -1792,3 +1832,31 @@ class FileTransfer:
             logger.warning(f"Sound system runtime error: {e}")
         except Exception as e:
             logger.error(f"Error playing sound effect: {e}")
+
+    def _recover_interrupted_transfers(self, target_dir: Path) -> None:
+        """
+        Check for and clean up any .TBPART files from previously interrupted transfers.
+        
+        Args:
+            target_dir: Target directory to check for interrupted transfers
+        """
+        try:
+            # Find all .TBPART files in the target directory and its subdirectories
+            part_files = list(target_dir.glob(f"**/*{TEMP_FILE_EXTENSION}"))
+            
+            if part_files:
+                logger.info(f"Found {len(part_files)} incomplete transfers from previous session")
+                self.display.show_status(f"Cleaning up {len(part_files)} incomplete transfers...")
+                
+                # Remove all partial files
+                for part_file in part_files:
+                    try:
+                        part_file.unlink()
+                        logger.info(f"Removed incomplete file: {part_file}")
+                    except Exception as e:
+                        logger.warning(f"Failed to remove incomplete file {part_file}: {e}")
+                        
+                self.display.show_status("Cleanup complete")
+                
+        except Exception as e:
+            logger.error(f"Error recovering interrupted transfers: {e}")
