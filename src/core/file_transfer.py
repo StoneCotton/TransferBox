@@ -1282,108 +1282,44 @@ class FileTransfer:
         transfer_started = False
         
         try:
-            # First validate that we can proceed with the transfer
-            if not self._validate_transfer_preconditions(destination_path):
-                self._play_sound(success=False)
+            # Phase 1: Validation and preparation
+            if not self._prepare_for_transfer(source_path, destination_path):
                 return False
-
-            # Validate source path
-            if not self._validate_source_path(source_path):
+                
+            # Phase 2: Setup transfer environment
+            setup_result = self._setup_transfer_environment(source_path, destination_path)
+            if not setup_result:
                 return False
-
-            # Generate timestamp for this transfer session
-            timestamp = datetime.now().strftime(self.config.timestamp_format)
+                
+            timestamp, target_dir, mhl_data = setup_result
+                
+            # Phase 3: Identify and prepare files
+            file_prep_result = self._prepare_files_for_transfer(source_path, destination_path, target_dir)
+            if not file_prep_result:
+                return False
+                
+            files_to_transfer, total_size, total_files = file_prep_result
+                
+            # Phase 4: Enter transfer state
+            transfer_started = self._enter_transfer_state()
+            if not transfer_started:
+                return False
+                
+            # Phase 5: Initialize logging
+            transfer_start_time = self._initialize_transfer_log(log_file, source_path, target_dir, total_files, total_size)
+                
+            # Phase 6: Execute file transfers
+            transfer_result = self._execute_file_transfers(
+                files_to_transfer, target_dir, source_path, 
+                total_files, total_size, mhl_data, log_file
+            )
             
-            # Log the current configuration state
-            logger.info(f"Starting transfer with configuration:")
-            logger.info(f"  create_date_folders: {self.config.create_date_folders}")
-            logger.info(f"  destination_path: {destination_path}")
+            if not transfer_result:
+                return False
+                
+            failures, total_transferred = transfer_result
             
-            # Create target directory
-            try:
-                target_dir = self.directory_handler.create_organized_directory(
-                    destination_path,
-                    source_path,
-                    timestamp if self.config.create_date_folders else None
-                )
-            except Exception as e:
-                logger.error(f"Error creating directory structure: {e}", exc_info=True)
-                self.display.show_error("Dir Create Error")
-                return False
-
-            # Initialize MHL file
-            mhl_data = self._initialize_mhl_file(timestamp, target_dir)
-            if not mhl_data:
-                return False
-            
-            # Get files to transfer
-            files_to_transfer = self._get_files_to_transfer(source_path)
-            if not files_to_transfer:
-                return False
-                
-            # Calculate transfer totals
-            result = self._calculate_transfer_totals(files_to_transfer)
-            if not result:
-                return False
-            files_to_transfer, total_size, total_files = result
-                
-            # Verify space requirements
-            required_space = int(total_size * 1.1)  # Add 10% buffer
-            if not self._verify_space_requirements(destination_path, required_space):
-                return False
-                
-            # Enter transfer state
-            try:
-                self.state_manager.enter_transfer()
-                transfer_started = True
-            except Exception as e:
-                logger.error(f"Failed to enter transfer state: {e}")
-                self.display.show_error("State Error")
-                return False
-                
-            # Create directory structure for preserving folders
-            if not self._create_directory_structure(files_to_transfer, source_path, target_dir):
-                return False
-                
-            # Prepare log file
-            try:
-                log_file.parent.mkdir(parents=True, exist_ok=True)
-            except Exception as e:
-                logger.error(f"Failed to create log file directory: {e}")
-                # Continue without log file
-
-            # Initialize log
-            transfer_start_time = datetime.now()
-            try:
-                with open(log_file, 'a', encoding='utf-8') as log:
-                    log.write(f"Transfer started at {transfer_start_time.isoformat()}\n")
-                    log.write(f"Source: {source_path}\n")
-                    log.write(f"Destination: {target_dir}\n")
-                    log.write(f"Files to transfer: {total_files}\n")
-                    log.write(f"Total size: {total_size / (1024*1024*1024):.2f} GB\n\n")
-            except Exception as e:
-                logger.error(f"Failed to initialize log file: {e}")
-                # Continue without log file
-
-            # Process each file
-            failures = []
-            total_transferred = 0
-            file_number = 0
-            
-            for src_file in files_to_transfer:
-                file_number += 1
-                success, size_transferred, failure = self._transfer_single_file(
-                    src_file, target_dir, source_path, 
-                    file_number, total_files, total_transferred, 
-                    total_size, mhl_data, log_file
-                )
-                
-                if success:
-                    total_transferred += size_transferred
-                else:
-                    failures.append(failure)
-            
-            # Process results and handle unmounting
+            # Phase 7: Process results and handle unmounting
             transfer_success, unmount_success = self._process_transfer_results(
                 transfer_start_time, log_file, total_files, 
                 failures, source_path, total_size
@@ -1400,6 +1336,191 @@ class FileTransfer:
         finally:
             # Always perform cleanup
             self._cleanup_transfer_state(transfer_started, transfer_success, unmount_success, source_path)
+            
+    def _prepare_for_transfer(self, source_path: Path, destination_path: Path) -> bool:
+        """
+        Validate source and destination paths before transfer.
+        
+        Args:
+            source_path: Path to source drive
+            destination_path: Path where files should be copied
+            
+        Returns:
+            bool: True if validation passes, False otherwise
+        """
+        # Validate destination path
+        if not self._validate_transfer_preconditions(destination_path):
+            self._play_sound(success=False)
+            return False
+
+        # Validate source path
+        if not self._validate_source_path(source_path):
+            return False
+            
+        return True
+        
+    def _setup_transfer_environment(self, source_path: Path, destination_path: Path) -> Optional[Tuple[str, Path, Optional[Tuple]]]:
+        """
+        Set up the transfer environment including directories and MHL file.
+        
+        Args:
+            source_path: Path to source drive
+            destination_path: Path where files should be copied
+            
+        Returns:
+            Optional[Tuple]: (timestamp, target_dir, mhl_data) if successful, None otherwise
+        """
+        # Generate timestamp for this transfer session
+        timestamp = datetime.now().strftime(self.config.timestamp_format)
+        
+        # Log the current configuration state
+        logger.info(f"Starting transfer with configuration:")
+        logger.info(f"  create_date_folders: {self.config.create_date_folders}")
+        logger.info(f"  destination_path: {destination_path}")
+        
+        # Create target directory
+        try:
+            target_dir = self.directory_handler.create_organized_directory(
+                destination_path,
+                source_path,
+                timestamp if self.config.create_date_folders else None
+            )
+        except Exception as e:
+            logger.error(f"Error creating directory structure: {e}", exc_info=True)
+            self.display.show_error("Dir Create Error")
+            return None
+
+        # Initialize MHL file
+        mhl_data = self._initialize_mhl_file(timestamp, target_dir)
+        if not mhl_data:
+            return None
+            
+        return timestamp, target_dir, mhl_data
+        
+    def _prepare_files_for_transfer(self, source_path: Path, destination_path: Path, target_dir: Path) -> Optional[Tuple[List[Path], int, int]]:
+        """
+        Identify files to transfer and calculate totals.
+        
+        Args:
+            source_path: Path to source drive
+            destination_path: Path where files should be copied
+            target_dir: Target directory for the transfer
+            
+        Returns:
+            Optional[Tuple]: (files_to_transfer, total_size, total_files) if successful, None otherwise
+        """
+        # Get files to transfer
+        files_to_transfer = self._get_files_to_transfer(source_path)
+        if not files_to_transfer:
+            return None
+            
+        # Calculate transfer totals
+        result = self._calculate_transfer_totals(files_to_transfer)
+        if not result:
+            return None
+            
+        files_to_transfer, total_size, total_files = result
+            
+        # Verify space requirements
+        required_space = int(total_size * 1.1)  # Add 10% buffer
+        if not self._verify_space_requirements(destination_path, required_space):
+            return None
+            
+        # Create directory structure for preserving folders
+        if not self._create_directory_structure(files_to_transfer, source_path, target_dir):
+            return None
+            
+        return files_to_transfer, total_size, total_files
+        
+    def _enter_transfer_state(self) -> bool:
+        """
+        Enter transfer state in the state manager.
+        
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        try:
+            self.state_manager.enter_transfer()
+            return True
+        except Exception as e:
+            logger.error(f"Failed to enter transfer state: {e}")
+            self.display.show_error("State Error")
+            return False
+            
+    def _initialize_transfer_log(self, log_file: Path, source_path: Path, 
+                               target_dir: Path, total_files: int, 
+                               total_size: int) -> datetime:
+        """
+        Initialize the transfer log file.
+        
+        Args:
+            log_file: Path to log file
+            source_path: Path to source drive
+            target_dir: Target directory for the transfer
+            total_files: Total number of files to transfer
+            total_size: Total size of files to transfer in bytes
+            
+        Returns:
+            datetime: Transfer start time
+        """
+        # Prepare log file directory
+        try:
+            log_file.parent.mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            logger.error(f"Failed to create log file directory: {e}")
+            # Continue without log file
+
+        # Initialize log
+        transfer_start_time = datetime.now()
+        try:
+            with open(log_file, 'a', encoding='utf-8') as log:
+                log.write(f"Transfer started at {transfer_start_time.isoformat()}\n")
+                log.write(f"Source: {source_path}\n")
+                log.write(f"Destination: {target_dir}\n")
+                log.write(f"Files to transfer: {total_files}\n")
+                log.write(f"Total size: {total_size / (1024*1024*1024):.2f} GB\n\n")
+        except Exception as e:
+            logger.error(f"Failed to initialize log file: {e}")
+            # Continue without log file
+            
+        return transfer_start_time
+        
+    def _execute_file_transfers(self, files_to_transfer: List[Path], target_dir: Path, 
+                              source_path: Path, total_files: int, total_size: int, 
+                              mhl_data: Optional[Tuple], log_file: Path) -> Optional[Tuple[List[str], int]]:
+        """
+        Execute the transfer of all files.
+        
+        Args:
+            files_to_transfer: List of files to transfer
+            target_dir: Target directory for the transfer
+            source_path: Path to source drive
+            total_files: Total number of files to transfer
+            total_size: Total size of files to transfer in bytes
+            mhl_data: MHL file data tuple (filename, tree, hashes)
+            log_file: Path to log file
+            
+        Returns:
+            Optional[Tuple]: (failures, total_transferred) if successful, None otherwise
+        """
+        failures = []
+        total_transferred = 0
+        file_number = 0
+        
+        for src_file in files_to_transfer:
+            file_number += 1
+            success, size_transferred, failure = self._transfer_single_file(
+                src_file, target_dir, source_path, 
+                file_number, total_files, total_transferred, 
+                total_size, mhl_data, log_file
+            )
+            
+            if success:
+                total_transferred += size_transferred
+            else:
+                failures.append(failure)
+                
+        return failures, total_transferred
 
     def _generate_destination_filename(self, source_path: Path) -> str:
         """
@@ -1560,245 +1681,6 @@ class FileTransfer:
             except Exception:
                 filename = "unknown_file"
             return target_dir / filename
-
-    def _process_files(self, source_path: Path, target_dir: Path, 
-                    file_list: list, log_file: Path,
-                    mhl_filename: Path, tree, hashes) -> bool:
-        """
-        Process all files in the transfer.
-        
-        Args:
-            source_path: Source directory path
-            target_dir: Destination directory path
-            file_list: List of files to process
-            log_file: Path to the log file
-            mhl_filename: Path to the MHL file
-            tree: XML tree for MHL file
-            hashes: XML element for hashes in MHL file
-            
-        Returns:
-            bool: True if all files processed successfully, False otherwise
-        """
-        # Validate input parameters
-        if not isinstance(source_path, Path) or not isinstance(target_dir, Path):
-            logger.error(f"Invalid path parameters: source_path={type(source_path).__name__}, "
-                        f"target_dir={type(target_dir).__name__}")
-            return False
-            
-        if not file_list:
-            logger.warning("Empty file list provided to process_files")
-            return True  # No files to process is technically a success
-            
-        if not isinstance(log_file, Path):
-            logger.error(f"Invalid log_file parameter: {type(log_file).__name__}")
-            try:
-                log_file = Path(str(log_file))
-            except Exception as e:
-                logger.error(f"Could not convert log_file to Path: {e}")
-                return False
-                
-        try:
-            # Calculate total number of files with error handling
-            try:
-                total_files = sum(1 for f in file_list if f.is_file())
-                if total_files == 0:
-                    logger.warning("No files found in file_list")
-                    return True  # No files to process is technically a success
-            except Exception as e:
-                logger.error(f"Error counting files: {e}")
-                total_files = len(file_list)  # Fallback to list length
-                
-            file_number = 0
-            failures = []
-            processed_files = 0
-            
-            # Ensure log file directory exists
-            try:
-                log_file.parent.mkdir(parents=True, exist_ok=True)
-            except Exception as e:
-                logger.error(f"Failed to create log file directory {log_file.parent}: {e}")
-                # Continue without log file
-                
-            try:
-                with open(log_file, 'a', encoding='utf-8') as log:
-                    # Write header to log file
-                    log.write(f"Transfer started at {datetime.now().isoformat()}\n")
-                    log.write(f"Source: {source_path}\n")
-                    log.write(f"Destination: {target_dir}\n")
-                    log.write(f"Files to process: {total_files}\n\n")
-                    
-                    # Process each file
-                    for src_file in file_list:
-                        try:
-                            # Skip if not a file
-                            if not src_file.is_file():
-                                logger.debug(f"Skipping non-file item: {src_file}")
-                                continue
-                                
-                            file_number += 1
-                            logger.info(f"Processing file {file_number}/{total_files}: {src_file.name}")
-                            
-                            # Get relative path with better error handling
-                            try:
-                                rel_path = src_file.relative_to(source_path)
-                            except ValueError as e:
-                                logger.warning(f"Could not determine relative path for {src_file}: {e}")
-                                rel_path = Path(src_file.name)  # Fallback to just filename
-                                
-                            # Create timestamped filename
-                            try:
-                                timestamped_name = self._get_timestamp_filename(src_file)
-                            except Exception as e:
-                                logger.error(f"Failed to create timestamped filename for {src_file}: {e}")
-                                timestamped_name = src_file.name  # Fallback to original filename
-                                
-                            # Create destination path
-                            dst_path = target_dir / rel_path.parent / timestamped_name
-                            
-                            # Ensure destination directory exists
-                            try:
-                                dst_path.parent.mkdir(parents=True, exist_ok=True)
-                            except PermissionError as e:
-                                logger.error(f"Permission denied creating directory {dst_path.parent}: {e}")
-                                failures.append(f"{src_file} (permission denied on destination directory)")
-                                self._log_failure(log, src_file, dst_path, f"Permission denied: {e}")
-                                continue
-                            except OSError as e:
-                                logger.error(f"OS error creating directory {dst_path.parent}: {e}")
-                                failures.append(f"{src_file} (OS error on destination directory)")
-                                self._log_failure(log, src_file, dst_path, f"OS error: {e}")
-                                continue
-                                
-                            # Get file size with error handling
-                            try:
-                                file_size = src_file.stat().st_size
-                            except FileNotFoundError as e:
-                                logger.warning(f"File disappeared before transfer: {src_file}, {e}")
-                                failures.append(f"{src_file} (disappeared)")
-                                self._log_failure(log, src_file, dst_path, "File disappeared")
-                                continue
-                            except PermissionError as e:
-                                logger.error(f"Permission denied accessing file stats: {src_file}, {e}")
-                                failures.append(f"{src_file} (permission denied)")
-                                self._log_failure(log, src_file, dst_path, f"Permission denied: {e}")
-                                continue
-                            except OSError as e:
-                                logger.error(f"OS error accessing file: {src_file}, {e}")
-                                failures.append(f"{src_file} (OS error)")
-                                self._log_failure(log, src_file, dst_path, f"OS error: {e}")
-                                continue
-                            
-                            # Initialize progress tracking
-                            self._current_progress = TransferProgress(
-                                current_file=src_file.name,
-                                file_number=file_number,
-                                total_files=total_files,
-                                bytes_transferred=0,
-                                total_bytes=file_size,
-                                current_file_progress=0.0,
-                                overall_progress=(file_number - 1) / total_files,
-                                status=TransferStatus.COPYING
-                            )
-                            
-                            # Copy and verify file
-                            try:
-                                success, checksum = self._copy_with_progress(
-                                    src_file, dst_path,
-                                    file_number, total_files
-                                )
-                                
-                                if success and checksum:
-                                    processed_files += 1
-                                    self._log_success(log, src_file, dst_path)
-                                    
-                                    # Add to MHL with error handling
-                                    try:
-                                        dst_size = dst_path.stat().st_size
-                                        add_file_to_mhl(
-                                            mhl_filename, tree, hashes,
-                                            dst_path, checksum,
-                                            dst_size
-                                        )
-                                    except Exception as mhl_err:
-                                        logger.warning(f"Failed to add file to MHL: {dst_path}, {mhl_err}")
-                                        # Continue without stopping the transfer
-                                else:
-                                    failures.append(str(src_file))
-                                    self._log_failure(log, src_file, dst_path, "Copy verification failed")
-                                    
-                                    # Clean up failed transfer if possible
-                                    try:
-                                        if dst_path.exists():
-                                            dst_path.unlink()
-                                            logger.info(f"Removed failed transfer file: {dst_path}")
-                                    except Exception as cleanup_err:
-                                        logger.warning(f"Failed to clean up failed transfer file: {dst_path}, {cleanup_err}")
-                                        
-                            except Exception as copy_err:
-                                logger.error(f"Error during copy operation: {src_file} to {dst_path}, {copy_err}")
-                                failures.append(str(src_file))
-                                self._log_failure(log, src_file, dst_path, f"Copy error: {copy_err}")
-                                continue
-                                
-                        except FileNotFoundError as e:
-                            logger.warning(f"File not found during processing: {src_file}, {e}")
-                            failures.append(f"{src_file} (not found)")
-                            self._log_failure(log, src_file, None, f"File not found: {e}")
-                            continue
-                        except Exception as file_err:
-                            logger.error(f"Unexpected error processing file {src_file}: {file_err}", exc_info=True)
-                            failures.append(f"{src_file} (processing error)")
-                            self._log_failure(log, src_file, None, f"Processing error: {file_err}")
-                            continue
-                            
-                    # Write summary to log file
-                    log.write(f"\nTransfer completed at {datetime.now().isoformat()}\n")
-                    log.write(f"Processed {processed_files}/{total_files} files successfully\n")
-                    if failures:
-                        log.write(f"Failed files: {len(failures)}\n")
-                        
-                    return len(failures) == 0
-                    
-            except PermissionError as e:
-                logger.error(f"Permission denied accessing log file {log_file}: {e}")
-                # Continue processing but without log file
-                return self._process_files_without_log(source_path, target_dir, file_list, mhl_filename, tree, hashes)
-            except IOError as e:
-                logger.error(f"I/O error accessing log file {log_file}: {e}")
-                # Continue processing but without log file
-                return self._process_files_without_log(source_path, target_dir, file_list, mhl_filename, tree, hashes)
-                
-        except Exception as e:
-            logger.error(f"Unexpected error processing files: {e}", exc_info=True)
-            return False
-            
-        # Fallback return (should not reach here if all operations are handled correctly)
-        return len(failures) == 0
-
-    def _process_files_without_log(self, source_path: Path, target_dir: Path, 
-                                file_list: list, mhl_filename: Path, tree, hashes) -> bool:
-        """Fallback method when log file can't be accessed"""
-        # This would be a simplified version of _process_files that works without a log file
-        # Implementation would be similar but without log file operations
-        # Including this as a stub to demonstrate the fallback approach
-        logger.warning("Processing files without log file")
-        
-        # Simple implementation that would follow the same structure as _process_files
-        # but without writing to a log file
-        try:
-            total_files = sum(1 for f in file_list if f.is_file())
-            file_number = 0
-            failures = []
-            
-            for src_file in file_list:
-                # Process each file without logging to file
-                # (Rest of implementation would be similar to _process_files)
-                pass
-                
-            return len(failures) == 0
-        except Exception as e:
-            logger.error(f"Error processing files without log: {e}")
-            return False
 
     def _log_success(self, log_file, src_path: Path, dst_path: Path) -> None:
         """
