@@ -19,6 +19,7 @@ from src.core.logger_setup import setup_logging
 from src.core.sound_manager import SoundManager
 from src.core.path_utils import sanitize_path, validate_destination_path
 from src.core.exceptions import HardwareError, StorageError, StateError, FileTransferError
+import argparse
 
 # Initialize logging
 logger = setup_logging()
@@ -368,13 +369,48 @@ class TransferBox:
             logger.error(f"Platform-specific cleanup error: {platform_cleanup_err}")
 
 def main():
-    """Main entry point with comprehensive error handling"""
+    # Parse command line arguments
+    parser = argparse.ArgumentParser(description=f"{__project_name__} v{__version__}")
+    parser.add_argument("--benchmark", action="store_true", help="Run transfer benchmark")
+    parser.add_argument("--buffer-sizes", type=str, help="Comma-separated list of buffer sizes in MB for benchmark")
+    parser.add_argument("--file-sizes", type=str, help="Comma-separated list of file sizes in MB for benchmark")
+    parser.add_argument("--iterations", type=int, default=3, help="Number of iterations per benchmark test")
+    args = parser.parse_args()
+
+    # Run benchmark if requested
+    if args.benchmark:
+        from src.core.benchmark import TransferBenchmark, BenchmarkConfig, run_benchmark_cli
+        
+        if any([args.buffer_sizes, args.file_sizes, args.iterations]):
+            # Use CLI with passed arguments
+            sys.argv = [sys.argv[0]]  # Reset argv
+            if args.buffer_sizes:
+                sys.argv.extend(["--buffer-sizes", args.buffer_sizes])
+            if args.file_sizes:
+                sys.argv.extend(["--file-sizes", args.file_sizes])
+            if args.iterations:
+                sys.argv.extend(["--iterations", str(args.iterations)])
+            return run_benchmark_cli()
+        else:
+            # Run with default settings
+            return run_benchmark_cli()
+    
+    # Normal application startup
+    app = TransferBox()
+    
     try:
-        app = TransferBox()
+        app.setup()
         app.run()
+    except KeyboardInterrupt:
+        print("\nExiting due to keyboard interrupt")
     except Exception as e:
-        logger.critical(f"Application failed: {e}", exc_info=True)
-        sys.exit(1)
+        print(f"Error: {e}")
+        logger.exception("Unhandled exception")
+        return 1
+    finally:
+        app.cleanup()
+    
+    return 0
 
 if __name__ == "__main__":
     main()

@@ -56,6 +56,8 @@ class ChecksumCalculator:
                 total_files=1,
                 bytes_transferred=0,
                 total_bytes=file_size,
+                total_transferred=0,
+                total_size=file_size,
                 current_file_progress=0.0,
                 overall_progress=0.0,
                 status=TransferStatus.CHECKSUMMING

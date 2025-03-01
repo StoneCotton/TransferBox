@@ -245,14 +245,9 @@ class RichDisplay(DisplayInterface):
                 error_msg = f"Error updating progress display: {str(e)}"
                 logger.error(error_msg)
                 raise DisplayError(
-                    message=error_msg,
+                    error_msg,
                     display_type="rich",
-                    error_type="progress_update",
-                    recovery_steps=[
-                        "Check if display is properly initialized",
-                        "Verify progress data is valid",
-                        "Restart the display interface"
-                    ]
+                    error_type="progress_update"
                 ) from e
 
     def _cleanup_progress(self) -> None:
@@ -303,14 +298,9 @@ class RichDisplay(DisplayInterface):
                     error_msg = f"Error during progress display cleanup: {str(e)}"
                     logger.error(error_msg)
                     raise DisplayError(
-                        message=error_msg,
+                        error_msg,
                         display_type="rich",
-                        error_type="cleanup",
-                        recovery_steps=[
-                            "Force reset display interface",
-                            "Clear console manually",
-                            "Restart the application"
-                        ]
+                        error_type="cleanup"
                     ) from e
 
     def show_status(self, message: str, line: int = 0) -> None:
@@ -318,7 +308,7 @@ class RichDisplay(DisplayInterface):
         try:
             if self.in_transfer_mode or self.in_proxy_mode:
                 # When in progress mode, show status in the status panel
-                self.layout["Status"].update(
+                self.layout["progress"].update(
                     Panel(Text(message, style="blue"))
                 )
             else:
@@ -330,14 +320,9 @@ class RichDisplay(DisplayInterface):
             error_msg = f"Error displaying status message: {str(e)}"
             logger.error(error_msg)
             raise DisplayError(
-                message=error_msg,
+                error_msg,
                 display_type="rich",
-                error_type="status_update",
-                recovery_steps=[
-                    "Check console output stream",
-                    "Verify display layout is properly initialized",
-                    "Ensure status message is valid"
-                ]
+                error_type="status_update"
             ) from e
 
     def show_error(self, message: str) -> None:
@@ -345,7 +330,7 @@ class RichDisplay(DisplayInterface):
         try:
             if self.in_transfer_mode or self.in_proxy_mode:
                 # When in progress mode, show error in the status panel
-                self.layout["Status"].update(
+                self.layout[f"TransferBox | v{__version__} | Made by Tyler Saari"].update(
                     Panel(Text(message, style="red bold"))
                 )
             else:
@@ -357,14 +342,9 @@ class RichDisplay(DisplayInterface):
             error_msg = f"Error displaying error message: {str(e)}"
             logger.error(error_msg)
             raise DisplayError(
-                message=error_msg,
+                error_msg,
                 display_type="rich",
-                error_type="error_display",
-                recovery_steps=[
-                    "Check console error stream",
-                    "Verify display layout is properly initialized",
-                    "Ensure error message is valid"
-                ]
+                error_type="error_display"
             ) from e
 
     def clear(self) -> None:
@@ -382,12 +362,7 @@ class RichDisplay(DisplayInterface):
                 error_msg = f"Error clearing display: {str(e)}"
                 logger.error(error_msg)
                 raise DisplayError(
-                    message=error_msg,
+                    error_msg,
                     display_type="rich",
-                    error_type="clear",
-                    recovery_steps=[
-                        "Force reset display interface",
-                        "Clear console manually",
-                        "Restart the display service"
-                    ]
+                    error_type="clear"
                 ) from e
