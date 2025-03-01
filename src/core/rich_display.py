@@ -24,6 +24,7 @@ from typing import Optional
 from src.core.interfaces.display import DisplayInterface
 from src.core.interfaces.types import TransferProgress, TransferStatus
 from src.core.exceptions import DisplayError
+from src import __version__
 
 logger = logging.getLogger(__name__)
 
@@ -69,7 +70,7 @@ class RichDisplay(DisplayInterface):
         # Create layout
         self.layout = Layout()
         self.layout.split_column(
-            Layout(name="Status", size=2),
+            Layout(name=f"TransferBox | v{__version__} | Made by Tyler Saari", size=2),
             Layout(name="progress", size=6)
         )
         
@@ -138,7 +139,7 @@ class RichDisplay(DisplayInterface):
             # Create new live display with fresh layout
             self.layout = Layout()
             self.layout.split_column(
-                Layout(name="status", size=2),
+                Layout(name=f"TransferBox | v{__version__} | Made by Tyler Saari", size=2),
                 Layout(name="progress", size=6)
             )
             
@@ -292,7 +293,7 @@ class RichDisplay(DisplayInterface):
                     # Create a fresh layout for next use
                     self.layout = Layout()
                     self.layout.split_column(
-                        Layout(name="Status", size=2),
+                        Layout(name=f"TransferBox | v{__version__} | Made by Tyler Saari", size=2),
                         Layout(name="progress", size=6)
                     )
                     
