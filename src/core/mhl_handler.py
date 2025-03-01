@@ -7,6 +7,7 @@ import socket
 import xml.etree.ElementTree as ET
 from typing import Tuple, Optional
 import os
+from src import __version__, __project_name__
 
 logger = logging.getLogger(__name__)
 
@@ -83,8 +84,8 @@ def initialize_mhl_file(directory_name: str, target_dir: Path) -> Tuple[Path, ET
             hostname = ET.SubElement(creator_info, "hostname")
             hostname.text = hostname_text
             
-            tool = ET.SubElement(creator_info, "TransferBox", version="0.1.0")
-            tool.text = "TransferBox"
+            tool = ET.SubElement(creator_info, __project_name__, version=__version__)
+            tool.text = __project_name__
             
             # Add process info
             process_info = ET.SubElement(root, "processinfo")

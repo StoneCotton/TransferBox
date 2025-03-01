@@ -204,9 +204,17 @@ class MenuManager:
     def _version_info(self) -> None:
         """Display version information"""
         try:
+            from src import __version__, __project_name__, __author__, __copyright__
+            
             self.display.clear()
-            self.display.show_status("TransferBox")
-            self.display.show_status("v1.0.0", line=1)
+            self.display.show_status(__project_name__)
+            self.display.show_status(f"v{__version__}", line=1)
+            time.sleep(2)
+            
+            # Show additional info
+            self.display.clear()
+            self.display.show_status(f"By: {__author__}")
+            self.display.show_status(__copyright__, line=1)
             time.sleep(2)
         except Exception as e:
             raise DisplayError(

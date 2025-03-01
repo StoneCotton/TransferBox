@@ -8,6 +8,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 from threading import Event
+from src import __version__, __project_name__, __author__
 from src.core.config_manager import ConfigManager
 from src.core.platform_manager import PlatformManager
 from src.core.interfaces.display import DisplayInterface
@@ -29,6 +30,9 @@ class TransferBox:
         # Initialize config manager first
         self.config_manager = ConfigManager()
         self.config = self.config_manager.load_config()
+        
+        # Log application metadata
+        logger.info(f"Starting {__project_name__} v{__version__} by {__author__}")
         
         # Initialize sound manager
         self.sound_manager = SoundManager(self.config)
