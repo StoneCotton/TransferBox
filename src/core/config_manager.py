@@ -15,7 +15,7 @@ class TransferConfig:
     """Configuration settings for TransferBox"""
     
     # File handling
-    rename_with_timestamp: bool = True
+    rename_with_timestamp: bool = False
     preserve_original_filename: bool = True
     filename_template: str = "{original}_{timestamp}"
     timestamp_format: str = "%Y%m%d_%H%M%S"
