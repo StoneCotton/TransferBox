@@ -38,6 +38,11 @@ A robust, platform-independent media file transfer utility designed for reliable
   - Customizable directory organization
   - Timestamp-based file naming
   - Original metadata preservation
+- **Robust Transfer Mechanism**:
+  - Buffered I/O for improved performance
+  - Temporary file system (.TBPART extension) for crash recovery
+  - Automatic cleanup of interrupted transfers
+  - Atomic file operations to prevent partial transfers
 - **Flexible Configuration**:
   - YAML-based configuration system
   - Customizable file naming patterns
@@ -178,16 +183,19 @@ The transfer process follows these steps:
 
    - System detects when a storage device is connected
    - Validates device mounting and accessibility
+   - Cleans up any incomplete transfers from previous sessions
 
 2. File Transfer
 
    - Creates destination directory structure
-   - Copies files with progress monitoring
+   - Copies files with progress monitoring using buffered I/O
+   - Uses temporary files (.TBPART extension) during transfer
    - Generates checksums during transfer
 
 3. Verification
 
    - Verifies checksums for all transferred files
+   - Renames temporary files to final names only after successful verification
    - Generates MHL (Media Hash List) file
    - Creates detailed transfer log
 

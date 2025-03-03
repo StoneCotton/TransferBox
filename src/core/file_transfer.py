@@ -6,7 +6,7 @@ import shutil
 import time
 import platform
 from pathlib import Path
-from typing import Optional, Tuple, List
+from typing import Optional, Tuple, List, Any
 from datetime import datetime
 from .config_manager import TransferConfig
 from .interfaces.display import DisplayInterface
@@ -21,6 +21,8 @@ from .directory_handler import DirectoryHandler
 logger = logging.getLogger(__name__)
 
 CHUNK_SIZE = 32 * 1024 * 1024  # 32MB chunks for efficient large file handling
+BUFFER_SIZE = 8 * 1024 * 1024  # 8MB buffer for improved I/O performance
+TEMP_FILE_EXTENSION = ".TBPART"  # Temporary file extension during transfer
 
 class FileTransferError(Exception):
     """Custom exception for file transfer errors"""
@@ -385,142 +387,392 @@ class FileTransfer:
         dst_file_created = False
         
         try:
-            # Validate source exists
-            if not src_path.exists():
-                logger.error(f"Source file does not exist: {src_path}")
+            # Validate source and prepare for copy
+            if not self._validate_source_file(src_path):
                 return False, None
                 
             # Get source metadata before copy
-            try:
-                source_metadata = self.storage.get_file_metadata(src_path)
-            except Exception as e:
-                logger.warning(f"Failed to get source metadata for {src_path}: {e}")
-                source_metadata = None
+            source_metadata = self._get_source_metadata(src_path)
             
-            try:
-                file_size = src_path.stat().st_size
-            except (OSError, FileNotFoundError) as e:
-                logger.error(f"Failed to get file size for {src_path}: {e}")
+            # Get file size
+            file_size = self._get_file_size(src_path)
+            if file_size is None:
                 return False, None
                 
+            # Initialize hash calculator
             xxh64_hash = self.checksum_calculator.create_hash()
             
-            # First phase: Copy with progress
-            try:
-                with open(src_path, 'rb') as src:
-                    try:
-                        # Ensure parent directory exists
-                        dst_path.parent.mkdir(parents=True, exist_ok=True)
-                        
-                        with open(dst_path, 'wb') as dst:
-                            dst_file_created = True
-                            bytes_transferred = 0
-                            
-                            while True:
-                                try:
-                                    chunk = src.read(CHUNK_SIZE)
-                                    if not chunk:
-                                        break
-                                        
-                                    dst.write(chunk)
-                                    xxh64_hash.update(chunk)
-                                    bytes_transferred += len(chunk)
-                                    
-                                    # Update progress with both file and total progress
-                                    if self._current_progress:
-                                        self._current_progress.bytes_transferred = bytes_transferred
-                                        self._current_progress.current_file_progress = bytes_transferred / file_size
-                                        self._current_progress.total_transferred = total_transferred + bytes_transferred
-                                        self._current_progress.status = TransferStatus.COPYING
-                                        self.display.show_progress(self._current_progress)
-                                        
-                                except MemoryError as e:
-                                    logger.error(f"Memory error processing chunk of {src_path}: {e}")
-                                    self._play_sound(success=False)
-                                    return False, None
-                                except IOError as e:
-                                    logger.error(f"I/O error during file copy of {src_path}: {e}")
-                                    self._play_sound(success=False)
-                                    return False, None
-                                    
-                    except PermissionError as e:
-                        logger.error(f"Permission denied creating destination file {dst_path}: {e}")
-                        self._play_sound(success=False)
-                        return False, None
-                    except IOError as e:
-                        logger.error(f"I/O error opening destination file {dst_path}: {e}")
-                        self._play_sound(success=False)
-                        return False, None
-                        
-            except PermissionError as e:
-                logger.error(f"Permission denied reading source file {src_path}: {e}")
-                self._play_sound(success=False)
-                return False, None
-            except FileNotFoundError as e:
-                logger.error(f"Source file disappeared during copy {src_path}: {e}")
-                self._play_sound(success=False)
-                return False, None
-            except IOError as e:
-                logger.error(f"I/O error opening source file {src_path}: {e}")
-                self._play_sound(success=False)
-                return False, None
-                
-            # Second phase: Apply metadata (unchanged)
-            if source_metadata:
-                try:
-                    if not self.storage.set_file_metadata(dst_path, source_metadata):
-                        logger.warning(f"Failed to preserve metadata for {dst_path}")
-                except Exception as e:
-                    # Log but continue - metadata failure isn't critical
-                    logger.warning(f"Error setting metadata for {dst_path}: {e}")
+            # Perform the actual file copy with progress updates
+            copy_result = self._perform_file_copy(
+                src_path, dst_path, file_size, xxh64_hash,
+                file_number, total_files, total_transferred
+            )
             
-            # Third phase: Verify checksum
-            try:
-                if self._current_progress:
-                    self._current_progress.status = TransferStatus.CHECKSUMMING
-                    
-                checksum = xxh64_hash.hexdigest()
-                verify_success = self.checksum_calculator.verify_checksum(
-                    dst_path,
-                    checksum,
-                    current_progress=self._current_progress
-                )
-                
-                if not verify_success:
-                    logger.error(f"Checksum verification failed for {dst_path}")
-                    if dst_path.exists():
-                        try:
-                            # Attempt to delete the corrupted file
-                            dst_path.unlink()
-                            logger.info(f"Removed corrupted file {dst_path}")
-                        except Exception as del_err:
-                            logger.warning(f"Failed to remove corrupted file {dst_path}: {del_err}")
-                    return False, None
-                    
-                return True, checksum
-                
-            except Exception as e:
-                logger.error(f"Error during checksum verification of {dst_path}: {e}")
-                self._play_sound(success=False)
+            if not copy_result:
                 return False, None
+                
+            dst_file_created = True
+                
+            # Apply metadata if available
+            self._apply_metadata(dst_path, source_metadata)
+            
+            # Verify checksum
+            checksum = xxh64_hash.hexdigest()
+            if not self._verify_file_checksum(dst_path, checksum):
+                return False, None
+                    
+            return True, checksum
                 
         except Exception as e:
             self._play_sound(success=False)
             logger.error(f"Unexpected error copying file {src_path} to {dst_path}: {e}", exc_info=True)
             
             # Cleanup: attempt to remove partial/corrupt destination file if we created it
-            if dst_file_created and dst_path.exists():
-                try:
-                    dst_path.unlink()
-                    logger.info(f"Removed incomplete file {dst_path} after error")
-                except Exception as del_err:
-                    logger.warning(f"Failed to remove incomplete file {dst_path}: {del_err}")
+            if dst_file_created:
+                self._cleanup_destination_file(dst_path)
                     
             return False, None
+            
+    def _validate_source_file(self, src_path: Path) -> bool:
+        """
+        Validate that source file exists.
+        
+        Args:
+            src_path: Source file path
+            
+        Returns:
+            bool: True if source file exists, False otherwise
+        """
+        if not src_path.exists():
+            logger.error(f"Source file does not exist: {src_path}")
+            return False
+        return True
+        
+    def _get_source_metadata(self, src_path: Path) -> Optional[Any]:
+        """
+        Get metadata from source file.
+        
+        Args:
+            src_path: Source file path
+            
+        Returns:
+            Optional[Any]: File metadata if available, None otherwise
+        """
+        try:
+            return self.storage.get_file_metadata(src_path)
+        except Exception as e:
+            logger.warning(f"Failed to get source metadata for {src_path}: {e}")
+            return None
+            
+    def _get_file_size(self, src_path: Path) -> Optional[int]:
+        """
+        Get size of source file.
+        
+        Args:
+            src_path: Source file path
+            
+        Returns:
+            Optional[int]: File size in bytes if available, None on error
+        """
+        try:
+            return src_path.stat().st_size
+        except (OSError, FileNotFoundError) as e:
+            logger.error(f"Failed to get file size for {src_path}: {e}")
+            return None
+            
+    def _perform_file_copy(self, src_path: Path, dst_path: Path, 
+                          file_size: int, hash_obj,
+                          file_number: int, total_files: int, 
+                          total_transferred: int) -> bool:
+        """
+        Copy file with progress updates and hash calculation.
+        Uses buffered I/O and temporary files for safer transfers.
+        
+        Args:
+            src_path: Source file path
+            dst_path: Destination file path
+            file_size: Size of source file in bytes
+            hash_obj: Hash object to update during copy
+            file_number: Current file number in batch
+            total_files: Total number of files to transfer
+            total_transferred: Total bytes transferred so far
+            
+        Returns:
+            bool: True if copy succeeded, False otherwise
+        """
+        try:
+            # Create a temporary destination path with .TBPART extension
+            temp_dst_path = dst_path.with_suffix(dst_path.suffix + TEMP_FILE_EXTENSION)
+            
+            # Ensure parent directory exists
+            temp_dst_path.parent.mkdir(parents=True, exist_ok=True)
+            
+            with open(src_path, 'rb', buffering=BUFFER_SIZE) as src:
+                try:
+                    with open(temp_dst_path, 'wb', buffering=BUFFER_SIZE) as dst:
+                        bytes_transferred = 0
+                        
+                        while True:
+                            try:
+                                chunk = src.read(CHUNK_SIZE)
+                                if not chunk:
+                                    break
+                                    
+                                dst.write(chunk)
+                                hash_obj.update(chunk)
+                                bytes_transferred += len(chunk)
+                                
+                                # Update progress with both file and total progress
+                                self._update_copy_progress(
+                                    bytes_transferred, file_size,
+                                    total_transferred, file_number,
+                                    total_files
+                                )
+                                    
+                            except (MemoryError, IOError) as e:
+                                logger.error(f"Error processing chunk of {src_path}: {e}")
+                                self._play_sound(success=False)
+                                # Clean up the temporary file
+                                self._cleanup_destination_file(temp_dst_path)
+                                return False
+                                
+                except (PermissionError, IOError) as e:
+                    logger.error(f"Error with destination file {temp_dst_path}: {e}")
+                    self._play_sound(success=False)
+                    # Clean up the temporary file
+                    self._cleanup_destination_file(temp_dst_path)
+                    return False
+                    
+            # If we got here, the file was successfully copied to the temporary location
+            # Now rename it to the final destination
+            try:
+                # If the destination file already exists (unlikely but possible), remove it first
+                if dst_path.exists():
+                    dst_path.unlink()
+                # Rename the temporary file to the final destination
+                temp_dst_path.rename(dst_path)
+            except (PermissionError, IOError) as e:
+                logger.error(f"Error renaming temporary file {temp_dst_path} to {dst_path}: {e}")
+                self._play_sound(success=False)
+                # Clean up the temporary file
+                self._cleanup_destination_file(temp_dst_path)
+                return False
+                    
+        except (PermissionError, FileNotFoundError, IOError) as e:
+            logger.error(f"Error with source file {src_path}: {e}")
+            self._play_sound(success=False)
+            return False
+            
+        return True
+        
+    def _update_copy_progress(self, bytes_transferred: int, file_size: int,
+                             total_transferred: int, file_number: int,
+                             total_files: int) -> None:
+        """
+        Update progress information during file copy.
+        
+        Args:
+            bytes_transferred: Bytes transferred for current file
+            file_size: Total size of current file
+            total_transferred: Total bytes transferred in batch so far
+            file_number: Current file number in batch
+            total_files: Total number of files in batch
+        """
+        if self._current_progress:
+            self._current_progress.bytes_transferred = bytes_transferred
+            self._current_progress.current_file_progress = bytes_transferred / file_size
+            self._current_progress.total_transferred = total_transferred + bytes_transferred
+            self._current_progress.status = TransferStatus.COPYING
+            self.display.show_progress(self._current_progress)
+            
+    def _apply_metadata(self, dst_path: Path, metadata) -> None:
+        """
+        Apply metadata to destination file.
+        
+        Args:
+            dst_path: Destination file path
+            metadata: Metadata to apply
+        """
+        if metadata:
+            try:
+                if not self.storage.set_file_metadata(dst_path, metadata):
+                    logger.warning(f"Failed to preserve metadata for {dst_path}")
+            except Exception as e:
+                # Log but continue - metadata failure isn't critical
+                logger.warning(f"Error setting metadata for {dst_path}: {e}")
+                
+    def _verify_file_checksum(self, dst_path: Path, checksum: str) -> bool:
+        """
+        Verify file checksum.
+        
+        Args:
+            dst_path: Destination file path
+            checksum: Expected checksum
+            
+        Returns:
+            bool: True if checksum verification succeeded, False otherwise
+        """
+        try:
+            if self._current_progress:
+                self._current_progress.status = TransferStatus.CHECKSUMMING
+                
+            verify_success = self.checksum_calculator.verify_checksum(
+                dst_path,
+                checksum,
+                current_progress=self._current_progress
+            )
+            
+            if not verify_success:
+                logger.error(f"Checksum verification failed for {dst_path}")
+                self._cleanup_destination_file(dst_path)
+                return False
+                
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error during checksum verification of {dst_path}: {e}")
+            self._play_sound(success=False)
+            return False
+            
+    def _cleanup_destination_file(self, dst_path: Path) -> None:
+        """
+        Safely remove a destination file if it exists.
+        
+        Args:
+            dst_path: Path to the file to remove
+        """
+        try:
+            if dst_path.exists():
+                logger.info(f"Cleaning up incomplete file: {dst_path}")
+                dst_path.unlink()
+        except Exception as e:
+            logger.warning(f"Failed to clean up file {dst_path}: {e}")
+
+    def _check_utility_mode(self) -> bool:
+        """
+        Check if system is in utility mode.
+        
+        Returns:
+            bool: True if validation passes (not in utility mode), False otherwise
+        """
+        if self.state_manager.is_utility():
+            logger.info("Transfer blocked - system is in utility mode")
+            self.display.show_error("In utility mode")
+            return False
+        return True
+
+    def _validate_destination_path_type(self, destination_path: Path) -> Optional[Path]:
+        """
+        Validate and convert destination path to Path object.
+        
+        Args:
+            destination_path: Path to validate
+            
+        Returns:
+            Optional[Path]: Valid Path object or None if validation fails
+        """
+        if destination_path is None:
+            logger.error("No destination path provided")
+            self.display.show_error("No destination")
+            return None
+            
+        try:
+            return Path(destination_path)
+        except TypeError as e:
+            logger.error(f"Invalid destination path type: {type(destination_path).__name__}, {e}")
+            self.display.show_error("Invalid path type")
+            return None
+
+    def _validate_existing_destination(self, dest_path: Path) -> bool:
+        """
+        Validate an existing destination directory.
+        
+        Args:
+            dest_path: Path to validate
+            
+        Returns:
+            bool: True if validation passes, False otherwise
+        """
+        # Check if it's a directory
+        if not dest_path.is_dir():
+            logger.error(f"Destination exists but is not a directory: {dest_path}")
+            self.display.show_error("Not a directory")
+            return False
+            
+        # Check write permissions
+        if not os.access(dest_path, os.W_OK):
+            logger.error(f"No write permission for destination: {dest_path}")
+            self.display.show_error("Write permission denied")
+            return False
+            
+        # Check for available space
+        try:
+            min_space = 1 * 1024 * 1024 * 1024  # 1GB in bytes
+            if not self.storage.has_enough_space(dest_path, min_space):
+                logger.error(f"Not enough space in destination: {dest_path}")
+                self.display.show_error("Not enough space")
+                return False
+        except Exception as space_err:
+            # Log but continue - we'll check space again before actual transfer
+            logger.warning(f"Could not verify free space: {space_err}")
+            
+        logger.info(f"Using existing directory: {dest_path}")
+        return True
+
+    def _validate_parent_directory(self, dest_path: Path) -> bool:
+        """
+        Validate parent directory for a non-existent destination.
+        
+        Args:
+            dest_path: Path whose parent should be validated
+            
+        Returns:
+            bool: True if parent directory is valid, False otherwise
+        """
+        parent = dest_path.parent
+        
+        if not parent.exists():
+            logger.error(f"Parent directory doesn't exist: {parent}")
+            self.display.show_error("Parent dir missing")
+            return False
+            
+        if not os.access(parent, os.W_OK):
+            logger.error(f"No write permission for parent directory: {parent}")
+            self.display.show_error("Parent write denied")
+            return False
+            
+        return True
+
+    def _create_destination_directory(self, dest_path: Path) -> bool:
+        """
+        Create the destination directory.
+        
+        Args:
+            dest_path: Directory to create
+            
+        Returns:
+            bool: True if directory was created successfully, False otherwise
+        """
+        try:
+            dest_path.mkdir(parents=True, exist_ok=True)
+            logger.info(f"Created directory: {dest_path}")
+            return True
+        except PermissionError as e:
+            logger.error(f"Permission denied creating directory {dest_path}: {e}")
+            self.display.show_error("Permission denied")
+            return False
+        except OSError as e:
+            logger.error(f"OS error creating directory {dest_path}: {e}")
+            self.display.show_error("Create dir failed")
+            return False
+        except Exception as e:
+            logger.error(f"Failed to create directory {dest_path}: {e}")
+            self.display.show_error("Create dir failed")
+            return False
 
     def _validate_transfer_preconditions(self, destination_path: Path) -> bool:
         """
-        Validate preconditions before starting transfer with improved path handling.
+        Validate preconditions before starting transfer.
         
         Args:
             destination_path: Target path for file transfer
@@ -529,85 +781,24 @@ class FileTransfer:
             bool: True if destination is valid and ready for transfer, False otherwise
         """
         try:
-            # Check if destination is provided
-            if destination_path is None:
-                logger.error("No destination path provided")
-                self.display.show_error("No destination")
+            # Check utility mode first
+            if not self._check_utility_mode():
                 return False
                 
-            # Check if in utility mode
-            if self.state_manager.is_utility():
-                logger.info("Transfer blocked - system is in utility mode")
-                self.display.show_error("In utility mode")
+            # Validate and convert path
+            dest_path = self._validate_destination_path_type(destination_path)
+            if dest_path is None:
                 return False
                 
-            # Convert to Path object for consistent handling
-            try:
-                dest_path = Path(destination_path)
-            except TypeError as e:
-                logger.error(f"Invalid destination path type: {type(destination_path).__name__}, {e}")
-                self.display.show_error("Invalid path type")
-                return False
-                
-            # Verify the destination exists and is accessible
+            # Handle existing vs non-existing destination
             if dest_path.exists():
-                # Destination exists, check if it's a directory
-                if not dest_path.is_dir():
-                    logger.error(f"Destination exists but is not a directory: {dest_path}")
-                    self.display.show_error("Not a directory")
-                    return False
-                    
-                # Check write permissions
-                if not os.access(dest_path, os.W_OK):
-                    logger.error(f"No write permission for destination: {dest_path}")
-                    self.display.show_error("Write permission denied")
-                    return False
-                    
-                # Check for available space
-                try:
-                    # We don't know exact size yet, but check for minimum free space (1GB)
-                    min_space = 1 * 1024 * 1024 * 1024  # 1GB in bytes
-                    if not self.storage.has_enough_space(dest_path, min_space):
-                        logger.error(f"Not enough space in destination: {dest_path}")
-                        self.display.show_error("Not enough space")
-                        return False
-                except Exception as space_err:
-                    # Log but continue - we'll check space again before actual transfer
-                    logger.warning(f"Could not verify free space: {space_err}")
-                    
-                logger.info(f"Using existing directory: {dest_path}")
-                return True
+                return self._validate_existing_destination(dest_path)
                 
-            # Path doesn't exist, check parent directory
-            parent = dest_path.parent
-            if not parent.exists():
-                logger.error(f"Parent directory doesn't exist: {parent}")
-                self.display.show_error("Parent dir missing")
+            # For non-existing destination, validate parent and create
+            if not self._validate_parent_directory(dest_path):
                 return False
                 
-            if not os.access(parent, os.W_OK):
-                logger.error(f"No write permission for parent directory: {parent}")
-                self.display.show_error("Parent write denied")
-                return False
-                
-            # Try to create the directory
-            try:
-                dest_path.mkdir(parents=True, exist_ok=True)
-                logger.info(f"Created directory: {dest_path}")
-                return True
-            except PermissionError as e:
-                logger.error(f"Permission denied creating directory {dest_path}: {e}")
-                self.display.show_error("Permission denied")
-                return False
-            except OSError as e:
-                # Handle OS-level errors (disk errors, etc.)
-                logger.error(f"OS error creating directory {dest_path}: {e}")
-                self.display.show_error("Create dir failed")
-                return False
-            except Exception as e:
-                logger.error(f"Failed to create directory {dest_path}: {e}")
-                self.display.show_error("Create dir failed")
-                return False
+            return self._create_destination_directory(dest_path)
                 
         except FileNotFoundError as e:
             logger.error(f"Path component not found: {e}")
@@ -622,533 +813,754 @@ class FileTransfer:
             self.display.show_error("System error")
             return False
         except Exception as e:
-            # Last resort catch-all with detailed logging
             logger.error(f"Unexpected error validating path: {e}", exc_info=True)
             self.display.show_error("Invalid path")
             return False
 
-    def copy_sd_to_dump(self, source_path: Path, destination_path: Path, 
-                        log_file: Path) -> bool:
-        """
-        Copy files from source to destination with comprehensive validation and error handling.
-        
-        This function manages the complete transfer process including:
-        - Source and destination validation
-        - File detection and filtering
-        - Directory structure creation
-        - File copying with progress tracking
-        - Checksum generation and verification
-        - MHL (Media Hash List) creation
-        - Safe unmounting of source drive
-        
-        Args:
-            source_path: Path to source drive (e.g., SD card)
-            destination_path: Path where files should be copied
-            log_file: Path for transfer log file
-            
-        Returns:
-            bool: True if transfer successful, False if any critical operation fails
-        """
-        # Track status for cleanup in finally block
-        transfer_success = False
-        unmount_success = False
-        mhl_file_created = False
-        target_dir = None
-        files_to_transfer = []
-        transfer_started = False
-        
+    def _validate_source_path(self, source_path: Path) -> bool:
+        """Validate source path accessibility with proper error handling."""
         try:
-            # First validate that we can proceed with the transfer
-            if not self._validate_transfer_preconditions(destination_path):
-                self._play_sound(success=False)
+            if not source_path.exists():
+                logger.error(f"Source path does not exist: {source_path}")
+                self.display.show_error("Source Missing")
                 return False
-
-            # Verify source drive accessibility with improved error handling
+                
+            if not os.access(str(source_path), os.R_OK):
+                logger.error(f"No read permission for source path: {source_path}")
+                self.display.show_error("Source Not Readable")
+                return False
+            
+            # Test directory listing with specific error handling
             try:
-                if not source_path.exists():
-                    logger.error(f"Source path does not exist: {source_path}")
-                    self.display.show_error("Source Missing")
-                    return False
-                    
-                if not os.access(str(source_path), os.R_OK):
-                    logger.error(f"No read permission for source path: {source_path}")
-                    self.display.show_error("Source Not Readable")
-                    return False
-                
-                # Test directory listing with specific error handling
-                try:
-                    test_list = list(source_path.iterdir())
-                    logger.info(f"Source directory contains {len(test_list)} items")
-                except PermissionError as e:
-                    logger.error(f"Permission denied listing source directory: {source_path}, {e}")
-                    self.display.show_error("Permission Denied")
-                    return False
-                except NotADirectoryError as e:
-                    logger.error(f"Source path is not a directory: {source_path}, {e}")
-                    self.display.show_error("Not A Directory")
-                    return False
-                
+                test_list = list(source_path.iterdir())
+                logger.info(f"Source directory contains {len(test_list)} items")
             except PermissionError as e:
-                logger.error(f"Permission denied accessing source path: {source_path}, {e}")
+                logger.error(f"Permission denied listing source directory: {source_path}, {e}")
                 self.display.show_error("Permission Denied")
                 return False
-            except FileNotFoundError as e:
-                logger.error(f"Source path not found: {source_path}, {e}")
-                self.display.show_error("Source Not Found")
+            except NotADirectoryError as e:
+                logger.error(f"Source path is not a directory: {source_path}, {e}")
+                self.display.show_error("Not A Directory")
                 return False
-            except OSError as e:
-                logger.error(f"OS error accessing source path: {source_path}, {e}")
-                self.display.show_error("Access Error")
-                return False
-            except Exception as e:
-                logger.error(f"Unexpected error accessing source path: {source_path}, {e}", exc_info=True)
-                self.display.show_error("Source Error")
-                return False
-
-            # Generate timestamp for this transfer session
-            timestamp = datetime.now().strftime(self.config.timestamp_format)
             
-            # Log the current configuration state
-            logger.info(f"Starting transfer with configuration:")
-            logger.info(f"  create_date_folders: {self.config.create_date_folders}")
-            logger.info(f"  destination_path: {destination_path}")
+            return True
             
-            # Create target directory using directory handler with error handling
+        except PermissionError as e:
+            logger.error(f"Permission denied accessing source path: {source_path}, {e}")
+            self.display.show_error("Permission Denied")
+            return False
+        except FileNotFoundError as e:
+            logger.error(f"Source path not found: {source_path}, {e}")
+            self.display.show_error("Source Not Found")
+            return False
+        except OSError as e:
+            logger.error(f"OS error accessing source path: {source_path}, {e}")
+            self.display.show_error("Access Error")
+            return False
+        except Exception as e:
+            logger.error(f"Unexpected error accessing source path: {source_path}, {e}", exc_info=True)
+            self.display.show_error("Source Error")
+            return False
+
+    def _initialize_mhl_file(self, timestamp: str, target_dir: Path) -> Optional[Tuple[Path, Any, Any]]:
+        """Initialize MHL file for transfer verification."""
+        try:
+            mhl_filename, tree, hashes = initialize_mhl_file(timestamp, target_dir)
+            return mhl_filename, tree, hashes
+        except OSError as e:
+            logger.error(f"Failed to create MHL file: {e}")
+            self.display.show_error("MHL Create Failed")
+            return None
+        except Exception as e:
+            logger.error(f"Unexpected error creating MHL file: {e}")
+            self.display.show_error("MHL Create Failed")
+            return None
+
+    def _get_files_with_os_walk(self, source_path: Path) -> List[Path]:
+        """Get files using the os.walk method as a fallback."""
+        files_to_transfer = []
+        source_str = str(source_path)
+        logger.debug(f"Starting file scan from: {source_str}")
+        
+        for root, dirs, files in os.walk(source_str, onerror=lambda err: logger.error(f"Walk error: {err}")):
             try:
-                target_dir = self.directory_handler.create_organized_directory(
-                    destination_path,
-                    source_path,
-                    timestamp if self.config.create_date_folders else None
-                )
-            except PermissionError as e:
-                logger.error(f"Permission denied creating directory structure: {e}")
-                self.display.show_error("Dir Create Permission")
-                return False
-            except OSError as e:
-                logger.error(f"OS error creating directory structure: {e}")
-                self.display.show_error("Dir Create Failed")
-                return False
-            except Exception as e:
-                logger.error(f"Error creating directory structure: {e}", exc_info=True)
-                self.display.show_error("Dir Create Error")
-                return False
-
-            try:
-                # Initialize MHL handling for transfer verification
-                try:
-                    mhl_filename, tree, hashes = initialize_mhl_file(timestamp, target_dir)
-                    mhl_file_created = True
-                except OSError as e:
-                    logger.error(f"Failed to create MHL file: {e}")
-                    self.display.show_error("MHL Create Failed")
-                    return False
+                current_dir = Path(root)
+                logger.debug(f"Processing directory: {current_dir}")
                 
-                # Get card name for organization
-                card_name = source_path.name or "unnamed_card"
+                # Skip system directories
+                if any(part.startswith('.') or part == 'System Volume Information' 
+                    for part in current_dir.parts):
+                    logger.debug(f"Skipping system directory: {current_dir}")
+                    continue
                 
-                # Get complete file list using improved file detection
-                try:
-                    # First try using the faster _get_transferable_files method
-                    files_to_transfer = self._get_transferable_files(source_path)
-                    
-                    # If that fails, fall back to the slower os.walk method
-                    if not files_to_transfer:
-                        logger.warning(f"Fast file scan failed, falling back to os.walk")
-                        files_to_transfer = []
+                # Process each file in current directory
+                for filename in files:
+                    try:
+                        file_path = current_dir / filename
+                        logger.debug(f"Examining file: {file_path}")
                         
-                        # Walk through the directory structure with error handling
-                        source_str = str(source_path)
-                        logger.debug(f"Starting file scan from: {source_str}")
-                        
-                        for root, dirs, files in os.walk(source_str, onerror=lambda err: logger.error(f"Walk error: {err}")):
-                            try:
-                                current_dir = Path(root)
-                                logger.debug(f"Processing directory: {current_dir}")
-                                
-                                # Skip system directories
-                                if any(part.startswith('.') or part == 'System Volume Information' 
-                                    for part in current_dir.parts):
-                                    logger.debug(f"Skipping system directory: {current_dir}")
-                                    continue
-                                
-                                # Process each file in current directory
-                                for filename in files:
-                                    try:
-                                        file_path = current_dir / filename
-                                        logger.debug(f"Examining file: {file_path}")
-                                        
-                                        # Skip hidden files
-                                        if filename.startswith('.'):
-                                            logger.debug(f"Skipping hidden file: {filename}")
-                                            continue
-                                            
-                                        # Verify file exists and is readable
-                                        if not file_path.exists():
-                                            logger.warning(f"File not accessible: {file_path}")
-                                            continue
-                                            
-                                        # Apply media filtering if enabled
-                                        if self.config.media_only_transfer:
-                                            if any(file_path.name.lower().endswith(ext) 
-                                                for ext in self.config.media_extensions):
-                                                files_to_transfer.append(file_path)
-                                                logger.debug(f"Added media file: {file_path}")
-                                        else:
-                                            files_to_transfer.append(file_path)
-                                            logger.debug(f"Added file: {file_path}")
-                                            
-                                    except FileNotFoundError as file_err:
-                                        # File disappeared between listing and examination
-                                        logger.warning(f"File disappeared during scan: {filename}, {file_err}")
-                                        continue
-                                    except PermissionError as file_err:
-                                        logger.warning(f"Permission denied accessing file: {filename}, {file_err}")
-                                        continue
-                                    except Exception as file_err:
-                                        logger.error(f"Error processing file {filename}: {file_err}")
-                                        continue
-                                        
-                            except PermissionError as dir_err:
-                                logger.warning(f"Permission denied for directory {root}: {dir_err}")
-                                continue
-                            except Exception as dir_err:
-                                logger.error(f"Error processing directory {root}: {dir_err}")
-                                continue
-                        
-                except PermissionError as e:
-                    logger.error(f"Permission denied scanning for files: {e}")
-                    self.display.show_error("Scan Permission")
-                    return False
-                except Exception as e:
-                    logger.error(f"Error scanning for files: {e}", exc_info=True)
-                    self.display.show_error("Scan Failed")
-                    return False
-
-                # Verify we found files to transfer
-                if not files_to_transfer:
-                    logger.warning(f"No {'media' if self.config.media_only_transfer else ''} files found to transfer in {source_path}")
-                    
-                    # More informative error message based on transfer mode
-                    if self.config.media_only_transfer:
-                        self.display.show_error("No Media Found")
-                    else:
-                        self.display.show_error("No Files Found")
-                        
-                    self._play_sound(success=False)
-                    return False
-
-                # Calculate transfer totals with error handling
-                try:
-                    # More robust approach for calculating total size
-                    total_size = 0
-                    valid_files = []
-                    
-                    for f in files_to_transfer:
-                        try:
-                            size = f.stat().st_size
-                            total_size += size
-                            valid_files.append(f)
-                        except (FileNotFoundError, PermissionError) as e:
-                            # File disappeared or became inaccessible
-                            logger.warning(f"File {f} skipped: {e}")
+                        # Skip hidden files
+                        if filename.startswith('.'):
+                            logger.debug(f"Skipping hidden file: {filename}")
                             continue
-                    
-                    # Update files_to_transfer to only include valid files
-                    files_to_transfer = valid_files
-                    total_files = len(files_to_transfer)
-                    
-                    if total_files == 0:
-                        logger.warning("All files became inaccessible during size calculation")
-                        self.display.show_error("Files Disappeared")
-                        return False
-                    
-                    logger.info(f"Transfer mode: {'Media only' if self.config.media_only_transfer else 'All files'}")
-                    logger.info(f"Total files to transfer: {total_files}")
-                    logger.info(f"Total transfer size: {total_size / (1024*1024*1024):.2f} GB")
-                    
-                except Exception as e:
-                    logger.error(f"Error calculating transfer totals: {e}", exc_info=True)
-                    self.display.show_error("Size Calc Error")
-                    return False
-                    
-                # Verify sufficient space (with 10% buffer)
-                required_space = int(total_size * 1.1)
-                try:
-                    if not self.storage.has_enough_space(destination_path, required_space):
-                        available_space = self.storage.get_drive_info(destination_path)['free']
-                        logger.error(
-                            f"Not enough space. Need {required_space / (1024*1024*1024):.2f} GB, "
-                            f"have {available_space / (1024*1024*1024):.2f} GB"
-                        )
-                        self.display.show_error("Not enough space")
-                        self._play_sound(success=False)
-                        return False
-                except Exception as e:
-                    logger.error(f"Error checking available space: {e}")
-                    self.display.show_error("Space Check Error")
-                    return False
-                    
-                # Initialize transfer state
-                try:
-                    self.state_manager.enter_transfer()
-                    transfer_started = True
-                except Exception as e:
-                    logger.error(f"Failed to enter transfer state: {e}")
-                    self.display.show_error("State Error")
-                    return False
-                
-                try:
-                    file_number = 0
-                    total_transferred = 0
-                    failures = []
-
-                    # Create or open log file with error handling
-                    try:
-                        # Ensure log file directory exists
-                        log_file.parent.mkdir(parents=True, exist_ok=True)
-                        log_file_created = True
-                    except Exception as e:
-                        logger.error(f"Failed to create log file directory: {e}")
-                        # Continue without log file
-                        log_file_created = False
-
-                    with open(log_file, 'a', encoding='utf-8') as log:
-                        # Log start of transfer
-                        transfer_start_time = datetime.now()
-                        log.write(f"Transfer started at {transfer_start_time.isoformat()}\n")
-                        log.write(f"Source: {source_path}\n")
-                        log.write(f"Destination: {target_dir}\n")
-                        log.write(f"Files to transfer: {total_files}\n")
-                        log.write(f"Total size: {total_size / (1024*1024*1024):.2f} GB\n\n")
-                        
-                        # Create required directory structure
-                        if self.config.preserve_folder_structure:
-                            try:
-                                required_directories = set()
-                                for file_path in files_to_transfer:
-                                    try:
-                                        rel_path = file_path.parent.relative_to(source_path)
-                                        target_path = target_dir / rel_path
-                                        required_directories.add(target_path)
-                                    except ValueError as e:
-                                        # Handle case where relative_to fails
-                                        logger.warning(f"Could not determine relative path for {file_path}: {e}")
-                                        continue
-                                    
-                                for dir_path in sorted(required_directories):
-                                    try:
-                                        dir_path.mkdir(parents=True, exist_ok=True)
-                                        logger.debug(f"Created directory: {dir_path}")
-                                    except PermissionError as e:
-                                        logger.error(f"Permission denied creating directory {dir_path}: {e}")
-                                        raise
-                                    except OSError as e:
-                                        logger.error(f"OS error creating directory {dir_path}: {e}")
-                                        raise
-                            except Exception as e:
-                                logger.error(f"Failed to create directory structure: {e}")
-                                self.display.show_error("Dir Structure Error")
-                                return False
-
-                        # Transfer each file
-                        for src_file in files_to_transfer:
-                            file_number += 1
                             
-                            try:
-                                # Check if file still exists before attempting transfer
-                                if not src_file.exists():
-                                    logger.warning(f"File disappeared before transfer: {src_file}")
-                                    failures.append(f"{src_file} (disappeared)")
-                                    self._log_failure(log, src_file, None, "File disappeared")
-                                    continue
-                                    
-                                file_size = src_file.stat().st_size
-                                
-                                # Create destination path preserving structure
-                                try:
-                                    dst_path = self._create_destination_path(
-                                        src_file, 
-                                        target_dir, 
-                                        source_path
-                                    )
-                                except Exception as e:
-                                    logger.error(f"Failed to create destination path for {src_file}: {e}")
-                                    failures.append(f"{src_file} (path error)")
-                                    self._log_failure(log, src_file, None, f"Path error: {e}")
-                                    continue
-                                
-                                logger.info(f"Processing file {file_number}/{total_files}: {src_file.name}")
-                                
-                                # Initialize progress tracking
-                                self._current_progress = TransferProgress(
-                                    current_file=src_file.name,
-                                    file_number=file_number,
-                                    total_files=total_files,
-                                    bytes_transferred=0,
-                                    total_bytes=file_size,
-                                    total_transferred=total_transferred,
-                                    total_size=total_size,
-                                    current_file_progress=0.0,
-                                    overall_progress=(file_number - 1) / total_files,
-                                    status=TransferStatus.COPYING
-                                )
-
-                                # Copy and verify file with better error handling
-                                try:
-                                    success, checksum = self._copy_with_progress(
-                                        src_file, dst_path,
-                                        file_number, total_files,
-                                        total_transferred, total_size
-                                    )
-
-                                    if success and checksum:
-                                        total_transferred += file_size
-                                        self._log_success(log, src_file, dst_path)
-                                        
-                                        # Add file to MHL for verification
-                                        try:
-                                            add_file_to_mhl(
-                                                mhl_filename, tree, hashes,
-                                                dst_path, checksum,
-                                                file_size
-                                            )
-                                        except Exception as mhl_err:
-                                            logger.warning(f"Failed to add file to MHL: {dst_path}, {mhl_err}")
-                                            # Continue without stopping the transfer
-                                    else:
-                                        failures.append(str(src_file))
-                                        self._log_failure(log, src_file, dst_path, "Checksum verification failed")
-                                except Exception as copy_err:
-                                    logger.error(f"Error copying file {src_file} to {dst_path}: {copy_err}")
-                                    failures.append(str(src_file))
-                                    self._log_failure(log, src_file, dst_path, f"Copy error: {copy_err}")
-                                    
-                            except FileNotFoundError as e:
-                                logger.warning(f"File not found during transfer: {src_file}, {e}")
-                                failures.append(f"{src_file} (not found)")
-                                self._log_failure(log, src_file, None, f"Not found: {e}")
-                                continue
-                            except PermissionError as e:
-                                logger.error(f"Permission error with file: {src_file}, {e}")
-                                failures.append(f"{src_file} (permission)")
-                                self._log_failure(log, src_file, None, f"Permission denied: {e}")
-                                continue
-                            except Exception as e:
-                                logger.error(f"Unexpected error processing file {src_file}: {e}", exc_info=True)
-                                failures.append(f"{src_file} (error)")
-                                self._log_failure(log, src_file, None, f"Unknown error: {e}")
-                                continue
-
-                        # Log completion time
-                        transfer_end_time = datetime.now()
-                        duration = (transfer_end_time - transfer_start_time).total_seconds()
-                        log.write(f"\nTransfer completed at {transfer_end_time.isoformat()}\n")
-                        log.write(f"Duration: {duration:.1f} seconds\n")
-                        log.write(f"Files transferred: {total_files - len(failures)}/{total_files}\n")
-                        
-                        if failures:
-                            log.write(f"Failed files: {len(failures)}\n")
-                            # Only log the first 10 failures to avoid excessive log file size
-                            for i, failure in enumerate(failures[:10]):
-                                log.write(f"  {i+1}. {failure}\n")
-                            if len(failures) > 10:
-                                log.write(f"  ... and {len(failures) - 10} more\n")
-                        
-                        # Determine transfer success
-                        transfer_success = len(failures) == 0
-                        
-                        if transfer_success:
-                            logger.info("Transfer completed successfully")
-                            self._play_sound(success=True)
+                        # Verify file exists and is readable
+                        if not file_path.exists():
+                            logger.warning(f"File not accessible: {file_path}")
+                            continue
                             
-                            # Update final progress
-                            if self._current_progress:
-                                self._current_progress.status = TransferStatus.SUCCESS
-                                self._current_progress.total_transferred = total_size
-                                self.display.show_progress(self._current_progress)
-                            
-                            # Handle unmounting with better error handling
-                            if self.storage.is_drive_mounted(source_path):
-                                try:
-                                    if self.storage.unmount_drive(source_path):
-                                        unmount_success = True
-                                        self.display.show_status("Safe to remove card")
-                                    else:
-                                        logger.warning(f"Failed to unmount drive: {source_path}")
-                                        self.display.show_error("Unmount failed")
-                                except Exception as e:
-                                    logger.error(f"Error unmounting drive {source_path}: {e}")
-                                    self.display.show_error("Unmount error")
-                            else:
-                                unmount_success = True
-                                self.display.show_status("Safe to remove card")
+                        # Apply media filtering if enabled
+                        if self.config.media_only_transfer:
+                            if any(file_path.name.lower().endswith(ext) 
+                                for ext in self.config.media_extensions):
+                                files_to_transfer.append(file_path)
+                                logger.debug(f"Added media file: {file_path}")
                         else:
-                            self._play_sound(success=False)
+                            files_to_transfer.append(file_path)
+                            logger.debug(f"Added file: {file_path}")
                             
-                            # Create more informative error message
-                            if len(failures) == total_files:
-                                self.display.show_error("All transfers failed")
-                            else:
-                                self.display.show_error(f"{len(failures)}/{total_files} failed")
-                                
-                            logger.error(f"Transfer failed for {len(failures)}/{total_files} files")
-                            # Log first few failures for debugging
-                            for i, failure in enumerate(failures[:5]):
-                                logger.error(f"  Failed file {i+1}: {failure}")
+                    except FileNotFoundError as file_err:
+                        # File disappeared between listing and examination
+                        logger.warning(f"File disappeared during scan: {filename}, {file_err}")
+                        continue
+                    except PermissionError as file_err:
+                        logger.warning(f"Permission denied accessing file: {filename}, {file_err}")
+                        continue
+                    except Exception as file_err:
+                        logger.error(f"Error processing file {filename}: {file_err}")
+                        continue
                         
-                        return transfer_success
-                        
-                except PermissionError as e:
-                    logger.error(f"Permission denied during transfer: {e}")
-                    self._play_sound(success=False)
-                    self.display.show_error("Permission Error")
-                    return False
-                except IOError as e:
-                    logger.error(f"I/O error during transfer: {e}")
-                    self._play_sound(success=False)
-                    self.display.show_error("I/O Error")
-                    return False
-                except Exception as e:
-                    logger.error(f"Transfer failed with unexpected error: {e}", exc_info=True)
-                    self._play_sound(success=False)
-                    if self._current_progress:
-                        self._current_progress.status = TransferStatus.ERROR
-                        self.display.show_progress(self._current_progress)
-                    else:
-                        self.display.show_error("Transfer Error")
-                    return False
+            except PermissionError as dir_err:
+                logger.warning(f"Permission denied for directory {root}: {dir_err}")
+                continue
+            except Exception as dir_err:
+                logger.error(f"Error processing directory {root}: {dir_err}")
+                continue
+        
+        return files_to_transfer
+
+    def _get_files_to_transfer(self, source_path: Path) -> Optional[List[Path]]:
+        """Get list of files to transfer with fallback mechanisms."""
+        try:
+            # First try using the faster _get_transferable_files method
+            files_to_transfer = self._get_transferable_files(source_path)
+            
+            # If that fails, fall back to the slower os.walk method
+            if not files_to_transfer:
+                logger.warning(f"Fast file scan failed, falling back to os.walk")
+                files_to_transfer = self._get_files_with_os_walk(source_path)
+                
+            # Verify we found files to transfer
+            if not files_to_transfer:
+                logger.warning(f"No {'media' if self.config.media_only_transfer else ''} files found to transfer in {source_path}")
+                
+                # More informative error message based on transfer mode
+                if self.config.media_only_transfer:
+                    self.display.show_error("No Media Found")
+                else:
+                    self.display.show_error("No Files Found")
                     
-            except Exception as e:
-                logger.error(f"Unhandled error in transfer process: {e}", exc_info=True)
                 self._play_sound(success=False)
-                self.display.show_error("System Error")
+                return None
+                
+            return files_to_transfer
+            
+        except PermissionError as e:
+            logger.error(f"Permission denied scanning for files: {e}")
+            self.display.show_error("Scan Permission")
+            return None
+        except Exception as e:
+            logger.error(f"Error scanning for files: {e}", exc_info=True)
+            self.display.show_error("Scan Failed")
+            return None
+
+    def _calculate_transfer_totals(self, files_to_transfer: List[Path]) -> Optional[Tuple[List[Path], int, int]]:
+        """Calculate transfer totals and validate files."""
+        try:
+            total_size = 0
+            valid_files = []
+            
+            for f in files_to_transfer:
+                try:
+                    size = f.stat().st_size
+                    total_size += size
+                    valid_files.append(f)
+                except (FileNotFoundError, PermissionError) as e:
+                    # File disappeared or became inaccessible
+                    logger.warning(f"File {f} skipped: {e}")
+                    continue
+            
+            total_files = len(valid_files)
+            
+            if total_files == 0:
+                logger.warning("All files became inaccessible during size calculation")
+                self.display.show_error("Files Disappeared")
+                return None
+            
+            logger.info(f"Transfer mode: {'Media only' if self.config.media_only_transfer else 'All files'}")
+            logger.info(f"Total files to transfer: {total_files}")
+            logger.info(f"Total transfer size: {total_size / (1024*1024*1024):.2f} GB")
+            
+            return valid_files, total_size, total_files
+            
+        except Exception as e:
+            logger.error(f"Error calculating transfer totals: {e}", exc_info=True)
+            self.display.show_error("Size Calc Error")
+            return None
+
+    def _verify_space_requirements(self, destination_path: Path, required_space: int) -> bool:
+        """Verify destination has enough space."""
+        try:
+            if not self.storage.has_enough_space(destination_path, required_space):
+                available_space = self.storage.get_drive_info(destination_path)['free']
+                logger.error(
+                    f"Not enough space. Need {required_space / (1024*1024*1024):.2f} GB, "
+                    f"have {available_space / (1024*1024*1024):.2f} GB"
+                )
+                self.display.show_error("Not enough space")
+                self._play_sound(success=False)
+                return False
+            return True
+        except Exception as e:
+            logger.error(f"Error checking available space: {e}")
+            self.display.show_error("Space Check Error")
+            return False
+
+    def _create_directory_structure(self, files_to_transfer: List[Path], source_path: Path, target_dir: Path) -> bool:
+        """Create required directory structure for transfer."""
+        if not self.config.preserve_folder_structure:
+            return True
+            
+        try:
+            required_directories = set()
+            for file_path in files_to_transfer:
+                try:
+                    rel_path = file_path.parent.relative_to(source_path)
+                    target_path = target_dir / rel_path
+                    required_directories.add(target_path)
+                except ValueError as e:
+                    # Handle case where relative_to fails
+                    logger.warning(f"Could not determine relative path for {file_path}: {e}")
+                    continue
+                
+            for dir_path in sorted(required_directories):
+                try:
+                    dir_path.mkdir(parents=True, exist_ok=True)
+                    logger.debug(f"Created directory: {dir_path}")
+                except PermissionError as e:
+                    logger.error(f"Permission denied creating directory {dir_path}: {e}")
+                    raise
+                except OSError as e:
+                    logger.error(f"OS error creating directory {dir_path}: {e}")
+                    raise
+            return True
+        except Exception as e:
+            logger.error(f"Failed to create directory structure: {e}")
+            self.display.show_error("Dir Structure Error")
+            return False
+
+    def _transfer_single_file(self, src_file: Path, target_dir: Path, source_path: Path, 
+                            file_number: int, total_files: int, total_transferred: int, 
+                            total_size: int, mhl_data: Optional[Tuple], log_file) -> Tuple[bool, Optional[int], Optional[str]]:
+        """Transfer a single file and update progress."""
+        try:
+            # Check if file still exists before attempting transfer
+            if not src_file.exists():
+                logger.warning(f"File disappeared before transfer: {src_file}")
+                self._log_failure(log_file, src_file, None, "File disappeared")
+                return False, None, f"{src_file} (disappeared)"
+                
+            file_size = src_file.stat().st_size
+            
+            # Create destination path preserving structure
+            try:
+                dst_path = self._create_destination_path(src_file, target_dir, source_path)
+            except Exception as e:
+                logger.error(f"Failed to create destination path for {src_file}: {e}")
+                self._log_failure(log_file, src_file, None, f"Path error: {e}")
+                return False, None, f"{src_file} (path error)"
+            
+            # Check if a .TBPART file exists from a previous interrupted transfer
+            temp_dst_path = dst_path.with_suffix(dst_path.suffix + TEMP_FILE_EXTENSION)
+            if temp_dst_path.exists():
+                logger.warning(f"Found incomplete transfer file: {temp_dst_path}")
+                try:
+                    temp_dst_path.unlink()
+                    logger.info(f"Removed incomplete file: {temp_dst_path}")
+                except Exception as e:
+                    logger.error(f"Failed to remove incomplete file {temp_dst_path}: {e}")
+                    self._log_failure(log_file, src_file, temp_dst_path, f"Failed to remove incomplete file: {e}")
+                    return False, None, f"{src_file} (cleanup error)"
+            
+            logger.info(f"Processing file {file_number}/{total_files}: {src_file.name}")
+            
+            # Initialize progress tracking
+            self._current_progress = TransferProgress(
+                current_file=src_file.name,
+                file_number=file_number,
+                total_files=total_files,
+                bytes_transferred=0,
+                total_bytes=file_size,
+                total_transferred=total_transferred,
+                total_size=total_size,
+                current_file_progress=0.0,
+                overall_progress=(file_number - 1) / total_files,
+                status=TransferStatus.COPYING
+            )
+
+            # Copy and verify file
+            success, checksum = self._copy_with_progress(
+                src_file, dst_path,
+                file_number, total_files,
+                total_transferred, total_size
+            )
+
+            if success and checksum:
+                self._log_success(log_file, src_file, dst_path)
+                
+                # Add file to MHL for verification
+                if mhl_data:
+                    try:
+                        mhl_filename, tree, hashes = mhl_data
+                        add_file_to_mhl(mhl_filename, tree, hashes, dst_path, checksum, file_size)
+                    except Exception as mhl_err:
+                        logger.warning(f"Failed to add file to MHL: {dst_path}, {mhl_err}")
+                        # Continue without stopping the transfer
+                        
+                return True, file_size, None
+            else:
+                # Check if a .TBPART file was left behind after a failed transfer
+                temp_dst_path = dst_path.with_suffix(dst_path.suffix + TEMP_FILE_EXTENSION)
+                if temp_dst_path.exists():
+                    try:
+                        temp_dst_path.unlink()
+                        logger.info(f"Cleaned up incomplete file after failed transfer: {temp_dst_path}")
+                    except Exception as e:
+                        logger.warning(f"Failed to clean up incomplete file {temp_dst_path}: {e}")
+                
+                self._log_failure(log_file, src_file, dst_path, "Checksum verification failed")
+                return False, None, str(src_file)
+                
+        except FileNotFoundError as e:
+            logger.warning(f"File not found during transfer: {src_file}, {e}")
+            self._log_failure(log_file, src_file, None, f"Not found: {e}")
+            return False, None, f"{src_file} (not found)"
+        except PermissionError as e:
+            logger.error(f"Permission error with file: {src_file}, {e}")
+            self._log_failure(log_file, src_file, None, f"Permission denied: {e}")
+            return False, None, f"{src_file} (permission)"
+        except Exception as e:
+            logger.error(f"Unexpected error processing file {src_file}: {e}", exc_info=True)
+            self._log_failure(log_file, src_file, None, f"Unknown error: {e}")
+            return False, None, f"{src_file} (error)"
+
+    def _log_transfer_completion(self, transfer_start_time: datetime, log_file, total_files: int, failures: List[str]) -> None:
+        """
+        Log transfer completion details to the log file.
+        
+        Args:
+            transfer_start_time: When the transfer started
+            log_file: Log file to write to
+            total_files: Total number of files processed
+            failures: List of failed transfers
+        """
+        try:
+            with open(log_file, 'a', encoding='utf-8') as log:
+                # Log completion time
+                transfer_end_time = datetime.now()
+                duration = (transfer_end_time - transfer_start_time).total_seconds()
+                log.write(f"\nTransfer completed at {transfer_end_time.isoformat()}\n")
+                log.write(f"Duration: {duration:.1f} seconds\n")
+                log.write(f"Files transferred: {total_files - len(failures)}/{total_files}\n")
+                
+                if failures:
+                    log.write(f"Failed files: {len(failures)}\n")
+                    # Only log the first 10 failures to avoid excessive log file size
+                    for i, failure in enumerate(failures[:10]):
+                        log.write(f"  {i+1}. {failure}\n")
+                    if len(failures) > 10:
+                        log.write(f"  ... and {len(failures) - 10} more\n")
+        except Exception as e:
+            logger.error(f"Error updating log file with completion info: {e}")
+
+    def _update_final_progress(self, total_size: int, success: bool) -> None:
+        """
+        Update the final progress display.
+        
+        Args:
+            total_size: Total size of transferred files
+            success: Whether the transfer was successful
+        """
+        if self._current_progress:
+            self._current_progress.status = TransferStatus.SUCCESS if success else TransferStatus.ERROR
+            self._current_progress.total_transferred = total_size
+            self.display.show_progress(self._current_progress)
+
+    def _handle_drive_unmount(self, source_path: Path) -> bool:
+        """
+        Attempt to unmount the source drive.
+        
+        Args:
+            source_path: Path to the source drive
+            
+        Returns:
+            bool: True if unmount successful or not needed, False if unmount failed
+        """
+        if not self.storage.is_drive_mounted(source_path):
+            return True
+            
+        try:
+            if self.storage.unmount_drive(source_path):
+                self.display.show_status("Safe to remove card")
+                return True
+            else:
+                logger.warning(f"Failed to unmount drive: {source_path}")
+                self.display.show_error("Unmount failed")
+                return False
+        except Exception as e:
+            logger.error(f"Error unmounting drive {source_path}: {e}")
+            self.display.show_error("Unmount error")
+            return False
+
+    def _process_transfer_results(self, transfer_start_time: datetime, log_file, 
+                                total_files: int, failures: List[str], source_path: Path, 
+                                total_size: int) -> Tuple[bool, bool]:
+        """
+        Process transfer results and handle unmounting.
+        
+        Args:
+            transfer_start_time: When the transfer started
+            log_file: Log file to write to
+            total_files: Total number of files processed
+            failures: List of failed transfers
+            source_path: Path to the source drive
+            total_size: Total size of transferred files
+            
+        Returns:
+            Tuple of (success_flag, unmount_success): 
+            - success_flag: True if transfer succeeded
+            - unmount_success: True if unmount succeeded or wasn't needed
+        """
+        transfer_success = len(failures) == 0
+        
+        # Log completion details
+        self._log_transfer_completion(transfer_start_time, log_file, total_files, failures)
+        
+        if transfer_success:
+            logger.info("Transfer completed successfully")
+            self._play_sound(success=True)
+            
+            # Update final progress
+            self._update_final_progress(total_size, True)
+            
+            # Handle unmounting
+            unmount_success = self._handle_drive_unmount(source_path)
+        else:
+            self._play_sound(success=False)
+            self._update_final_progress(total_size, False)
+            
+            # Create more informative error message
+            if len(failures) == total_files:
+                self.display.show_error("All transfers failed")
+            else:
+                self.display.show_error(f"{len(failures)}/{total_files} failed")
+                
+            logger.error(f"Transfer failed for {len(failures)}/{total_files} files")
+            # Log first few failures for debugging
+            for i, failure in enumerate(failures[:5]):
+                logger.error(f"  Failed file {i+1}: {failure}")
+            
+            unmount_success = False
+        
+        return transfer_success, unmount_success
+
+    def _cleanup_transfer_state(self, transfer_started: bool, transfer_success: bool, 
+                            unmount_success: bool, source_path: Path) -> None:
+        """Cleanup after transfer completes or fails."""
+        try:
+            # Always properly exit transfer state if we entered it
+            if transfer_started and self.state_manager.is_transfer():
+                try:
+                    self.state_manager.exit_transfer(source_path if not unmount_success else None)
+                except Exception as state_err:
+                    logger.error(f"Error exiting transfer state: {state_err}")
+                    # Don't propagate this error, as we're in cleanup
+            
+            # Show appropriate status message
+            if transfer_success and not unmount_success:
+                self.display.show_status("Transfer complete")
+                
+            # Log final status
+            logger.info(
+                f"Transfer completed. Status: {'Success' if transfer_success else 'Failed'}, "
+                f"Unmount: {'Success' if unmount_success else 'Failed'}"
+            )
+            
+        except Exception as cleanup_err:
+            # Last resort error handling for cleanup failures
+            logger.error(f"Error during cleanup: {cleanup_err}", exc_info=True)
+            # Don't propagate cleanup errors
+
+    def copy_sd_to_dump(self, source_path: Path, destination_path: Path, log_file: Path) -> bool:
+        """
+        Copy files from SD card to dump drive.
+        
+        Args:
+            source_path: Path to source drive (SD card)
+            destination_path: Path to destination drive (dump drive)
+            log_file: Path to log file
+            
+        Returns:
+            bool: True if transfer was successful, False otherwise
+        """
+        # Initialize variables used in finally block to prevent UnboundLocalError
+        transfer_started = False
+        transfer_success = False
+        unmount_success = False
+        
+        try:
+            # Check for and clean up any interrupted transfers from previous sessions
+            self._recover_interrupted_transfers(destination_path)
+            
+            # Phase 1: Enter transfer state (only once)
+            transfer_started = self._enter_transfer_state()
+            if not transfer_started:
                 return False
                 
+            # Phase 2: Validation and preparation
+            if not self._prepare_for_transfer(source_path, destination_path):
+                return False
+                
+            # Phase 3: Setup transfer environment
+            setup_result = self._setup_transfer_environment(source_path, destination_path)
+            if not setup_result:
+                return False
+                
+            timestamp, target_dir, mhl_data = setup_result
+                
+            # Phase 4: Identify and prepare files
+            file_prep_result = self._prepare_files_for_transfer(source_path, destination_path, target_dir)
+            if not file_prep_result:
+                return False
+                
+            files_to_transfer, total_size, total_files = file_prep_result
+                
+            # Phase 5: Initialize logging
+            transfer_start_time = self._initialize_transfer_log(log_file, source_path, target_dir, total_files, total_size)
+                
+            # Phase 6: Execute file transfers
+            transfer_result = self._execute_file_transfers(
+                files_to_transfer, target_dir, source_path, 
+                total_files, total_size, mhl_data, log_file
+            )
+            
+            if not transfer_result:
+                return False
+                
+            failures, total_transferred = transfer_result
+            
+            # Phase 7: Process results and handle unmounting
+            transfer_success, unmount_success = self._process_transfer_results(
+                transfer_start_time, log_file, total_files, 
+                failures, source_path, total_size
+            )
+            
+            return transfer_success
+                
+        except Exception as e:
+            logger.error(f"Unhandled error in transfer process: {e}", exc_info=True)
+            self._play_sound(success=False)
+            self.display.show_error("System Error")
+            return False
+            
         finally:
-            # Cleanup and state management with robust error handling
-            try:
-                # Always properly exit transfer state if we entered it
-                if transfer_started and self.state_manager.is_transfer():
-                    try:
-                        self.state_manager.exit_transfer(source_path if not unmount_success else None)
-                    except Exception as state_err:
-                        logger.error(f"Error exiting transfer state: {state_err}")
-                        # Don't propagate this error, as we're in cleanup
+            # Always perform cleanup
+            self._cleanup_transfer_state(transfer_started, transfer_success, unmount_success, source_path)
+            
+    def _prepare_for_transfer(self, source_path: Path, destination_path: Path) -> bool:
+        """
+        Validate source and destination paths before transfer.
+        
+        Args:
+            source_path: Path to source drive
+            destination_path: Path where files should be copied
+            
+        Returns:
+            bool: True if validation passes, False otherwise
+        """
+        # Validate destination path
+        if not self._validate_transfer_preconditions(destination_path):
+            self._play_sound(success=False)
+            return False
+
+        # Validate source path
+        if not self._validate_source_path(source_path):
+            return False
+            
+        return True
+        
+    def _setup_transfer_environment(self, source_path: Path, destination_path: Path) -> Optional[Tuple[str, Path, Optional[Tuple]]]:
+        """
+        Set up the transfer environment including directories and MHL file.
+        
+        Args:
+            source_path: Path to source drive
+            destination_path: Path where files should be copied
+            
+        Returns:
+            Optional[Tuple]: (timestamp, target_dir, mhl_data) if successful, None otherwise
+        """
+        # Generate timestamp for this transfer session
+        timestamp = datetime.now().strftime(self.config.timestamp_format)
+        
+        # Log the current configuration state
+        logger.info(f"Starting transfer with configuration:")
+        logger.info(f"  create_date_folders: {self.config.create_date_folders}")
+        logger.info(f"  destination_path: {destination_path}")
+        
+        # Create target directory
+        try:
+            target_dir = self.directory_handler.create_organized_directory(
+                destination_path,
+                source_path,
+                timestamp if self.config.create_date_folders else None
+            )
+        except Exception as e:
+            logger.error(f"Error creating directory structure: {e}", exc_info=True)
+            self.display.show_error("Dir Create Error")
+            return None
+
+        # Initialize MHL file
+        mhl_data = self._initialize_mhl_file(timestamp, target_dir)
+        if not mhl_data:
+            return None
+            
+        return timestamp, target_dir, mhl_data
+        
+    def _prepare_files_for_transfer(self, source_path: Path, destination_path: Path, target_dir: Path) -> Optional[Tuple[List[Path], int, int]]:
+        """
+        Identify files to transfer and calculate totals.
+        
+        Args:
+            source_path: Path to source drive
+            destination_path: Path where files should be copied
+            target_dir: Target directory for the transfer
+            
+        Returns:
+            Optional[Tuple]: (files_to_transfer, total_size, total_files) if successful, None otherwise
+        """
+        # Get files to transfer
+        files_to_transfer = self._get_files_to_transfer(source_path)
+        if not files_to_transfer:
+            return None
+            
+        # Calculate transfer totals
+        result = self._calculate_transfer_totals(files_to_transfer)
+        if not result:
+            return None
+            
+        files_to_transfer, total_size, total_files = result
+            
+        # Verify space requirements
+        required_space = int(total_size * 1.1)  # Add 10% buffer
+        if not self._verify_space_requirements(destination_path, required_space):
+            return None
+            
+        # Create directory structure for preserving folders
+        if not self._create_directory_structure(files_to_transfer, source_path, target_dir):
+            return None
+            
+        return files_to_transfer, total_size, total_files
+        
+    def _enter_transfer_state(self) -> bool:
+        """
+        Enter transfer state in the state manager.
+        
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        try:
+            self.state_manager.enter_transfer()
+            return True
+        except Exception as e:
+            logger.error(f"Failed to enter transfer state: {e}")
+            self.display.show_error("State Error")
+            return False
+            
+    def _initialize_transfer_log(self, log_file: Path, source_path: Path, 
+                               target_dir: Path, total_files: int, 
+                               total_size: int) -> datetime:
+        """
+        Initialize the transfer log file.
+        
+        Args:
+            log_file: Path to log file
+            source_path: Path to source drive
+            target_dir: Target directory for the transfer
+            total_files: Total number of files to transfer
+            total_size: Total size of files to transfer in bytes
+            
+        Returns:
+            datetime: Transfer start time
+        """
+        # Prepare log file directory
+        try:
+            log_file.parent.mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            logger.error(f"Failed to create log file directory: {e}")
+            # Continue without log file
+
+        # Initialize log
+        transfer_start_time = datetime.now()
+        try:
+            with open(log_file, 'a', encoding='utf-8') as log:
+                log.write(f"Transfer started at {transfer_start_time.isoformat()}\n")
+                log.write(f"Source: {source_path}\n")
+                log.write(f"Destination: {target_dir}\n")
+                log.write(f"Files to transfer: {total_files}\n")
+                log.write(f"Total size: {total_size / (1024*1024*1024):.2f} GB\n\n")
+        except Exception as e:
+            logger.error(f"Failed to initialize log file: {e}")
+            # Continue without log file
+            
+        return transfer_start_time
+        
+    def _execute_file_transfers(self, files_to_transfer: List[Path], target_dir: Path, 
+                              source_path: Path, total_files: int, total_size: int, 
+                              mhl_data: Optional[Tuple], log_file: Path) -> Optional[Tuple[List[str], int]]:
+        """
+        Execute the transfer of all files.
+        
+        Args:
+            files_to_transfer: List of files to transfer
+            target_dir: Target directory for the transfer
+            source_path: Path to source drive
+            total_files: Total number of files to transfer
+            total_size: Total size of files to transfer in bytes
+            mhl_data: MHL file data tuple (filename, tree, hashes)
+            log_file: Path to log file
+            
+        Returns:
+            Optional[Tuple]: (failures, total_transferred) if successful, None otherwise
+        """
+        failures = []
+        total_transferred = 0
+        file_number = 0
+        
+        for src_file in files_to_transfer:
+            file_number += 1
+            success, size_transferred, failure = self._transfer_single_file(
+                src_file, target_dir, source_path, 
+                file_number, total_files, total_transferred, 
+                total_size, mhl_data, log_file
+            )
+            
+            if success:
+                total_transferred += size_transferred
+            else:
+                failures.append(failure)
                 
-                # Show appropriate status message
-                if transfer_success and not unmount_success:
-                    self.display.show_status("Transfer complete")
-                    
-                # Log final status
-                logger.info(
-                    f"Transfer completed. Status: {'Success' if transfer_success else 'Failed'}, "
-                    f"Unmount: {'Success' if unmount_success else 'Failed'}"
-                )
-                
-            except Exception as cleanup_err:
-                # Last resort error handling for cleanup failures
-                logger.error(f"Error during cleanup: {cleanup_err}", exc_info=True)
-                # Don't propagate cleanup errors
+        return failures, total_transferred
 
     def _generate_destination_filename(self, source_path: Path) -> str:
         """
@@ -1310,245 +1722,6 @@ class FileTransfer:
                 filename = "unknown_file"
             return target_dir / filename
 
-    def _process_files(self, source_path: Path, target_dir: Path, 
-                    file_list: list, log_file: Path,
-                    mhl_filename: Path, tree, hashes) -> bool:
-        """
-        Process all files in the transfer.
-        
-        Args:
-            source_path: Source directory path
-            target_dir: Destination directory path
-            file_list: List of files to process
-            log_file: Path to the log file
-            mhl_filename: Path to the MHL file
-            tree: XML tree for MHL file
-            hashes: XML element for hashes in MHL file
-            
-        Returns:
-            bool: True if all files processed successfully, False otherwise
-        """
-        # Validate input parameters
-        if not isinstance(source_path, Path) or not isinstance(target_dir, Path):
-            logger.error(f"Invalid path parameters: source_path={type(source_path).__name__}, "
-                        f"target_dir={type(target_dir).__name__}")
-            return False
-            
-        if not file_list:
-            logger.warning("Empty file list provided to process_files")
-            return True  # No files to process is technically a success
-            
-        if not isinstance(log_file, Path):
-            logger.error(f"Invalid log_file parameter: {type(log_file).__name__}")
-            try:
-                log_file = Path(str(log_file))
-            except Exception as e:
-                logger.error(f"Could not convert log_file to Path: {e}")
-                return False
-                
-        try:
-            # Calculate total number of files with error handling
-            try:
-                total_files = sum(1 for f in file_list if f.is_file())
-                if total_files == 0:
-                    logger.warning("No files found in file_list")
-                    return True  # No files to process is technically a success
-            except Exception as e:
-                logger.error(f"Error counting files: {e}")
-                total_files = len(file_list)  # Fallback to list length
-                
-            file_number = 0
-            failures = []
-            processed_files = 0
-            
-            # Ensure log file directory exists
-            try:
-                log_file.parent.mkdir(parents=True, exist_ok=True)
-            except Exception as e:
-                logger.error(f"Failed to create log file directory {log_file.parent}: {e}")
-                # Continue without log file
-                
-            try:
-                with open(log_file, 'a', encoding='utf-8') as log:
-                    # Write header to log file
-                    log.write(f"Transfer started at {datetime.now().isoformat()}\n")
-                    log.write(f"Source: {source_path}\n")
-                    log.write(f"Destination: {target_dir}\n")
-                    log.write(f"Files to process: {total_files}\n\n")
-                    
-                    # Process each file
-                    for src_file in file_list:
-                        try:
-                            # Skip if not a file
-                            if not src_file.is_file():
-                                logger.debug(f"Skipping non-file item: {src_file}")
-                                continue
-                                
-                            file_number += 1
-                            logger.info(f"Processing file {file_number}/{total_files}: {src_file.name}")
-                            
-                            # Get relative path with better error handling
-                            try:
-                                rel_path = src_file.relative_to(source_path)
-                            except ValueError as e:
-                                logger.warning(f"Could not determine relative path for {src_file}: {e}")
-                                rel_path = Path(src_file.name)  # Fallback to just filename
-                                
-                            # Create timestamped filename
-                            try:
-                                timestamped_name = self._get_timestamp_filename(src_file)
-                            except Exception as e:
-                                logger.error(f"Failed to create timestamped filename for {src_file}: {e}")
-                                timestamped_name = src_file.name  # Fallback to original filename
-                                
-                            # Create destination path
-                            dst_path = target_dir / rel_path.parent / timestamped_name
-                            
-                            # Ensure destination directory exists
-                            try:
-                                dst_path.parent.mkdir(parents=True, exist_ok=True)
-                            except PermissionError as e:
-                                logger.error(f"Permission denied creating directory {dst_path.parent}: {e}")
-                                failures.append(f"{src_file} (permission denied on destination directory)")
-                                self._log_failure(log, src_file, dst_path, f"Permission denied: {e}")
-                                continue
-                            except OSError as e:
-                                logger.error(f"OS error creating directory {dst_path.parent}: {e}")
-                                failures.append(f"{src_file} (OS error on destination directory)")
-                                self._log_failure(log, src_file, dst_path, f"OS error: {e}")
-                                continue
-                                
-                            # Get file size with error handling
-                            try:
-                                file_size = src_file.stat().st_size
-                            except FileNotFoundError as e:
-                                logger.warning(f"File disappeared before transfer: {src_file}, {e}")
-                                failures.append(f"{src_file} (disappeared)")
-                                self._log_failure(log, src_file, dst_path, "File disappeared")
-                                continue
-                            except PermissionError as e:
-                                logger.error(f"Permission denied accessing file stats: {src_file}, {e}")
-                                failures.append(f"{src_file} (permission denied)")
-                                self._log_failure(log, src_file, dst_path, f"Permission denied: {e}")
-                                continue
-                            except OSError as e:
-                                logger.error(f"OS error accessing file: {src_file}, {e}")
-                                failures.append(f"{src_file} (OS error)")
-                                self._log_failure(log, src_file, dst_path, f"OS error: {e}")
-                                continue
-                            
-                            # Initialize progress tracking
-                            self._current_progress = TransferProgress(
-                                current_file=src_file.name,
-                                file_number=file_number,
-                                total_files=total_files,
-                                bytes_transferred=0,
-                                total_bytes=file_size,
-                                current_file_progress=0.0,
-                                overall_progress=(file_number - 1) / total_files,
-                                status=TransferStatus.COPYING
-                            )
-                            
-                            # Copy and verify file
-                            try:
-                                success, checksum = self._copy_with_progress(
-                                    src_file, dst_path,
-                                    file_number, total_files
-                                )
-                                
-                                if success and checksum:
-                                    processed_files += 1
-                                    self._log_success(log, src_file, dst_path)
-                                    
-                                    # Add to MHL with error handling
-                                    try:
-                                        dst_size = dst_path.stat().st_size
-                                        add_file_to_mhl(
-                                            mhl_filename, tree, hashes,
-                                            dst_path, checksum,
-                                            dst_size
-                                        )
-                                    except Exception as mhl_err:
-                                        logger.warning(f"Failed to add file to MHL: {dst_path}, {mhl_err}")
-                                        # Continue without stopping the transfer
-                                else:
-                                    failures.append(str(src_file))
-                                    self._log_failure(log, src_file, dst_path, "Copy verification failed")
-                                    
-                                    # Clean up failed transfer if possible
-                                    try:
-                                        if dst_path.exists():
-                                            dst_path.unlink()
-                                            logger.info(f"Removed failed transfer file: {dst_path}")
-                                    except Exception as cleanup_err:
-                                        logger.warning(f"Failed to clean up failed transfer file: {dst_path}, {cleanup_err}")
-                                        
-                            except Exception as copy_err:
-                                logger.error(f"Error during copy operation: {src_file} to {dst_path}, {copy_err}")
-                                failures.append(str(src_file))
-                                self._log_failure(log, src_file, dst_path, f"Copy error: {copy_err}")
-                                continue
-                                
-                        except FileNotFoundError as e:
-                            logger.warning(f"File not found during processing: {src_file}, {e}")
-                            failures.append(f"{src_file} (not found)")
-                            self._log_failure(log, src_file, None, f"File not found: {e}")
-                            continue
-                        except Exception as file_err:
-                            logger.error(f"Unexpected error processing file {src_file}: {file_err}", exc_info=True)
-                            failures.append(f"{src_file} (processing error)")
-                            self._log_failure(log, src_file, None, f"Processing error: {file_err}")
-                            continue
-                            
-                    # Write summary to log file
-                    log.write(f"\nTransfer completed at {datetime.now().isoformat()}\n")
-                    log.write(f"Processed {processed_files}/{total_files} files successfully\n")
-                    if failures:
-                        log.write(f"Failed files: {len(failures)}\n")
-                        
-                    return len(failures) == 0
-                    
-            except PermissionError as e:
-                logger.error(f"Permission denied accessing log file {log_file}: {e}")
-                # Continue processing but without log file
-                return self._process_files_without_log(source_path, target_dir, file_list, mhl_filename, tree, hashes)
-            except IOError as e:
-                logger.error(f"I/O error accessing log file {log_file}: {e}")
-                # Continue processing but without log file
-                return self._process_files_without_log(source_path, target_dir, file_list, mhl_filename, tree, hashes)
-                
-        except Exception as e:
-            logger.error(f"Unexpected error processing files: {e}", exc_info=True)
-            return False
-            
-        # Fallback return (should not reach here if all operations are handled correctly)
-        return len(failures) == 0
-
-    def _process_files_without_log(self, source_path: Path, target_dir: Path, 
-                                file_list: list, mhl_filename: Path, tree, hashes) -> bool:
-        """Fallback method when log file can't be accessed"""
-        # This would be a simplified version of _process_files that works without a log file
-        # Implementation would be similar but without log file operations
-        # Including this as a stub to demonstrate the fallback approach
-        logger.warning("Processing files without log file")
-        
-        # Simple implementation that would follow the same structure as _process_files
-        # but without writing to a log file
-        try:
-            total_files = sum(1 for f in file_list if f.is_file())
-            file_number = 0
-            failures = []
-            
-            for src_file in file_list:
-                # Process each file without logging to file
-                # (Rest of implementation would be similar to _process_files)
-                pass
-                
-            return len(failures) == 0
-        except Exception as e:
-            logger.error(f"Error processing files without log: {e}")
-            return False
-
     def _log_success(self, log_file, src_path: Path, dst_path: Path) -> None:
         """
         Log successful file transfer.
@@ -1659,3 +1832,31 @@ class FileTransfer:
             logger.warning(f"Sound system runtime error: {e}")
         except Exception as e:
             logger.error(f"Error playing sound effect: {e}")
+
+    def _recover_interrupted_transfers(self, target_dir: Path) -> None:
+        """
+        Check for and clean up any .TBPART files from previously interrupted transfers.
+        
+        Args:
+            target_dir: Target directory to check for interrupted transfers
+        """
+        try:
+            # Find all .TBPART files in the target directory and its subdirectories
+            part_files = list(target_dir.glob(f"**/*{TEMP_FILE_EXTENSION}"))
+            
+            if part_files:
+                logger.info(f"Found {len(part_files)} incomplete transfers from previous session")
+                self.display.show_status(f"Cleaning up {len(part_files)} incomplete transfers...")
+                
+                # Remove all partial files
+                for part_file in part_files:
+                    try:
+                        part_file.unlink()
+                        logger.info(f"Removed incomplete file: {part_file}")
+                    except Exception as e:
+                        logger.warning(f"Failed to remove incomplete file {part_file}: {e}")
+                        
+                self.display.show_status("Cleanup complete")
+                
+        except Exception as e:
+            logger.error(f"Error recovering interrupted transfers: {e}")

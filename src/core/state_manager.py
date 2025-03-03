@@ -49,9 +49,11 @@ class StateManager:
             self.pending_unmount: Optional[Path] = None
             logger.info("State manager initialized in STANDBY state")
         except Exception as e:
-            raise DisplayError(f"Failed to initialize display interface: {str(e)}", 
-                             display_type="lcd",
-                             error_type="initialization")
+            raise DisplayError(
+                f"Failed to initialize display interface: {str(e)}", 
+                display_type="lcd",
+                error_type="initialization"
+            )
         
     def get_current_state(self) -> SystemState:
         """
@@ -130,9 +132,11 @@ class StateManager:
                     time.sleep(0.05)  # Small delay between lines
                     self.display.show_status("Input Card", line=1)
                 except Exception as e:
-                    raise DisplayError(f"Failed to update display in standby: {str(e)}", 
-                                     display_type="lcd", 
-                                     error_type="update")
+                    raise DisplayError(
+                        f"Failed to update display in standby: {str(e)}", 
+                        display_type="lcd", 
+                        error_type="update"
+                    )
                 
             logger.info(f"Entering standby state from {prev_state}")
             
@@ -170,9 +174,11 @@ class StateManager:
             try:
                 self.display.show_status("Transfer Mode")
             except Exception as e:
-                raise DisplayError(f"Failed to update display for transfer mode: {str(e)}", 
-                                 display_type="lcd",
-                                 error_type="update")
+                raise DisplayError(
+                    f"Failed to update display for transfer mode: {str(e)}", 
+                    display_type="lcd",
+                    error_type="update"
+                )
                                  
             logger.info("Entering transfer state")
             
@@ -298,9 +304,11 @@ class StateManager:
                 time.sleep(0.05)  # Small delay between lines
                 self.display.show_status("Input Card", line=1)
             except Exception as e:
-                raise DisplayError(f"Failed to update display while exiting utility: {str(e)}",
-                                 display_type="lcd",
-                                 error_type="update")
+                raise DisplayError(
+                    f"Failed to update display while exiting utility: {str(e)}",
+                    display_type="lcd",
+                    error_type="update"
+                )
             
             logger.info("Successfully exited utility state")
             return True
