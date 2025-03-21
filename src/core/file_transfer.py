@@ -29,10 +29,18 @@ from .transfer_utils import (
 from .transfer_logger import TransferLogger, create_transfer_log
 from .progress_tracker import ProgressTracker, TransferStatus
 from .exceptions import FileTransferError as CoreFileTransferError
+from .transfer_components import TransferValidator, TransferEnvironment, FileProcessor
 
 logger = logging.getLogger(__name__)
 
 class FileTransfer:
+    """
+    Main file transfer orchestrator using composition for cleaner architecture.
+    
+    This class coordinates the file transfer process by delegating to specialized
+    components, following a composition-based approach for better maintainability.
+    """
+    
     def __init__(
         self,
         state_manager,
@@ -56,6 +64,11 @@ class FileTransfer:
         self.storage = storage
         self.config = config or TransferConfig()
         self.sound_manager = sound_manager
+        
+        # Use composition for specialized components
+        self.validator = TransferValidator(display, storage, state_manager)
+        self.environment = TransferEnvironment(self.config, display, sound_manager)
+        self.processor = FileProcessor(display, storage, self.config, sound_manager)
         
         # Initialize utility classes
         self.checksum_calculator = ChecksumCalculator(display)
@@ -501,124 +514,104 @@ class FileTransfer:
             
             return failures, total_transferred
     
-    @error_handler
-    def copy_sd_to_dump(self, source_path: Path, destination_path: Path, log_file: Path) -> bool:
+    def copy_sd_to_dump(self, source_path: Path, destination_path: Path, log_file: Path = None) -> bool:
         """
-        Copy files from SD card to dump drive.
+        Copy files from source path to destination dump location.
         
         Args:
-            source_path: Path to source drive (SD card)
-            destination_path: Path to destination drive (dump drive)
-            log_file: Path to log file
+            source_path: Source path (SD card or other media)
+            destination_path: Destination path (dump location)
+            log_file: Optional path to log file
             
         Returns:
             bool: True if transfer was successful, False otherwise
         """
-        # Variables for cleanup in finally block
-        transfer_started = False
-        transfer_success = False
-        unmount_success = False
-        
         try:
-            # Check for and clean up any interrupted transfers
-            self.file_ops.cleanup_temp_files(destination_path)
+            # Check if the source path exists before starting
+            if not source_path.exists() or not os.path.ismount(str(source_path)):
+                logger.error(f"Source drive not found or not mounted: {source_path}")
+                self.display.show_error("Source not found")
+                if self.sound_manager:
+                    self.sound_manager.play_error()
+                return False
+                
+            # Validate transfer preconditions
+            if not self.validator.validate_transfer(source_path, destination_path):
+                return False
             
-            # Phase 1: Enter transfer state
+            # Set up transfer environment
+            env_result = self.environment.setup(source_path, destination_path)
+            if not env_result:
+                return False
+                
+            timestamp, target_dir, mhl_data = env_result
+            
+            # Check if the source path still exists before starting file processing
+            if not source_path.exists() or not os.path.ismount(str(source_path)):
+                logger.error(f"Source drive removed before transfer could start: {source_path}")
+                self.display.show_error("Source removed")
+                if self.sound_manager:
+                    self.sound_manager.play_error()
+                return False
+            
+            # Process files with drive removal detection
             try:
-                self.state_manager.enter_transfer()
-                transfer_started = True
-            except Exception as e:
-                logger.error(f"Failed to enter transfer state: {e}")
-                self.display.show_error("State Error")
+                result = self.processor.process_files(source_path, target_dir, log_file)
+                if result and self.sound_manager:
+                    self.sound_manager.play_success()
+                return result
+            except (FileNotFoundError, PermissionError, OSError) as e:
+                # These specific errors are likely caused by drive removal
+                logger.error(f"Transfer failed - drive may have been removed: {e}")
+                self.display.show_error("Source removed")
+                if self.sound_manager:
+                    self.sound_manager.play_error()
                 return False
-                
-            # Phase 2: Validation and preparation
-            if not self._prepare_for_transfer(source_path, destination_path):
-                return False
-                
-            # Phase 3: Setup transfer environment
-            setup_result = self._setup_transfer_environment(source_path, destination_path)
-            if not setup_result:
-                return False
-                
-            timestamp, target_dir, mhl_data = setup_result
-                
-            # Phase 4: Identify and prepare files
-            file_prep_result = self._prepare_files_for_transfer(source_path, destination_path, target_dir)
-            if not file_prep_result:
-                return False
-                
-            files_to_transfer, total_size, total_files = file_prep_result
-                
-            # Phase 5: Execute file transfers
-            transfer_result = self._execute_file_transfers(
-                files_to_transfer, target_dir, source_path, 
-                total_files, total_size, mhl_data, log_file
-            )
             
-            if not transfer_result:
-                return False
-                
-            failures, total_transferred = transfer_result
-            
-            # Phase 6: Process results
-            transfer_success = len(failures) == 0
-            
-            if transfer_success:
-                logger.info("Transfer completed successfully")
-                self._play_sound(success=True)
-                
-                # Update final progress
-                self.progress_tracker.complete_transfer(True)
-                
-                # Handle unmounting
-                if self.storage.is_drive_mounted(source_path):
-                    try:
-                        if self.storage.unmount_drive(source_path):
-                            self.display.show_status("Safe to remove card")
-                            unmount_success = True
-                        else:
-                            logger.warning(f"Failed to unmount drive: {source_path}")
-                            self.display.show_error("Unmount failed")
-                    except Exception as e:
-                        logger.error(f"Error unmounting drive {source_path}: {e}")
-                        self.display.show_error("Unmount error")
-                else:
-                    unmount_success = True
-            else:
-                self._play_sound(success=False)
-                self.progress_tracker.complete_transfer(False)
-                
-                # Create more informative error message
-                if len(failures) == total_files:
-                    self.display.show_error("All transfers failed")
-                else:
-                    self.display.show_error(f"{len(failures)}/{total_files} failed")
-                    
-                logger.error(f"Transfer failed for {len(failures)}/{total_files} files")
-            
-            return transfer_success
-                
         except Exception as e:
-            logger.error(f"Unhandled error in transfer process: {e}", exc_info=True)
-            self._play_sound(success=False)
-            self.display.show_error("System Error")
+            logger.error(f"Error during file transfer: {e}", exc_info=True)
+            
+            # Check if it could be a drive removal error
+            if not source_path.exists() or not os.path.ismount(str(source_path)):
+                logger.error(f"Source drive seems to have been removed during transfer: {source_path}")
+                self.display.show_error("Source removed")
+            else:
+                self.display.show_error("Transfer Error")
+                
+            if self.sound_manager:
+                self.sound_manager.play_error()
+                
             return False
             
-        finally:
-            # Always properly exit transfer state if we entered it
-            if transfer_started and self.state_manager.is_transfer():
-                try:
-                    self.state_manager.exit_transfer(source_path if not unmount_success else None)
-                except Exception as state_err:
-                    logger.error(f"Error exiting transfer state: {state_err}")
-                    
-            # Show appropriate status message
-            if transfer_success and not unmount_success:
-                self.display.show_status("Transfer complete")
+    def generate_proxies(self, source_path: Path, destination_path: Optional[Path] = None) -> bool:
+        """
+        Generate proxy files for media in source path.
+        
+        Args:
+            source_path: Source path containing media files
+            destination_path: Optional custom destination path for proxies
+            
+        Returns:
+            bool: True if proxy generation was successful, False otherwise
+        """
+        try:
+            # Check if proxy generation is enabled
+            if not self.config.generate_proxies:
+                logger.info("Proxy generation is disabled in configuration")
+                return False
                 
-            # Log final status
-            logger.info(
-                f"Transfer completed. Status: {'Success' if transfer_success else 'Failed'}, "
-                f"Unmount: {'Success' if unmount_success else 'Failed'}"
-            )
+            # Create proxy generator
+            proxy_generator = ProxyGenerator(self.config, self.display)
+            
+            # Generate proxies
+            if destination_path:
+                return proxy_generator.generate_proxies(source_path, destination_path)
+            else:
+                # Use default proxy path from source
+                proxy_dir = source_path / self.config.proxy_subfolder
+                return proxy_generator.generate_proxies(source_path, proxy_dir)
+                
+        except Exception as e:
+            logger.error(f"Error during proxy generation: {e}", exc_info=True)
+            self.display.show_error("Proxy Error")
+            return False

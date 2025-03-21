@@ -220,6 +220,105 @@ class FileOperations:
         except Exception as e:
             raise FileTransferError(f"Failed to clean up temporary files: {e}", error_type="io")
 
+    @error_handler
+    def copy_file(self, src_path: Path, dst_path: Path, progress_callback=None) -> bool:
+        """
+        Copy a file with progress updates (without calculating hash).
+        
+        Args:
+            src_path: Source file path
+            dst_path: Destination file path
+            progress_callback: Optional callback for progress updates
+            
+        Returns:
+            bool: True if copy succeeded, False otherwise
+            
+        Raises:
+            FileTransferError: If copy fails
+        """
+        try:
+            # First check if source still exists before starting
+            if not src_path.exists():
+                error_msg = f"Source file no longer exists: {src_path}"
+                logger.error(error_msg)
+                if self.display:
+                    self.display.show_error("Source removed")
+                if self.sound_manager:
+                    self.sound_manager.play_error()
+                raise FileTransferError(error_msg, source=src_path, error_type="access")
+            
+            # Use a context manager to handle temporary files and cleanup
+            with FileOperationContext(self.display, self.sound_manager) as context:
+                # Create a temporary destination path with .TBPART extension
+                temp_dst_path = dst_path.with_suffix(dst_path.suffix + TEMP_FILE_EXTENSION)
+                context.register_temp_file(temp_dst_path)
+                
+                # Ensure parent directory exists
+                temp_dst_path.parent.mkdir(parents=True, exist_ok=True)
+                
+                # Get file size for progress updates
+                try:
+                    file_size = src_path.stat().st_size
+                except (OSError, FileNotFoundError) as e:
+                    error_msg = f"Source drive may have been removed: {e}"
+                    logger.error(error_msg)
+                    if self.display:
+                        self.display.show_error("Source removed")
+                    if self.sound_manager:
+                        self.sound_manager.play_error()
+                    raise FileTransferError(error_msg, source=src_path, error_type="access")
+                
+                # Copy the file with progress updates
+                try:
+                    with open(src_path, 'rb', buffering=BUFFER_SIZE) as src:
+                        with open(temp_dst_path, 'wb', buffering=BUFFER_SIZE) as dst:
+                            bytes_transferred = 0
+                            
+                            while True:
+                                try:
+                                    chunk = src.read(CHUNK_SIZE)
+                                    if not chunk:
+                                        break
+                                        
+                                    dst.write(chunk)
+                                    bytes_transferred += len(chunk)
+                                    
+                                    # Update progress if callback provided
+                                    if progress_callback:
+                                        progress_callback(bytes_transferred, file_size)
+                                except (OSError, IOError) as io_error:
+                                    error_msg = f"I/O error during file transfer (drive may have been removed): {io_error}"
+                                    logger.error(error_msg)
+                                    if self.display:
+                                        self.display.show_error("Source removed")
+                                    if self.sound_manager:
+                                        self.sound_manager.play_error()
+                                    raise FileTransferError(error_msg, source=src_path, error_type="io")
+                except (FileNotFoundError, PermissionError) as access_error:
+                    error_msg = f"Source drive was removed during transfer: {access_error}"
+                    logger.error(error_msg)
+                    if self.display:
+                        self.display.show_error("Source removed")
+                    if self.sound_manager:
+                        self.sound_manager.play_error()
+                    raise FileTransferError(error_msg, source=src_path, error_type="access")
+                
+                # If we got here, the file was successfully copied to the temporary location
+                # Now rename it to the final destination
+                if dst_path.exists():
+                    dst_path.unlink()
+                temp_dst_path.rename(dst_path)
+                
+                return True
+        except FileTransferError:
+            # Re-raise FileTransferError exceptions
+            raise
+        except Exception as e:
+            # Log the error
+            logger.error(f"Error copying file {src_path} to {dst_path}: {e}")
+            # Return failure result
+            return False
+
 
 def safe_copy_file(src_path: Path, dst_path: Path, 
                  chunk_size: int = CHUNK_SIZE,

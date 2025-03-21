@@ -29,3 +29,5 @@ class TransferProgress:
     proxy_progress: float = 0.0
     proxy_file_number: int = 0
     proxy_total_files: int = 0
+    speed_bytes_per_sec: float = 0.0
+    eta_seconds: float = 0.0

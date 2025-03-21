@@ -133,65 +133,94 @@ class ChecksumCalculator:
         progress_callback: Optional[Callable[[int, int], None]] = None,
         current_progress: Optional[TransferProgress] = None
     ) -> bool:
-        """Verify a file's checksum against an expected value."""
+        """
+        Verify a file's checksum against an expected value.
+        
+        Args:
+            file_path: Path to the file to verify
+            expected_checksum: Expected checksum value to check against
+            progress_callback: Optional callback for progress updates
+            current_progress: Optional progress object to update
+            
+        Returns:
+            bool: True if checksum matches, False otherwise
+        """
+        if not expected_checksum:
+            logger.error("No expected checksum provided")
+            return False
+            
+        if not file_path.exists():
+            logger.error(f"File not found for verification: {file_path}")
+            return False
+            
+        # Get file size for progress tracking
         try:
-            # Validate input parameters
-            if not file_path.exists():
-                logger.error(f"File not found during verification: {file_path}")
-                self.display.show_error("File Missing")
-                return False
-                
-            if not expected_checksum:
-                logger.error(f"Empty expected checksum for {file_path}")
-                self.display.show_error("Invalid Checksum")
-                return False
-                
-            # Reset progress for verification phase
-            if current_progress:
-                try:
-                    current_progress.bytes_transferred = 0
-                    current_progress.current_file_progress = 0.0
-                    current_progress.status = TransferStatus.CHECKSUMMING
-                except Exception as progress_err:
-                    logger.warning(f"Error resetting progress object: {progress_err}")
-                    # Continue with verification despite progress object issues
-            
-            # Calculate actual checksum with progress monitoring
-            try:
-                actual_checksum = self.calculate_file_checksum(
-                    file_path,
-                    progress_callback=progress_callback,
-                    current_progress=current_progress
-                )
-            except Exception as checksum_err:
-                logger.error(f"Error during checksum calculation for {file_path}: {checksum_err}")
-                self.display.show_error("Checksum Failed")
-                return False
-            
-            if actual_checksum is None:
-                logger.error(f"Failed to calculate checksum for {file_path}")
-                self.display.show_error("Checksum Failed")
-                return False
-                
-            # Compare checksums in a case-insensitive manner
-            try:
-                matches = actual_checksum.lower() == expected_checksum.lower()
-            except AttributeError as e:
-                logger.error(f"Invalid checksum format: {e}")
-                self.display.show_error("Invalid Checksum")
-                return False
-                
-            if not matches:
-                logger.warning(
-                    f"Checksum mismatch for {file_path}:\n"
-                    f"Expected: {expected_checksum}\n"
-                    f"Actual  : {actual_checksum}"
-                )
-                self.display.show_error("Verify Failed")
-                
-            return matches
-                
+            file_size = file_path.stat().st_size
         except Exception as e:
-            logger.error(f"Error verifying checksum for {file_path}: {e}", exc_info=True)
-            self.display.show_error("Verify Error")
+            logger.error(f"Failed to get file size for verification: {e}")
+            return False
+            
+        # Update progress status if provided
+        if current_progress:
+            current_progress.status = TransferStatus.CHECKSUMMING
+            current_progress.bytes_transferred = 0
+            try:
+                self.display.show_progress(current_progress)
+            except Exception as e:
+                logger.warning(f"Failed to update display for verification: {e}")
+                
+        # Calculate actual checksum with progress updates
+        try:
+            bytes_processed = 0
+            hash_obj = xxhash.xxh64()
+            
+            with open(file_path, 'rb') as f:
+                while True:
+                    chunk = f.read(32 * 1024 * 1024)  # 32MB chunks
+                    if not chunk:
+                        break
+                        
+                    hash_obj.update(chunk)
+                    bytes_processed += len(chunk)
+                    
+                    # Update progress
+                    if progress_callback:
+                        try:
+                            progress_callback(bytes_processed, file_size)
+                        except Exception as callback_err:
+                            logger.warning(f"Progress callback error during verification: {callback_err}")
+                    
+            actual_checksum = hash_obj.hexdigest()
+            
+            # Check if checksums match
+            checksums_match = actual_checksum.lower() == expected_checksum.lower()
+            
+            if checksums_match:
+                logger.info(f"Checksum verification successful: {file_path}")
+            else:
+                logger.error(f"Checksum verification failed for {file_path}. Expected: {expected_checksum}, Got: {actual_checksum}")
+                
+            # Update final progress status
+            if current_progress:
+                current_progress.bytes_transferred = file_size
+                current_progress.current_file_progress = 1.0
+                current_progress.status = TransferStatus.SUCCESS if checksums_match else TransferStatus.ERROR
+                try:
+                    self.display.show_progress(current_progress)
+                except Exception as e:
+                    logger.warning(f"Failed to update final verification progress: {e}")
+                    
+            return checksums_match
+            
+        except Exception as e:
+            logger.error(f"Error during checksum verification: {e}")
+            
+            # Update progress on error
+            if current_progress:
+                current_progress.status = TransferStatus.ERROR
+                try:
+                    self.display.show_progress(current_progress)
+                except Exception as display_err:
+                    logger.warning(f"Failed to update error progress: {display_err}")
+                    
             return False

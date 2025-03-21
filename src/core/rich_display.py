@@ -189,14 +189,18 @@ class RichDisplay(DisplayInterface):
                         self.proxy_total_task_id,
                         completed=progress.total_transferred,
                         total=progress.total_size,
-                        description=f"Total Progress ({progress.proxy_file_number}/{progress.proxy_total_files})"
+                        description=f"Total Progress ({progress.proxy_file_number}/{progress.proxy_total_files})",
+                        speed=progress.speed_bytes_per_sec if progress.speed_bytes_per_sec > 0 else None,
+                        time_remaining=progress.eta_seconds if progress.eta_seconds > 0 else None
                     )
                     
                     self.progress.update(
                         self.proxy_current_task_id,
                         completed=progress.bytes_transferred,
                         total=progress.total_bytes,
-                        description=f"Generating: {progress.current_file}"
+                        description=f"Generating: {progress.current_file}",
+                        speed=progress.speed_bytes_per_sec if progress.speed_bytes_per_sec > 0 else None,
+                        time_remaining=progress.eta_seconds if progress.eta_seconds > 0 else None
                     )
                 else:
                     # Update transfer progress bars with correct sizes
@@ -204,7 +208,9 @@ class RichDisplay(DisplayInterface):
                         self.total_task_id,
                         completed=progress.total_transferred,
                         total=progress.total_size,
-                        description=f"Total Progress ({progress.file_number}/{progress.total_files})"
+                        description=f"Total Progress ({progress.file_number}/{progress.total_files})",
+                        speed=progress.speed_bytes_per_sec if progress.speed_bytes_per_sec > 0 else None,
+                        time_remaining=progress.eta_seconds if progress.eta_seconds > 0 else None
                     )
 
                     if progress.status == TransferStatus.COPYING:
@@ -212,7 +218,9 @@ class RichDisplay(DisplayInterface):
                             self.copy_task_id,
                             completed=progress.bytes_transferred,
                             total=progress.total_bytes,
-                            description=f"Copying: {progress.current_file}"
+                            description=f"Copying: {progress.current_file}",
+                            speed=progress.speed_bytes_per_sec if progress.speed_bytes_per_sec > 0 else None,
+                            time_remaining=progress.eta_seconds if progress.eta_seconds > 0 else None
                         )
                         # Reset checksum progress during copy
                         self.progress.update(
@@ -235,7 +243,9 @@ class RichDisplay(DisplayInterface):
                             self.checksum_task_id,
                             completed=checksum_completed,
                             total=progress.total_bytes,
-                            description=f"Checksumming: {progress.current_file}"
+                            description=f"Checksumming: {progress.current_file}",
+                            speed=progress.speed_bytes_per_sec if progress.speed_bytes_per_sec > 0 else None,
+                            time_remaining=progress.eta_seconds if progress.eta_seconds > 0 else None
                         )
 
                 # Update the layout
@@ -250,11 +260,14 @@ class RichDisplay(DisplayInterface):
                     error_type="progress_update"
                 ) from e
 
-    def _cleanup_progress(self) -> None:
+    def _cleanup_progress(self, preserve_errors: bool = False) -> None:
             """
             Clean up progress display and reset state.
             This method ensures proper cleanup of the Rich Live display context
             and resets all associated state for a fresh start.
+            
+            Args:
+                preserve_errors: When True, preserves any error messages that might be displayed
             """
             if self.in_transfer_mode or self.in_proxy_mode:
                 try:
@@ -283,7 +296,9 @@ class RichDisplay(DisplayInterface):
                     self.in_proxy_mode = False
                     
                     # Clear the console to remove any leftover output
-                    self.console.clear()
+                    # Only if we're not preserving error messages
+                    if not preserve_errors:
+                        self.console.clear()
                     
                     # Create a fresh layout for next use
                     self.layout = Layout()
@@ -328,14 +343,24 @@ class RichDisplay(DisplayInterface):
     def show_error(self, message: str) -> None:
         """Display an error message."""
         try:
+            # Make error message more prominent by printing it to console regardless of mode
+            error_text = Text(f"❌ ERROR: {message}", style="red bold")
+            
             if self.in_transfer_mode or self.in_proxy_mode:
                 # When in progress mode, show error in the status panel
                 self.layout[f"TransferBox | v{__version__} | Made by Tyler Saari"].update(
-                    Panel(Text(message, style="red bold"))
+                    Panel(error_text, border_style="red")
                 )
+                
+                # Also print to console for better visibility
+                self.console.print("\n" + "=" * 60)
+                self.console.print(error_text)
+                self.console.print("=" * 60)
             else:
-                # When not in progress mode, print directly to console
-                self.console.print(Text(f"Error: {message}", style="red bold"))
+                # When not in progress mode, print directly to console with visual emphasis
+                self.console.print("\n" + "=" * 60)
+                self.console.print(error_text)
+                self.console.print("=" * 60)
             
             logger.error(f"Display error: {message}")
         except Exception as e:
@@ -347,17 +372,24 @@ class RichDisplay(DisplayInterface):
                 error_type="error_display"
             ) from e
 
-    def clear(self) -> None:
-        """Clear the display"""
+    def clear(self, preserve_errors: bool = False) -> None:
+        """
+        Clear the display
+        
+        Args:
+            preserve_errors: When True, preserves any error messages that might be displayed
+        """
         with self.display_lock:
             try:
                 # Clean up any existing progress display
-                self._cleanup_progress()
+                self._cleanup_progress(preserve_errors)
                 
-                # Clear the console completely
-                self.console.clear()
-                
-                logger.debug("Display cleared")
+                # Clear the console completely if not preserving errors
+                if not preserve_errors:
+                    self.console.clear()
+                    logger.debug("Display cleared")
+                else:
+                    logger.debug("Display clear skipped to preserve error messages")
             except Exception as e:
                 error_msg = f"Error clearing display: {str(e)}"
                 logger.error(error_msg)

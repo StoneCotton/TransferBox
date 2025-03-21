@@ -189,6 +189,95 @@ class TransferLogger:
             self._file_handle.flush()
         except Exception as e:
             logger.warning(f"Failed to write to log file: {e}")
+    
+    def log_message(self, message: str) -> None:
+        """
+        Log a general message to the log file.
+        
+        Args:
+            message: Message to log
+        """
+        try:
+            self._open_log_file()
+            self._write_line(f"[INFO] {message}")
+            logger.info(message)
+        except Exception as e:
+            logger.error(f"Error logging message: {e}")
+            
+    def error(self, message: str) -> None:
+        """
+        Log an error message to the log file.
+        
+        Args:
+            message: Error message to log
+        """
+        try:
+            self._open_log_file()
+            self._write_line(f"[ERROR] {message}")
+            logger.error(message)
+        except Exception as e:
+            logger.error(f"Error logging error message: {e}")
+    
+    def log_file_transfer(self, source_file: Path, dest_file: Path, success: bool) -> None:
+        """
+        Log a file transfer result.
+        
+        Args:
+            source_file: Source file path
+            dest_file: Destination file path
+            success: Whether the transfer was successful
+        """
+        if success:
+            self.log_success(source_file, dest_file)
+        else:
+            self.log_failure(source_file, dest_file, "Transfer failed")
+    
+    def log_transfer_summary(self, source_path: Path, destination_path: Path, 
+                          start_time: datetime, end_time: datetime,
+                          total_files: int, successful_files: int, 
+                          failures: List[str] = None) -> None:
+        """
+        Log a summary of the transfer operation.
+        
+        Args:
+            source_path: Source path
+            destination_path: Destination path
+            start_time: Start time of the transfer
+            end_time: End time of the transfer
+            total_files: Total number of files
+            successful_files: Number of successfully transferred files
+            failures: Optional list of failed transfers
+        """
+        if not self._ensure_log_open():
+            return
+            
+        try:
+            duration = (end_time - start_time).total_seconds()
+            
+            self._write_line("")  # Empty line
+            self._write_line(f"Transfer Summary")
+            self._write_line(f"---------------")
+            self._write_line(f"Source: {source_path}")
+            self._write_line(f"Destination: {destination_path}")
+            self._write_line(f"Start time: {start_time.isoformat()}")
+            self._write_line(f"End time: {end_time.isoformat()}")
+            self._write_line(f"Duration: {duration:.1f} seconds")
+            self._write_line(f"Files transferred: {successful_files}/{total_files}")
+            
+            if failures:
+                self._write_line(f"Failed files: {len(failures)}")
+                # Only log the first 10 failures to avoid excessive log file size
+                for i, failure in enumerate(failures[:10]):
+                    self._write_line(f"  {i+1}. {failure}")
+                if len(failures) > 10:
+                    self._write_line(f"  ... and {len(failures) - 10} more")
+            
+            transfer_rate = successful_files / duration if duration > 0 else 0
+            self._write_line(f"Transfer rate: {transfer_rate:.2f} files/second")
+            
+            logger.info(f"Transfer summary: {successful_files}/{total_files} files transferred in {duration:.1f} seconds")
+        except Exception as e:
+            logger.error(f"Error logging transfer summary: {e}")
 
 
 def create_transfer_log(log_dir: Path, prefix: str = "transfer_log") -> Path:

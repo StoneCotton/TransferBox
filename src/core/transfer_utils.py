@@ -6,6 +6,7 @@ import platform
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional, Tuple, Dict, Any
+import sys
 
 from .exceptions import FileTransferError, StorageError
 
@@ -235,6 +236,16 @@ def validate_source_path(source_path: Path) -> bool:
         if not source_path.exists():
             logger.error(f"Source path does not exist: {source_path}")
             return False
+        
+        # Check if path is mounted for removable drives
+        if sys.platform != 'win32':  # Unix-like systems
+            try:
+                if not os.path.ismount(str(source_path)):
+                    logger.error(f"Source path is not mounted: {source_path}")
+                    return False
+            except Exception as e:
+                logger.warning(f"Could not check mount status of {source_path}: {e}")
+                # Continue with other validations
             
         if not source_path.is_dir():
             logger.error(f"Source path is not a directory: {source_path}")
@@ -251,9 +262,11 @@ def validate_source_path(source_path: Path) -> bool:
         except StopIteration:
             # Empty directory is valid
             return True
-            
+        except (PermissionError, OSError) as e:
+            logger.error(f"Error accessing source directory {source_path}: {e}")
+            return False
     except Exception as e:
-        logger.error(f"Error validating source path: {e}")
+        logger.error(f"Error validating source path {source_path}: {e}")
         return False
 
 
