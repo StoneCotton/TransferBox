@@ -97,7 +97,6 @@ class TransferConfig(BaseModel):
         config_dict = {}
         
         # File handling
-        config_dict["# File handling - Control how files are renamed and processed"] = None
         config_dict["rename_with_timestamp"] = self.rename_with_timestamp
         config_dict["preserve_original_filename"] = self.preserve_original_filename
         config_dict["filename_template"] = self.filename_template
@@ -105,40 +104,34 @@ class TransferConfig(BaseModel):
         config_dict["create_mhl_files"] = self.create_mhl_files
         
         # Media transfer settings
-        config_dict["\n# Media transfer settings"] = None
         config_dict["media_only_transfer"] = self.media_only_transfer
         config_dict["preserve_folder_structure"] = self.preserve_folder_structure
         config_dict["media_extensions"] = self.media_extensions
         
         # Directory structure
-        config_dict["\n# Directory structure settings"] = None
         config_dict["create_date_folders"] = self.create_date_folders
         config_dict["date_folder_format"] = self.date_folder_format
         config_dict["create_device_folders"] = self.create_device_folders
         config_dict["device_folder_template"] = self.device_folder_template
         
         # Proxy generation
-        config_dict["\n# Proxy generation settings"] = None
         config_dict["generate_proxies"] = self.generate_proxies
         config_dict["proxy_subfolder"] = self.proxy_subfolder
         config_dict["include_proxy_watermark"] = self.include_proxy_watermark
         config_dict["proxy_watermark_path"] = self.proxy_watermark_path
         
         # Sound settings
-        config_dict["\n# Sound settings"] = None
         config_dict["enable_sounds"] = self.enable_sounds
         config_dict["sound_volume"] = self.sound_volume
         config_dict["success_sound_path"] = self.success_sound_path
         config_dict["error_sound_path"] = self.error_sound_path
         
         # Advanced settings
-        config_dict["\n# Advanced settings"] = None
         config_dict["buffer_size"] = self.buffer_size
         config_dict["verify_transfers"] = self.verify_transfers
         config_dict["max_transfer_threads"] = self.max_transfer_threads
         
         # Logging settings
-        config_dict["\n# Logging settings"] = None
         config_dict["log_level"] = self.log_level
         config_dict["log_file_rotation"] = self.log_file_rotation
         config_dict["log_file_max_size"] = self.log_file_max_size
@@ -236,8 +229,30 @@ class ConfigManager:
             # Create parent directory if it doesn't exist
             config_file.parent.mkdir(parents=True, exist_ok=True)
             
+            config_dict = self.config.to_dict()
+            
             with open(config_file, 'w') as f:
-                yaml.dump(self.config.to_dict(), f, default_flow_style=False)
+                # Add section headers as comments
+                f.write("# File handling - Control how files are renamed and processed\n")
+                yaml.dump({k: config_dict[k] for k in ["rename_with_timestamp", "preserve_original_filename", "filename_template", "timestamp_format", "create_mhl_files"]}, f, default_flow_style=False, sort_keys=False)
+                
+                f.write("\n# Media transfer settings\n")
+                yaml.dump({k: config_dict[k] for k in ["media_only_transfer", "preserve_folder_structure", "media_extensions"]}, f, default_flow_style=False, sort_keys=False)
+                
+                f.write("\n# Directory structure settings\n")
+                yaml.dump({k: config_dict[k] for k in ["create_date_folders", "date_folder_format", "create_device_folders", "device_folder_template"]}, f, default_flow_style=False, sort_keys=False)
+                
+                f.write("\n# Proxy generation settings\n")
+                yaml.dump({k: config_dict[k] for k in ["generate_proxies", "proxy_subfolder", "include_proxy_watermark", "proxy_watermark_path"]}, f, default_flow_style=False, sort_keys=False)
+                
+                f.write("\n# Sound settings\n")
+                yaml.dump({k: config_dict[k] for k in ["enable_sounds", "sound_volume", "success_sound_path", "error_sound_path"]}, f, default_flow_style=False, sort_keys=False)
+                
+                f.write("\n# Advanced settings\n")
+                yaml.dump({k: config_dict[k] for k in ["buffer_size", "verify_transfers", "max_transfer_threads"]}, f, default_flow_style=False, sort_keys=False)
+                
+                f.write("\n# Logging settings\n")
+                yaml.dump({k: config_dict[k] for k in ["log_level", "log_file_rotation", "log_file_max_size"]}, f, default_flow_style=False, sort_keys=False)
                 
             logger.info(f"Created default configuration at {config_file}")
             
@@ -264,8 +279,30 @@ class ConfigManager:
             # Create parent directory if it doesn't exist
             config_file.parent.mkdir(parents=True, exist_ok=True)
             
+            config_dict = self.config.to_dict()
+            
             with open(config_file, 'w') as f:
-                yaml.dump(self.config.to_dict(), f, default_flow_style=False)
+                # Add section headers as comments
+                f.write("# File handling - Control how files are renamed and processed\n")
+                yaml.dump({k: config_dict[k] for k in ["rename_with_timestamp", "preserve_original_filename", "filename_template", "timestamp_format", "create_mhl_files"]}, f, default_flow_style=False, sort_keys=False)
+                
+                f.write("\n# Media transfer settings\n")
+                yaml.dump({k: config_dict[k] for k in ["media_only_transfer", "preserve_folder_structure", "media_extensions"]}, f, default_flow_style=False, sort_keys=False)
+                
+                f.write("\n# Directory structure settings\n")
+                yaml.dump({k: config_dict[k] for k in ["create_date_folders", "date_folder_format", "create_device_folders", "device_folder_template"]}, f, default_flow_style=False, sort_keys=False)
+                
+                f.write("\n# Proxy generation settings\n")
+                yaml.dump({k: config_dict[k] for k in ["generate_proxies", "proxy_subfolder", "include_proxy_watermark", "proxy_watermark_path"]}, f, default_flow_style=False, sort_keys=False)
+                
+                f.write("\n# Sound settings\n")
+                yaml.dump({k: config_dict[k] for k in ["enable_sounds", "sound_volume", "success_sound_path", "error_sound_path"]}, f, default_flow_style=False, sort_keys=False)
+                
+                f.write("\n# Advanced settings\n")
+                yaml.dump({k: config_dict[k] for k in ["buffer_size", "verify_transfers", "max_transfer_threads"]}, f, default_flow_style=False, sort_keys=False)
+                
+                f.write("\n# Logging settings\n")
+                yaml.dump({k: config_dict[k] for k in ["log_level", "log_file_rotation", "log_file_max_size"]}, f, default_flow_style=False, sort_keys=False)
                 
             logger.info(f"Saved configuration to {config_file}")
             

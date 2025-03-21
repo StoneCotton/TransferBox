@@ -22,16 +22,25 @@ from src.core.exceptions import HardwareError, StorageError, StateError, FileTra
 from src.core.context_managers import operation_context
 import argparse
 
-# Initialize logging
-logger = setup_logging()
+# Initialize configuration first
+config_manager = ConfigManager()
+config = config_manager.load_config()
+
+# Now initialize logging with config settings
+logger = setup_logging(
+    log_level=getattr(logging, config.log_level),  # Convert string level to logging constant
+    log_format='%(message)s',
+    log_file_rotation=config.log_file_rotation,
+    log_file_max_size=config.log_file_max_size
+)
 
 class TransferBox:
     """Main application class for TransferBox"""
     
     def __init__(self):
-        # Initialize configuration with simplified manager
-        self.config_manager = ConfigManager()
-        self.config = self.config_manager.load_config()
+        # Use already loaded configuration
+        self.config_manager = config_manager
+        self.config = config
         
         # Log application metadata
         logger.info(f"Starting {__project_name__} v{__version__} by {__author__}")

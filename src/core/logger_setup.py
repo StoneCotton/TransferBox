@@ -8,12 +8,15 @@ import sys
 import os
 from rich.logging import RichHandler
 from rich.console import Console
+from logging.handlers import RotatingFileHandler
 
 def setup_logging(
     log_dir: Optional[Path] = None,
     log_level: int = logging.DEBUG,
     log_format: str = '%(message)s',  # Simplified format for Rich
-    console_level: Optional[int] = None
+    console_level: Optional[int] = None,
+    log_file_rotation: int = 5,       # Number of backup log files
+    log_file_max_size: int = 10       # Size in MB
 ) -> logging.Logger:
     """Setup logging configuration with Rich integration."""
     logger = None
@@ -69,7 +72,16 @@ def setup_logging(
                 file_formatter = logging.Formatter(
                     '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
                 )
-                file_handler = logging.FileHandler(log_file, encoding='utf-8')
+                
+                # Use RotatingFileHandler instead of FileHandler to respect rotation settings
+                max_bytes = log_file_max_size * 1024 * 1024  # Convert MB to bytes
+                file_handler = RotatingFileHandler(
+                    log_file, 
+                    maxBytes=max_bytes,
+                    backupCount=log_file_rotation,
+                    encoding='utf-8'
+                )
+                
                 file_handler.setLevel(log_level)
                 file_handler.setFormatter(file_formatter)
                 logger.addHandler(file_handler)
@@ -113,6 +125,7 @@ def setup_logging(
             if file_handler is not None and file_handler in logger.handlers:
                 logger.info(f"Log file created at: {log_file}")
             logger.info(f"Logging level: {logging.getLevelName(log_level)}")
+            logger.info(f"Log rotation: {log_file_rotation} files, {log_file_max_size}MB max size")
             logger.info(f"Python version: {sys.version}")
             logger.info(f"Platform: {sys.platform}")
         
