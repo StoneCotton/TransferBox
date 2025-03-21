@@ -12,5 +12,8 @@ smbus==1.1.post2; sys_platform == 'linux'
 # Desktop platforms (Windows, macOS, Linux)
 pygame==2.6.1; sys_platform != 'linux' or platform_machine != 'armv7l'
 
+# Windows-specific dependencies
+pywin32==310; sys_platform == 'win32'
+
 # Build tools
 pyinstaller==6.5.0; sys_platform == 'darwin' or sys_platform == 'win32'
