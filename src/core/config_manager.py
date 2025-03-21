@@ -23,6 +23,7 @@ class TransferConfig(BaseModel):
     # Media transfer settings
     media_only_transfer: bool = True
     preserve_folder_structure: bool = True
+    transfer_destination: str = "/media/transfer"  # Default destination path for embedded mode
     media_extensions: List[str] = Field(default_factory=lambda: [
         # Video formats
         '.mp4', '.mov', '.mxf', '.avi', '.braw', '.r3d',
@@ -106,6 +107,7 @@ class TransferConfig(BaseModel):
         # Media transfer settings
         config_dict["media_only_transfer"] = self.media_only_transfer
         config_dict["preserve_folder_structure"] = self.preserve_folder_structure
+        config_dict["transfer_destination"] = self.transfer_destination
         config_dict["media_extensions"] = self.media_extensions
         
         # Directory structure
@@ -237,7 +239,7 @@ class ConfigManager:
                 yaml.dump({k: config_dict[k] for k in ["rename_with_timestamp", "preserve_original_filename", "filename_template", "timestamp_format", "create_mhl_files"]}, f, default_flow_style=False, sort_keys=False)
                 
                 f.write("\n# Media transfer settings\n")
-                yaml.dump({k: config_dict[k] for k in ["media_only_transfer", "preserve_folder_structure", "media_extensions"]}, f, default_flow_style=False, sort_keys=False)
+                yaml.dump({k: config_dict[k] for k in ["media_only_transfer", "preserve_folder_structure", "transfer_destination", "media_extensions"]}, f, default_flow_style=False, sort_keys=False)
                 
                 f.write("\n# Directory structure settings\n")
                 yaml.dump({k: config_dict[k] for k in ["create_date_folders", "date_folder_format", "create_device_folders", "device_folder_template"]}, f, default_flow_style=False, sort_keys=False)
@@ -287,7 +289,7 @@ class ConfigManager:
                 yaml.dump({k: config_dict[k] for k in ["rename_with_timestamp", "preserve_original_filename", "filename_template", "timestamp_format", "create_mhl_files"]}, f, default_flow_style=False, sort_keys=False)
                 
                 f.write("\n# Media transfer settings\n")
-                yaml.dump({k: config_dict[k] for k in ["media_only_transfer", "preserve_folder_structure", "media_extensions"]}, f, default_flow_style=False, sort_keys=False)
+                yaml.dump({k: config_dict[k] for k in ["media_only_transfer", "preserve_folder_structure", "transfer_destination", "media_extensions"]}, f, default_flow_style=False, sort_keys=False)
                 
                 f.write("\n# Directory structure settings\n")
                 yaml.dump({k: config_dict[k] for k in ["create_date_folders", "date_folder_format", "create_device_folders", "device_folder_template"]}, f, default_flow_style=False, sort_keys=False)
