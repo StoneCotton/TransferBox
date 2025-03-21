@@ -120,8 +120,8 @@ class DirectoryHandler:
         
         # Log current configuration settings for debugging
         logger.info(f"Directory creation settings:")
-        logger.info(f"  create_date_folders: {self.config.create_date_folders}")
-        logger.info(f"  create_device_folders: {self.config.create_device_folders}")
+        logger.info(f"  create_date_folders: {hasattr(self.config, 'create_date_folders') and self.config.create_date_folders}")
+        logger.info(f"  create_device_folders: {hasattr(self.config, 'create_device_folders') and self.config.create_device_folders}")
         logger.info(f"  base_path: {base_path}")
         
         target_dir = base_path
@@ -138,12 +138,16 @@ class DirectoryHandler:
                 raise
                 
             # If date folders enabled, create timestamp directory
-            if self.config.create_date_folders:
+            if hasattr(self.config, 'create_date_folders') and self.config.create_date_folders:
                 logger.info("Creating timestamp directory as create_date_folders is True")
                 
                 try:
                     # Use provided timestamp or generate new one
-                    folder_name = timestamp or datetime.now().strftime(self.config.date_folder_format)
+                    date_folder_format = "%Y/%m/%d"  # Default format
+                    if hasattr(self.config, 'date_folder_format'):
+                        date_folder_format = self.config.date_folder_format
+                        
+                    folder_name = timestamp or datetime.now().strftime(date_folder_format)
                     target_dir = target_dir / folder_name
                 except (ValueError, TypeError) as e:
                     logger.error(f"Error creating date folder name: {e}")
@@ -152,12 +156,17 @@ class DirectoryHandler:
                 logger.info("Skipping timestamp directory as create_date_folders is False")
             
             # If device folders enabled, add device folder
-            if self.config.create_device_folders:
+            if hasattr(self.config, 'create_device_folders') and self.config.create_device_folders:
                 logger.info("Creating device folder as create_device_folders is True")
                 
                 try:
                     device_name = self._get_device_name(source_path)
-                    device_folder = self.config.device_folder_template.format(
+                    
+                    device_folder_template = "{device_name}"  # Default template
+                    if hasattr(self.config, 'device_folder_template'):
+                        device_folder_template = self.config.device_folder_template
+                        
+                    device_folder = device_folder_template.format(
                         device_name=device_name
                     )
                     target_dir = target_dir / device_folder

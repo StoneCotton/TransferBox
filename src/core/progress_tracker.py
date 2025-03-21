@@ -1,0 +1,154 @@
+# src/core/progress_tracker.py
+
+import logging
+from typing import Optional, Callable, Dict, Any
+from .interfaces.types import TransferStatus, TransferProgress
+
+logger = logging.getLogger(__name__)
+
+class ProgressTracker:
+    """Class for tracking transfer progress."""
+    
+    def __init__(self, display=None):
+        """
+        Initialize the progress tracker.
+        
+        Args:
+            display: Optional display interface for showing progress
+        """
+        self.display = display
+        self.current_file = None
+        self.file_number = 0
+        self.total_files = 0
+        self.bytes_transferred = 0
+        self.total_bytes = 0
+        self.total_transferred = 0
+        self.total_size = 0
+        self.current_file_progress = 0.0
+        self.overall_progress = 0.0
+        self.status = TransferStatus.READY
+    
+    def start_file(self, file_path, file_number: int, total_files: int, 
+                 file_size: int, total_size: int, total_transferred: int) -> None:
+        """
+        Start tracking progress for a new file.
+        
+        Args:
+            file_path: Path to the file being transferred
+            file_number: Current file number
+            total_files: Total number of files
+            file_size: Size of the current file in bytes
+            total_size: Total size of all files in bytes
+            total_transferred: Total bytes transferred so far
+        """
+        self.current_file = str(file_path.name)
+        self.file_number = file_number
+        self.total_files = total_files
+        self.bytes_transferred = 0
+        self.total_bytes = file_size
+        self.total_transferred = total_transferred
+        self.total_size = total_size
+        self.current_file_progress = 0.0
+        self.overall_progress = (file_number - 1) / total_files
+        self.status = TransferStatus.COPYING
+        self._update_display()
+    
+    def update_progress(self, bytes_transferred: int) -> None:
+        """
+        Update progress for the current file.
+        
+        Args:
+            bytes_transferred: Bytes transferred for the current file
+        """
+        # Calculate the additional bytes since last update 
+        additional_bytes = bytes_transferred - self.bytes_transferred
+        if additional_bytes > 0 and self.status == TransferStatus.COPYING:
+            # Only update total_transferred during copy operations, not checksumming
+            self.total_transferred += additional_bytes
+            
+        # Update the current file progress
+        self.bytes_transferred = bytes_transferred
+        self.current_file_progress = bytes_transferred / self.total_bytes if self.total_bytes > 0 else 1.0
+        self.overall_progress = (self.file_number - 1 + self.current_file_progress) / self.total_files if self.total_files > 0 else 0.0
+        
+        # Update the display
+        self._update_display()
+    
+    def set_status(self, status: TransferStatus) -> None:
+        """
+        Set the current transfer status.
+        
+        Args:
+            status: New transfer status
+        """
+        self.status = status
+        self._update_display()
+    
+    def complete_file(self, success: bool = True) -> None:
+        """
+        Mark the current file as complete.
+        
+        Args:
+            success: Whether the transfer was successful
+        """
+        self.status = TransferStatus.SUCCESS if success else TransferStatus.ERROR
+        self.current_file_progress = 1.0
+        self.overall_progress = self.file_number / self.total_files if self.total_files > 0 else 1.0
+        
+        # Make sure bytes_transferred matches total_bytes for display consistency
+        if success and self.bytes_transferred < self.total_bytes:
+            self.bytes_transferred = self.total_bytes
+        
+        self._update_display()
+    
+    def complete_transfer(self, success: bool = True) -> None:
+        """
+        Mark the entire transfer as complete.
+        
+        Args:
+            success: Whether the transfer was successful
+        """
+        self.status = TransferStatus.SUCCESS if success else TransferStatus.ERROR
+        self.overall_progress = 1.0
+        
+        # For display consistency, make sure total_transferred matches total_size 
+        if success and self.total_transferred < self.total_size:
+            self.total_transferred = self.total_size
+            
+        self._update_display()
+    
+    def _update_display(self) -> None:
+        """Update the display with current progress."""
+        if self.display:
+            try:
+                progress = TransferProgress(
+                    current_file=self.current_file,
+                    file_number=self.file_number,
+                    total_files=self.total_files,
+                    bytes_transferred=self.bytes_transferred,
+                    total_bytes=self.total_bytes,
+                    total_transferred=self.total_transferred,
+                    total_size=self.total_size,
+                    current_file_progress=self.current_file_progress,
+                    overall_progress=self.overall_progress,
+                    status=self.status
+                )
+                self.display.show_progress(progress)
+            except Exception as e:
+                logger.warning(f"Failed to update display: {e}")
+    
+    def create_progress_callback(self) -> Callable[[int, int], None]:
+        """
+        Create a callback function for updating progress.
+        
+        Returns:
+            Callable that takes (bytes_transferred, total_bytes) as parameters
+        """
+        def callback(bytes_transferred: int, total_bytes: int) -> None:
+            # Update the internal total_bytes if it's different
+            if total_bytes != self.total_bytes and total_bytes > 0:
+                self.total_bytes = total_bytes
+            
+            # Update the progress
+            self.update_progress(bytes_transferred)
+        return callback 

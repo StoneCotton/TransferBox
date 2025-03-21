@@ -130,6 +130,7 @@ class ChecksumCalculator:
         self, 
         file_path: Path, 
         expected_checksum: str,
+        progress_callback: Optional[Callable[[int, int], None]] = None,
         current_progress: Optional[TransferProgress] = None
     ) -> bool:
         """Verify a file's checksum against an expected value."""
@@ -159,6 +160,7 @@ class ChecksumCalculator:
             try:
                 actual_checksum = self.calculate_file_checksum(
                     file_path,
+                    progress_callback=progress_callback,
                     current_progress=current_progress
                 )
             except Exception as checksum_err:

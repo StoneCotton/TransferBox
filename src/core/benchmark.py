@@ -18,6 +18,9 @@ from .interfaces.storage_inter import StorageInterface
 from .interfaces.types import TransferProgress, TransferStatus
 from .file_transfer import FileTransfer
 from .state_manager import StateManager
+from .file_operations import FileOperations, CHUNK_SIZE, BUFFER_SIZE
+from .progress_tracker import ProgressTracker
+from .checksum import ChecksumCalculator
 
 logger = logging.getLogger(__name__)
 
@@ -156,46 +159,47 @@ class TransferBenchmark:
             elif item.is_dir():
                 shutil.rmtree(item)
         
-        # Create a file transfer instance with custom buffer size
-        file_transfer = FileTransfer(
-            self.state_manager,
-            self.display,
-            self.storage,
-            self.config
-        )
+        # Create required objects for the benchmark
+        progress_tracker = ProgressTracker(self.display)
+        checksum_calculator = ChecksumCalculator(self.display)
+        file_ops = FileOperations(self.display, self.storage)
         
-        # Override the buffer size in the file copy method
-        original_copy_method = file_transfer._perform_file_copy
-        
-        def patched_copy_method(self, src_path, dst_path, file_size, hash_obj, file_number, total_files, total_transferred):
-            # Override buffer size in the file copy method
-            chunk_size = buffer_size
-            
-            try:
-                with open(src_path, 'rb') as src_file, open(dst_path, 'wb') as dst_file:
-                    bytes_copied = 0
-                    
-                    while True:
-                        chunk = src_file.read(chunk_size)
-                        if not chunk:
-                            break
-                            
-                        dst_file.write(chunk)
-                        hash_obj.update(chunk)
-                        
-                        bytes_copied += len(chunk)
-                        file_transfer._update_copy_progress(
-                            bytes_copied, file_size, total_transferred + bytes_copied,
-                            file_number, total_files
-                        )
+        # Create a custom file operations class with the specified buffer size
+        class CustomFileOperations(FileOperations):
+            def copy_file_with_hash(self, src_path, dst_path, hash_obj=None, progress_callback=None):
+                # Ensure parent directory exists
+                dst_path.parent.mkdir(parents=True, exist_ok=True)
                 
-                return True
-            except Exception as e:
-                logger.error(f"Error during patched file copy: {e}")
-                return False
+                # Get file size for progress updates
+                file_size = src_path.stat().st_size
+                
+                # Copy the file with custom buffer size
+                with open(src_path, 'rb') as src:
+                    with open(dst_path, 'wb') as dst:
+                        bytes_transferred = 0
+                        
+                        while True:
+                            chunk = src.read(buffer_size)
+                            if not chunk:
+                                break
+                                
+                            dst.write(chunk)
+                            if hash_obj:
+                                hash_obj.update(chunk)
+                            
+                            bytes_transferred += len(chunk)
+                            
+                            # Update progress if callback provided
+                            if progress_callback:
+                                progress_callback(bytes_transferred, file_size)
+                
+                # Return checksum if hash_obj provided
+                if hash_obj:
+                    return True, hash_obj.hexdigest()
+                return True, None
         
-        # Apply the monkey patch
-        file_transfer._perform_file_copy = patched_copy_method.__get__(file_transfer, FileTransfer)
+        # Use the custom file operations for benchmarking
+        custom_file_ops = CustomFileOperations(self.display, self.storage)
         
         # Prepare result object
         result = BenchmarkResult(
@@ -217,7 +221,7 @@ class TransferBenchmark:
             checksum_start = start_time
             
             # Calculate source checksum
-            hash_obj = xxhash.xxh64()
+            hash_obj = checksum_calculator.create_hash()
             with open(test_file, 'rb') as f:
                 while True:
                     chunk = f.read(buffer_size)
@@ -233,27 +237,18 @@ class TransferBenchmark:
             dest_file = self.dest_dir / test_file.name
             transfer_start = time.time()
             
-            # Create a progress object for display
-            progress = TransferProgress(
-                current_file=test_file.name,
-                file_number=1,
-                total_files=1,
-                bytes_transferred=0,
-                total_bytes=result.file_size,
-                total_transferred=0,
-                total_size=result.file_size,
-                current_file_progress=0.0,
-                overall_progress=0.0,
-                status=TransferStatus.COPYING
+            # Initialize progress tracking
+            progress_tracker.start_file(
+                test_file, 1, 1, 
+                result.file_size, result.file_size, 0
             )
             
-            # Display initial progress
-            self.display.show_progress(progress)
+            # Create a progress callback
+            progress_callback = progress_tracker.create_progress_callback()
             
-            # Perform the actual copy
-            success = file_transfer._perform_file_copy(
-                test_file, dest_file, result.file_size, xxhash.xxh64(),
-                1, 1, 0
+            # Perform the actual copy with custom file operations
+            success, actual_checksum = custom_file_ops.copy_file_with_hash(
+                test_file, dest_file, hash_obj, progress_callback
             )
             
             transfer_end = time.time()
@@ -261,7 +256,7 @@ class TransferBenchmark:
             
             # Verify the transfer
             verify_start = time.time()
-            verification_success = file_transfer._verify_file_checksum(dest_file, checksum)
+            verification_success = custom_file_ops.verify_checksum(dest_file, checksum, progress_callback)
             verify_end = time.time()
             result.verification_duration = verify_end - verify_start
             
@@ -277,9 +272,6 @@ class TransferBenchmark:
             # Exit transfer state
             self.state_manager.exit_transfer()
             
-            # Restore original method
-            file_transfer._perform_file_copy = original_copy_method
-            
             return result
             
         except Exception as e:
@@ -288,10 +280,10 @@ class TransferBenchmark:
             result.error = str(e)
             
             # Exit transfer state
-            self.state_manager.exit_transfer()
-            
-            # Restore original method
-            file_transfer._perform_file_copy = original_copy_method
+            try:
+                self.state_manager.exit_transfer()
+            except Exception as exit_err:
+                logger.error(f"Error exiting transfer state: {exit_err}")
             
             return result
     
@@ -308,7 +300,7 @@ class TransferBenchmark:
             size_key = f"{file_size // (1024 * 1024)}MB"
             results[size_key] = []
             
-            # Create test file
+            # Create test file for this size
             test_file = self.create_test_file(file_size)
             
             for buffer_size in self.benchmark_config.buffer_sizes:
@@ -316,36 +308,29 @@ class TransferBenchmark:
                 logger.info(f"Running benchmark with {buffer_key} buffer on {size_key} file")
                 
                 # Run multiple iterations
-                iteration_results = []
+                iteration_results: List[BenchmarkResult] = []
                 for i in range(self.benchmark_config.iterations):
-                    logger.info(f"Iteration {i+1}/{self.benchmark_config.iterations}")
+                    logger.info(f"  Iteration {i+1}/{self.benchmark_config.iterations}")
                     result = self.run_single_benchmark(buffer_size, test_file)
                     iteration_results.append(result)
                     
-                    # Log result
-                    if result.success:
-                        logger.info(f"Transfer speed: {result.transfer_speed:.2f} MB/s")
+                    if not result.success:
+                        logger.warning(f"  Iteration {i+1} failed: {result.error}")
                     else:
-                        logger.error(f"Benchmark failed: {result.error}")
+                        logger.info(f"  Iteration {i+1} complete: {result.transfer_speed:.2f} MB/s")
                 
-                # Calculate average result
-                avg_result = BenchmarkResult(
-                    buffer_size=buffer_size,
-                    file_size=file_size,
-                    transfer_speed=statistics.mean(r.transfer_speed for r in iteration_results if r.success),
-                    duration=statistics.mean(r.duration for r in iteration_results if r.success),
-                    checksum_duration=statistics.mean(r.checksum_duration for r in iteration_results if r.success),
-                    verification_duration=statistics.mean(r.verification_duration for r in iteration_results if r.success),
-                    total_duration=statistics.mean(r.total_duration for r in iteration_results if r.success),
-                    success=all(r.success for r in iteration_results)
-                )
-                
-                results[size_key].append(avg_result)
+                # Calculate average and save results
+                if iteration_results:
+                    avg_result = self._average_results(iteration_results)
+                    results[size_key].append(avg_result)
+                    
+                    logger.info(f"Average transfer speed for {buffer_key} buffer on {size_key} file: "
+                                f"{avg_result.transfer_speed:.2f} MB/s")
         
-        # Save results
+        # Save results to file
         self.save_results(results)
         
-        # Generate plots if enabled
+        # Generate plots if configured
         if self.benchmark_config.generate_plots:
             self.generate_plots(results)
         
@@ -355,20 +340,42 @@ class TransferBenchmark:
         
         return results
     
-    def save_results(self, results: Dict[str, List[BenchmarkResult]]) -> None:
-        """
-        Save benchmark results to a JSON file.
+    def _average_results(self, results: List[BenchmarkResult]) -> BenchmarkResult:
+        """Calculate average benchmark result from multiple iterations"""
+        if not results:
+            return BenchmarkResult(0, 0.0, 0, 0.0, 0.0, 0.0, 0.0, False, "No results")
         
-        Args:
-            results: Dictionary of benchmark results
-        """
+        # Only use successful results for averaging
+        successful_results = [r for r in results if r.success]
+        if not successful_results:
+            # If all failed, return the first result
+            return results[0]
+        
+        # Use the first result as a template and update with averages
+        avg_result = BenchmarkResult(
+            buffer_size=results[0].buffer_size,
+            file_size=results[0].file_size,
+            transfer_speed=statistics.mean(r.transfer_speed for r in successful_results),
+            duration=statistics.mean(r.duration for r in successful_results),
+            checksum_duration=statistics.mean(r.checksum_duration for r in successful_results),
+            verification_duration=statistics.mean(r.verification_duration for r in successful_results),
+            total_duration=statistics.mean(r.total_duration for r in successful_results),
+            success=True,
+            error=None,
+            timestamp=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        )
+        
+        return avg_result
+    
+    def save_results(self, results: Dict[str, List[BenchmarkResult]]) -> None:
+        """Save benchmark results to JSON file"""
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         result_file = self.benchmark_config.output_dir / f"benchmark_results_{timestamp}.json"
         
         # Convert results to serializable format
         serializable_results = {}
-        for file_size, result_list in results.items():
-            serializable_results[file_size] = [
+        for size_key, size_results in results.items():
+            serializable_results[size_key] = [
                 {
                     "buffer_size": r.buffer_size,
                     "buffer_size_mb": r.buffer_size / (1024 * 1024),
@@ -383,140 +390,118 @@ class TransferBenchmark:
                     "error": r.error,
                     "timestamp": r.timestamp
                 }
-                for r in result_list
+                for r in size_results
             ]
         
-        # Save to file
+        # Save to JSON file
         with open(result_file, 'w') as f:
             json.dump(serializable_results, f, indent=2)
         
         logger.info(f"Benchmark results saved to {result_file}")
     
     def generate_plots(self, results: Dict[str, List[BenchmarkResult]]) -> None:
-        """
-        Generate plots from benchmark results.
+        """Generate benchmark result plots"""
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         
-        Args:
-            results: Dictionary of benchmark results
-        """
-        try:
-            import matplotlib.pyplot as plt
+        # Create figure for transfer speed
+        plt.figure(figsize=(12, 8))
+        
+        for size_key, size_results in results.items():
+            # Skip if no results
+            if not size_results:
+                continue
+                
+            # Extract data
+            buffer_sizes = [r.buffer_size / (1024 * 1024) for r in size_results]  # Convert to MB
+            transfer_speeds = [r.transfer_speed for r in size_results]
             
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            # Plot transfer speed
+            plt.plot(buffer_sizes, transfer_speeds, marker='o', label=f"File size: {size_key}")
+        
+        plt.title("Transfer Speed vs Buffer Size")
+        plt.xlabel("Buffer Size (MB)")
+        plt.ylabel("Transfer Speed (MB/s)")
+        plt.xscale('log', base=2)
+        plt.grid(True)
+        plt.legend()
+        
+        # Save plot
+        speed_plot_file = self.benchmark_config.output_dir / f"speed_plot_{timestamp}.png"
+        plt.savefig(speed_plot_file)
+        logger.info(f"Transfer speed plot saved to {speed_plot_file}")
+        
+        # Create figure for durations
+        plt.figure(figsize=(12, 8))
+        
+        for size_key, size_results in results.items():
+            # Skip if no results
+            if not size_results:
+                continue
+                
+            # Extract data for the largest file size
+            buffer_sizes = [r.buffer_size / (1024 * 1024) for r in size_results]  # Convert to MB
+            durations = [r.duration for r in size_results]
+            checksum_durations = [r.checksum_duration for r in size_results]
+            verification_durations = [r.verification_duration for r in size_results]
             
-            # Create a plot for each file size
-            for file_size, result_list in results.items():
-                if not result_list:
-                    continue
-                
-                # Sort results by buffer size
-                result_list.sort(key=lambda r: r.buffer_size)
-                
-                # Extract data for plotting
-                buffer_sizes = [r.buffer_size / (1024 * 1024) for r in result_list]  # Convert to MB
-                transfer_speeds = [r.transfer_speed for r in result_list]
-                
-                # Create plot
-                plt.figure(figsize=(10, 6))
-                plt.plot(buffer_sizes, transfer_speeds, 'o-', linewidth=2)
-                plt.xlabel('Buffer Size (MB)')
-                plt.ylabel('Transfer Speed (MB/s)')
-                plt.title(f'Transfer Speed vs Buffer Size for {file_size} File')
-                plt.grid(True)
-                
-                # Add data labels
-                for i, (x, y) in enumerate(zip(buffer_sizes, transfer_speeds)):
-                    plt.annotate(f"{y:.1f} MB/s", (x, y), textcoords="offset points", 
-                                xytext=(0, 10), ha='center')
-                
-                # Save plot
-                plot_file = self.benchmark_config.output_dir / f"benchmark_plot_{file_size}_{timestamp}.png"
-                plt.savefig(plot_file)
-                plt.close()
-                
-                logger.info(f"Plot saved to {plot_file}")
-            
-            # Create a combined plot
-            plt.figure(figsize=(12, 8))
-            
-            for file_size, result_list in results.items():
-                if not result_list:
-                    continue
-                
-                # Sort results by buffer size
-                result_list.sort(key=lambda r: r.buffer_size)
-                
-                # Extract data for plotting
-                buffer_sizes = [r.buffer_size / (1024 * 1024) for r in result_list]  # Convert to MB
-                transfer_speeds = [r.transfer_speed for r in result_list]
-                
-                plt.plot(buffer_sizes, transfer_speeds, 'o-', linewidth=2, label=file_size)
-            
-            plt.xlabel('Buffer Size (MB)')
-            plt.ylabel('Transfer Speed (MB/s)')
-            plt.title('Transfer Speed vs Buffer Size for Different File Sizes')
-            plt.grid(True)
-            plt.legend()
-            
-            # Save combined plot
-            combined_plot_file = self.benchmark_config.output_dir / f"benchmark_plot_combined_{timestamp}.png"
-            plt.savefig(combined_plot_file)
-            plt.close()
-            
-            logger.info(f"Combined plot saved to {combined_plot_file}")
-            
-        except ImportError:
-            logger.warning("Matplotlib not available, skipping plot generation")
-        except Exception as e:
-            logger.error(f"Error generating plots: {e}")
+            # Plot durations
+            plt.plot(buffer_sizes, durations, marker='o', label=f"Transfer Time ({size_key})")
+            plt.plot(buffer_sizes, checksum_durations, marker='s', label=f"Checksum Time ({size_key})")
+            plt.plot(buffer_sizes, verification_durations, marker='^', label=f"Verification Time ({size_key})")
+        
+        plt.title("Operation Durations vs Buffer Size")
+        plt.xlabel("Buffer Size (MB)")
+        plt.ylabel("Duration (seconds)")
+        plt.xscale('log', base=2)
+        plt.grid(True)
+        plt.legend()
+        
+        # Save plot
+        duration_plot_file = self.benchmark_config.output_dir / f"duration_plot_{timestamp}.png"
+        plt.savefig(duration_plot_file)
+        logger.info(f"Duration plot saved to {duration_plot_file}")
     
     def cleanup(self) -> None:
-        """Clean up temporary files and directories"""
+        """Clean up temporary files"""
+        logger.info("Cleaning up temporary files")
+        
         try:
-            logger.info("Cleaning up benchmark files")
-            
-            # Remove temporary directory
-            if self.temp_dir.exists():
-                shutil.rmtree(self.temp_dir)
-                
-            logger.info("Cleanup complete")
+            shutil.rmtree(self.temp_dir)
+            logger.info(f"Removed temporary directory: {self.temp_dir}")
         except Exception as e:
-            logger.error(f"Error during cleanup: {e}")
+            logger.error(f"Error cleaning up temporary directory: {e}")
 
 
 def run_benchmark_cli():
-    """Command-line interface for running benchmarks"""
+    """Run benchmarks from command line"""
     import argparse
-    from src.core.logger_setup import setup_logging
-    from src.core.platform_manager import PlatformManager
     
-    # Setup logging
-    logger = setup_logging()
-    
-    # Parse arguments
     parser = argparse.ArgumentParser(description="TransferBox Benchmark Tool")
     parser.add_argument("--buffer-sizes", type=str, help="Comma-separated list of buffer sizes in MB")
     parser.add_argument("--file-sizes", type=str, help="Comma-separated list of file sizes in MB")
-    parser.add_argument("--iterations", type=int, default=3, help="Number of iterations per test")
-    parser.add_argument("--no-cleanup", action="store_true", help="Don't clean up test files after benchmark")
-    parser.add_argument("--no-plots", action="store_true", help="Don't generate plots")
-    parser.add_argument("--output-dir", type=str, help="Output directory for results")
+    parser.add_argument("--iterations", type=int, default=3, help="Number of iterations per benchmark")
+    parser.add_argument("--output-dir", type=str, default="benchmark_results", help="Output directory for results")
+    parser.add_argument("--no-cleanup", action="store_true", help="Skip cleanup of temporary files")
+    parser.add_argument("--no-plots", action="store_true", help="Skip generating plots")
     
     args = parser.parse_args()
     
-    # Create benchmark config
+    # Configure benchmarks
     benchmark_config = BenchmarkConfig()
     
     if args.buffer_sizes:
-        buffer_sizes = [int(size) * 1024 * 1024 for size in args.buffer_sizes.split(",")]
+        buffer_sizes = [int(size.strip()) * 1024 * 1024 for size in args.buffer_sizes.split(",")]
         benchmark_config.buffer_sizes = buffer_sizes
     
     if args.file_sizes:
-        file_sizes = [int(size) * 1024 * 1024 for size in args.file_sizes.split(",")]
+        file_sizes = [int(size.strip()) * 1024 * 1024 for size in args.file_sizes.split(",")]
         benchmark_config.test_file_sizes = file_sizes
     
     if args.iterations:
         benchmark_config.iterations = args.iterations
+    
+    if args.output_dir:
+        benchmark_config.output_dir = Path(args.output_dir)
     
     if args.no_cleanup:
         benchmark_config.cleanup_after_run = False
@@ -524,50 +509,35 @@ def run_benchmark_cli():
     if args.no_plots:
         benchmark_config.generate_plots = False
     
-    if args.output_dir:
-        benchmark_config.output_dir = Path(args.output_dir)
+    # Initialize required components
+    from .interfaces.dummy_display import DummyDisplay
+    from .interfaces.local_storage import LocalStorage
     
-    # Initialize platform components
-    try:
-        display = PlatformManager.create_display()
-        storage = PlatformManager.create_storage()
+    display = DummyDisplay()
+    storage = LocalStorage()
+    
+    # Run benchmarks
+    benchmark = TransferBenchmark(display, storage, benchmark_config=benchmark_config)
+    results = benchmark.run_benchmarks()
+    
+    # Print results summary
+    print("\nBenchmark Results Summary:")
+    print("-------------------------")
+    
+    for size_key, size_results in results.items():
+        print(f"\nFile size: {size_key}")
+        print("-" * (10 + len(size_key)))
         
-        # Create and run benchmark
-        benchmark = TransferBenchmark(
-            display=display,
-            storage=storage,
-            benchmark_config=benchmark_config
-        )
+        if not size_results:
+            print("  No results")
+            continue
         
-        results = benchmark.run_benchmarks()
-        
-        # Print summary
-        print("\nBenchmark Summary:")
-        for file_size, result_list in results.items():
-            print(f"\nFile Size: {file_size}")
-            print("-" * 80)
-            print(f"{'Buffer Size (MB)':<15} {'Transfer Speed (MB/s)':<20} {'Duration (s)':<15} {'Total Time (s)':<15}")
-            print("-" * 80)
-            
-            for result in sorted(result_list, key=lambda r: r.buffer_size):
-                buffer_mb = result.buffer_size / (1024 * 1024)
-                print(f"{buffer_mb:<15.1f} {result.transfer_speed:<20.2f} {result.duration:<15.2f} {result.total_duration:<15.2f}")
-        
-        # Find optimal buffer size
-        optimal_results = {}
-        for file_size, result_list in results.items():
-            if result_list:
-                optimal = max(result_list, key=lambda r: r.transfer_speed)
-                optimal_results[file_size] = optimal
-        
-        print("\nOptimal Buffer Sizes:")
-        for file_size, result in optimal_results.items():
+        for result in size_results:
             buffer_mb = result.buffer_size / (1024 * 1024)
-            print(f"{file_size}: {buffer_mb:.1f}MB buffer - {result.transfer_speed:.2f} MB/s")
-        
-    except Exception as e:
-        logger.error(f"Benchmark failed: {e}")
-        return 1
+            print(f"  Buffer size: {buffer_mb:.1f} MB")
+            print(f"  Transfer speed: {result.transfer_speed:.2f} MB/s")
+            print(f"  Duration: {result.duration:.2f} seconds")
+            print("")
     
     return 0
 

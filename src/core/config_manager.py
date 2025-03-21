@@ -19,6 +19,7 @@ class TransferConfig:
     preserve_original_filename: bool = True
     filename_template: str = "{original}_{timestamp}"
     timestamp_format: str = "%Y%m%d_%H%M%S"
+    create_mhl_files: bool = False  # Whether to create MHL (Media Hash List) files for transfers
     
     # Media transfer settings
     media_only_transfer: bool = True
@@ -62,6 +63,7 @@ class TransferConfig:
             "preserve_original_filename": self.preserve_original_filename,
             "filename_template": self.filename_template,
             "timestamp_format": self.timestamp_format,
+            "create_mhl_files": self.create_mhl_files,
             
             "\n# Media transfer settings": None,
             "media_only_transfer": self.media_only_transfer,
@@ -190,6 +192,7 @@ class ConfigManager:
             "preserve_original_filename": config_dict["preserve_original_filename"],
             "filename_template": config_dict["filename_template"],
             "timestamp_format": config_dict["timestamp_format"],
+            "create_mhl_files": config_dict["create_mhl_files"],
             
             "\n# Media transfer settings - Control which files are transferred": None,
             "media_only_transfer": config_dict["media_only_transfer"],
