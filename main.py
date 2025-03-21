@@ -159,10 +159,10 @@ class TransferBox:
                 # Get destination path from user
                 if error_occurred:
                     # Explicitly clear the display if continuing after an error
-                    self.display.clear(preserve_errors=False)
+                    self.display.clear()
                     
                 self.display.show_status("Enter destination path:")
-                raw_destination = input("Enter destination path for transfers: ")
+                raw_destination = input()  # Get input without prompt since we're using display
                 
                 # Sanitize the path before validation
                 try:

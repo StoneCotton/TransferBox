@@ -302,10 +302,17 @@ class RichDisplay(DisplayInterface):
                     
                     # Create a fresh layout for next use
                     self.layout = Layout()
-                    self.layout.split_column(
-                        Layout(name=f"TransferBox | v{__version__} | Made by Tyler Saari", size=2),
-                        Layout(name="progress", size=6)
-                    )
+                    if preserve_errors:
+                        # Keep a minimal layout for error display
+                        self.layout.split_column(
+                            Layout(name=f"TransferBox | v{__version__} | Made by Tyler Saari", size=2)
+                        )
+                    else:
+                        # Full layout for normal operation
+                        self.layout.split_column(
+                            Layout(name=f"TransferBox | v{__version__} | Made by Tyler Saari", size=2),
+                            Layout(name="progress", size=6)
+                        )
                     
                     logger.debug("Progress display cleaned up successfully")
                     
@@ -347,12 +354,15 @@ class RichDisplay(DisplayInterface):
             error_text = Text(f"❌ ERROR: {message}", style="red bold")
             
             if self.in_transfer_mode or self.in_proxy_mode:
+                # Clean up any existing progress display first
+                self._cleanup_progress(preserve_errors=True)
+                
                 # When in progress mode, show error in the status panel
                 self.layout[f"TransferBox | v{__version__} | Made by Tyler Saari"].update(
                     Panel(error_text, border_style="red")
                 )
                 
-                # Also print to console for better visibility
+                # Print to console only once
                 self.console.print("\n" + "=" * 60)
                 self.console.print(error_text)
                 self.console.print("=" * 60)
