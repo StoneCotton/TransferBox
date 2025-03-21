@@ -18,6 +18,7 @@ from src.core.file_transfer import FileTransfer
 from src.core.logger_setup import setup_logging
 from src.core.sound_manager import SoundManager
 from src.core.utils import validate_path, get_platform
+from src.core.path_utils import sanitize_path
 from src.core.exceptions import HardwareError, StorageError, StateError, FileTransferError
 from src.core.context_managers import operation_context
 import argparse
@@ -163,18 +164,26 @@ class TransferBox:
                 self.display.show_status("Enter destination path:")
                 raw_destination = input("Enter destination path for transfers: ")
                 
-                # Validate the destination path
-                is_valid, error_msg = validate_path(
-                    raw_destination, 
-                    must_exist=False, 
-                    must_be_writable=True
-                )
-                
-                if not is_valid:
-                    self.display.show_error(error_msg)
+                # Sanitize the path before validation
+                try:
+                    sanitized_destination = sanitize_path(raw_destination)
+                    
+                    # Validate the destination path
+                    is_valid, error_msg = validate_path(
+                        sanitized_destination, 
+                        must_exist=False, 
+                        must_be_writable=True
+                    )
+                    
+                    if not is_valid:
+                        self.display.show_error(error_msg)
+                        continue
+                    
+                    destination_path = sanitized_destination
+                except Exception as e:
+                    logger.error(f"Error sanitizing path: {e}")
+                    self.display.show_error(f"Invalid path format")
                     continue
-                
-                destination_path = Path(raw_destination)
                 
                 # Wait for source drive
                 self.display.show_status("Waiting for source drive...")
@@ -269,7 +278,15 @@ class TransferBox:
                 
                 # Get configuration
                 config = self.config_manager.config
-                destination_path = Path(config.transfer_destination)
+                
+                try:
+                    # Sanitize the destination path from config
+                    destination_path = sanitize_path(config.transfer_destination)
+                except Exception as e:
+                    logger.error(f"Error sanitizing destination path from config: {e}")
+                    self.display.show_error("Invalid destination")
+                    time.sleep(5)  # Show error for 5 seconds
+                    continue
                 
                 # Wait for new drive
                 initial_drives = self.storage.get_available_drives()
