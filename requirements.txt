@@ -8,6 +8,11 @@ pydantic==2.10.6
 
 # Linux/Raspberry Pi only
 smbus==1.1.post2; sys_platform == 'linux'
+gpiozero==2.0; sys_platform == 'linux' and platform_machine == 'armv7l'
+lgpio==0.2.2.0; sys_platform == 'linux' and platform_machine == 'armv7l'
+
+# Unix-like systems (Linux and macOS)
+xattr==0.10.1; sys_platform != 'win32'
 
 # Desktop platforms (Windows, macOS, Linux)
 pygame==2.6.1; sys_platform != 'linux' or platform_machine != 'armv7l'
