@@ -99,99 +99,6 @@ def get_valid_media_files(source_path: Path, config) -> List[Path]:
     # Sort files for consistent ordering
     return sorted(files)
 
-def create_mhl(target_dir: Path) -> Tuple[Path, Any, Dict]:
-    """
-    Create a new MHL file for the transfer.
-    
-    Args:
-        target_dir: Target directory for the MHL file
-        
-    Returns:
-        Tuple of (mhl_filename, xml_tree, hash_dict)
-    """
-    try:
-        from datetime import datetime
-        import xml.etree.ElementTree as ET
-        
-        # Create an MHL filename with timestamp
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        mhl_filename = target_dir / f"transfer_{timestamp}.mhl"
-        
-        # Create the XML structure
-        root = ET.Element("hashlist")
-        root.set("version", "1.0")
-        
-        # Create a creator element
-        creator = ET.SubElement(root, "creator")
-        ET.SubElement(creator, "name").text = "TransferBox"
-        ET.SubElement(creator, "datemodified").text = datetime.now().isoformat()
-        
-        # Create an initial tree with the header information
-        tree = ET.ElementTree(root)
-        
-        # Create a dictionary to store hashes
-        hashes = {}
-        
-        # Write the initial MHL file
-        tree.write(mhl_filename, encoding="UTF-8", xml_declaration=True)
-        
-        logger.info(f"Created MHL file: {mhl_filename}")
-        return mhl_filename, tree, hashes
-        
-    except Exception as e:
-        logger.error(f"Error creating MHL file: {e}")
-        return None, None, {}
-
-def add_file_to_mhl(src_path: Path, dst_path: Path, tree, hashes: Dict) -> bool:
-    """
-    Add a file entry to an MHL file.
-    
-    Args:
-        src_path: Source file path
-        dst_path: Destination file path
-        tree: XML tree object
-        hashes: Dictionary of file hashes
-        
-    Returns:
-        True if added successfully, False otherwise
-    """
-    try:
-        import xml.etree.ElementTree as ET
-        from datetime import datetime
-        
-        # Get the hash from our dictionary
-        checksum = hashes.get(str(src_path))
-        if not checksum:
-            logger.warning(f"No hash found for {src_path} in MHL data")
-            return False
-            
-        # Get the root element
-        root = tree.getroot()
-        
-        # Create a hash element
-        hash_elem = ET.SubElement(root, "hash")
-        
-        # Add file info
-        ET.SubElement(hash_elem, "file").text = str(dst_path.name)
-        ET.SubElement(hash_elem, "size").text = str(dst_path.stat().st_size)
-        ET.SubElement(hash_elem, "lastmodificationdate").text = datetime.fromtimestamp(
-            dst_path.stat().st_mtime).isoformat()
-        
-        # Add the hash info
-        hash_info = ET.SubElement(hash_elem, "hashinfo")
-        ET.SubElement(hash_info, "hashtype").text = "md5"
-        ET.SubElement(hash_info, "value").text = checksum
-        
-        # Write the updated MHL file
-        tree.write(str(tree.getroot().findtext("creator/datemodified")), encoding="UTF-8", xml_declaration=True)
-        
-        logger.info(f"Added {dst_path.name} to MHL file")
-        return True
-        
-    except Exception as e:
-        logger.error(f"Error adding file to MHL: {e}")
-        return False
-
 class TransferValidator:
     """Validates transfer preconditions and requirements"""
     
@@ -446,9 +353,17 @@ class FileProcessor:
         
         # Set up MHL if enabled
         mhl_data = None
-        if getattr(self.config, 'create_mhl', False):
-            mhl_filename, tree, hashes = create_mhl(target_dir)
-            mhl_data = (mhl_filename, tree, hashes)
+        if getattr(self.config, 'create_mhl_files', False):
+            try:
+                timestamp = datetime.now().strftime(getattr(self.config, 'timestamp_format', "%Y%m%d_%H%M%S"))
+                logger.info(f"Creating MHL file for transfer with timestamp {timestamp}")
+                mhl_filename, tree, hashes = initialize_mhl_file(timestamp, target_dir)
+                mhl_data = (mhl_filename, tree, hashes)
+                logger.info(f"Successfully created MHL file: {mhl_filename}")
+            except Exception as e:
+                logger.error(f"Failed to create MHL file: {e}")
+                self.display.show_error("MHL Create Failed")
+                return False
             
         # Check if source path still exists before starting
         if not source_path.exists() or not os.path.ismount(str(source_path)):
@@ -526,16 +441,18 @@ class FileProcessor:
                 except (OSError, FileNotFoundError) as e:
                     # Check if source drive was removed
                     if not source_path.exists() or not os.path.ismount(str(source_path)):
-                        logger.error(f"Source drive removed while accessing file: {file_path} - {e}")
+                        error_msg = f"Source drive removed while getting file size: {file_path} - {e}"
+                        logger.error(error_msg)
+                        transfer_logger.log_message(error_msg)
                         self.display.show_error("Source removed")
                         if self.sound_manager:
                             self.sound_manager.play_error()
-                        # Mark transfer as incomplete
-                        self.progress_tracker.complete_transfer(successful=False)
                         return False
                     else:
+                        error_msg = f"Could not get size for file: {file_path} - {e}"
+                        logger.warning(error_msg)
+                        transfer_logger.log_message(error_msg)
                         file_size = 0
-                        logger.warning(f"Could not get size for file: {file_path} - {e}")
                 
                 # Calculate total transferred so far
                 total_transferred_so_far = 0
@@ -624,7 +541,7 @@ class FileProcessor:
             return False
     
     def _process_single_file(self, file_path: Path, source_root: Path, 
-                           target_dir: Path, mhl_data, logger) -> bool:
+                           target_dir: Path, mhl_data, transfer_logger) -> bool:
         """
         Process a single file transfer.
         
@@ -633,7 +550,7 @@ class FileProcessor:
             source_root: Root source directory
             target_dir: Target directory
             mhl_data: Optional MHL data tuple
-            logger: Transfer logger
+            transfer_logger: TransferLogger instance for logging transfer results
             
         Returns:
             True if file transferred successfully, False otherwise
@@ -643,6 +560,7 @@ class FileProcessor:
             if not source_root.exists() or not os.path.ismount(str(source_root)):
                 error_msg = f"Source drive removed before processing file: {file_path}"
                 logger.error(error_msg)
+                transfer_logger.log_message(error_msg)
                 self.display.show_error("Source removed")
                 if self.sound_manager:
                     self.sound_manager.play_error()
@@ -654,12 +572,15 @@ class FileProcessor:
                 if not source_root.exists() or not os.path.ismount(str(source_root)):
                     error_msg = f"Source drive removed before processing file: {file_path}"
                     logger.error(error_msg)
+                    transfer_logger.log_message(error_msg)
                     self.display.show_error("Source removed")
                     if self.sound_manager:
                         self.sound_manager.play_error()
                     return False
                 else:
-                    logger.warning(f"File disappeared before transfer: {file_path}")
+                    error_msg = f"File disappeared before transfer: {file_path}"
+                    logger.warning(error_msg)
+                    transfer_logger.log_message(error_msg)
                     return False
             
             # Calculate destination path
@@ -687,14 +608,18 @@ class FileProcessor:
             except (OSError, FileNotFoundError) as e:
                 # Check if source drive was removed
                 if not source_root.exists() or not os.path.ismount(str(source_root)):
-                    logger.error(f"Source drive removed while getting file size: {file_path} - {e}")
+                    error_msg = f"Source drive removed while getting file size: {file_path} - {e}"
+                    logger.error(error_msg)
+                    transfer_logger.log_message(error_msg)
                     self.display.show_error("Source removed")
                     if self.sound_manager:
                         self.sound_manager.play_error()
                     return False
                 else:
+                    error_msg = f"Could not get size for file: {file_path} - {e}"
+                    logger.warning(error_msg)
+                    transfer_logger.log_message(error_msg)
                     file_size = 0
-                    logger.warning(f"Could not get size for file: {file_path} - {e}")
             
             # Set status to copying
             self.progress_tracker.set_status(TransferStatus.COPYING)
@@ -730,7 +655,9 @@ class FileProcessor:
                         )
                         
                         if not verify_result:
-                            logger.error(f"Checksum verification failed for {dest_path}")
+                            error_msg = f"Checksum verification failed for {dest_path}"
+                            logger.error(error_msg)
+                            transfer_logger.log_message(error_msg)
                             success = False
                 else:
                     # Simple copy without checksumming
@@ -738,23 +665,40 @@ class FileProcessor:
             except Exception as e:
                 # Check if source drive was removed
                 if not source_root.exists() or not os.path.ismount(str(source_root)):
-                    logger.error(f"Source drive removed during file transfer: {e}")
+                    error_msg = f"Source drive removed during file transfer: {e}"
+                    logger.error(error_msg)
+                    transfer_logger.log_message(error_msg)
                     self.display.show_error("Source removed")
                     if self.sound_manager:
                         self.sound_manager.play_error()
                 else:
-                    logger.error(f"Error during file transfer: {e}")
+                    error_msg = f"Error during file transfer: {e}"
+                    logger.error(error_msg)
+                    transfer_logger.log_message(error_msg)
                     self.display.show_error("Transfer error")
                 
                 success = False
             
             if success and mhl_data:
-                # Add to MHL if needed
-                mhl_filename, tree, hashes = mhl_data
-                add_file_to_mhl(file_path, dest_path, tree, hashes)
+                # Add to MHL if needed - only if we have a checksum (verify_transfers was enabled)
+                if 'checksum' in locals() and checksum:
+                    try:
+                        mhl_filename, tree, hashes = mhl_data
+                        logger.info(f"Adding file to MHL: {dest_path}")
+                        
+                        # Use the properly imported function from mhl_handler
+                        add_file_to_mhl(mhl_filename, tree, hashes, dest_path, checksum, file_size)
+                        
+                        logger.info(f"Successfully added file to MHL: {dest_path}")
+                    except Exception as mhl_err:
+                        logger.error(f"Failed to add file to MHL: {mhl_err}")
+                        transfer_logger.log_message(f"Failed to add file to MHL: {mhl_err}")
+                        # Continue without stopping the transfer
+                else:
+                    logger.warning(f"Skipping MHL entry for {dest_path} - no checksum available")
                 
             # Log the transfer
-            logger.log_file_transfer(
+            transfer_logger.log_file_transfer(
                 source_file=file_path,
                 dest_file=dest_path,
                 success=success
@@ -767,12 +711,16 @@ class FileProcessor:
         except Exception as e:
             # Check if it's a drive removal error
             if not source_root.exists() or not os.path.ismount(str(source_root)):
-                logger.error(f"Source drive removed during file processing: {e}")
+                error_msg = f"Source drive removed during file processing: {e}"
+                logger.error(error_msg)
+                transfer_logger.log_message(error_msg)
                 self.display.show_error("Source removed")
                 if self.sound_manager:
                     self.sound_manager.play_error()
             else:
-                logger.error(f"Error processing file {file_path}: {e}")
+                error_msg = f"Error processing file {file_path}: {e}"
+                logger.error(error_msg)
+                transfer_logger.log_message(error_msg)
                 self.display.show_error("File error")
                 
             self.progress_tracker.set_status(TransferStatus.ERROR)

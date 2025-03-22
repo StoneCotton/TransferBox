@@ -448,9 +448,11 @@ class FileTransfer:
                 if mhl_data:
                     try:
                         mhl_filename, tree, hashes = mhl_data
+                        logger.info(f"Adding file to MHL: {dst_path}")
                         add_file_to_mhl(mhl_filename, tree, hashes, dst_path, checksum, file_size)
+                        logger.info(f"Successfully added file to MHL: {dst_path}")
                     except Exception as mhl_err:
-                        logger.warning(f"Failed to add file to MHL: {mhl_err}")
+                        logger.error(f"Failed to add file to MHL: {mhl_err}", exc_info=True)
                         # Continue without stopping the transfer
                         
                 # Mark progress as complete
