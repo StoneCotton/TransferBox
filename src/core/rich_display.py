@@ -68,21 +68,10 @@ class RichDisplay(DisplayInterface):
         self.proxy_total_task_id = None
         self.proxy_current_task_id = None
         
-        # Create layout
-        self.layout = Layout()
-        self.layout.split_column(
-            Layout(name=f"TransferBox | v{__version__} | Made by Tyler Saari", size=2),
-            Layout(name="progress", size=6)
-        )
+        # Keep Live display initially set to None
+        self.live = None
         
-        self.live = Live(
-            self.layout,
-            console=self.console,
-            refresh_per_second=15,
-            transient=True
-        )
-        
-        # Clear the screen and display the header
+        # Clear the screen and display the header right away
         self.clear_screen()
         self.show_header()
 
@@ -149,25 +138,16 @@ class RichDisplay(DisplayInterface):
             self.proxy_total_task_id = self.progress.add_task("Total Progress", total=100, visible=True)
             self.proxy_current_task_id = self.progress.add_task("Proxy Progress", total=100, visible=True)
         
-        # Create new live display with fresh layout
-        self.layout = Layout()
-        self.layout.split_column(
-            Layout(name=f"TransferBox | v{__version__} | Made by Tyler Saari", size=2),
-            Layout(name="progress", size=6)
-        )
-        
-        # Update layout with new progress instance
-        self.layout["progress"].update(self.progress)
-        
         # Clear screen and show header before starting live display
         self.clear_screen()
         self.show_header()
         
+        # Create a Live display that won't clear the screen (preserving the header)
         self.live = Live(
-            self.layout,
+            self.progress,
             console=self.console,
             refresh_per_second=15,
-            transient=True
+            transient=False  # Don't clear the display when stopping
         )
         self.live.start()
         
@@ -231,25 +211,16 @@ class RichDisplay(DisplayInterface):
             self.copy_task_id = self.progress.add_task("Copy Progress", total=100, visible=True)
             self.checksum_task_id = self.progress.add_task("Checksum Progress", total=100, visible=True)
         
-        # Create new live display with fresh layout
-        self.layout = Layout()
-        self.layout.split_column(
-            Layout(name=f"TransferBox | v{__version__} | Made by Tyler Saari", size=2),
-            Layout(name="progress", size=6)
-        )
-        
-        # Update layout with new progress instance
-        self.layout["progress"].update(self.progress)
-        
         # Clear screen and show header before starting live display
         self.clear_screen()
         self.show_header()
         
+        # Create a Live display that won't clear the screen (preserving the header)
         self.live = Live(
-            self.layout,
+            self.progress,
             console=self.console,
             refresh_per_second=15,
-            transient=True
+            transient=False  # Don't clear the display when stopping
         )
         self.live.start()
         
@@ -358,9 +329,6 @@ class RichDisplay(DisplayInterface):
                                 time_remaining=progress.eta_seconds if progress.eta_seconds > 0 else None
                             )
 
-                # Update the layout
-                self.layout["progress"].update(self.progress)
-
             except Exception as e:
                 error_msg = f"Error updating progress display: {str(e)}"
                 logger.error(error_msg)
@@ -424,10 +392,15 @@ class RichDisplay(DisplayInterface):
                 self.setup_in_progress = True
             
             if self.in_transfer_mode or self.in_proxy_mode:
-                # When in progress mode, show status in the status panel
-                self.layout["progress"].update(
-                    Panel(Text(message, style="blue"))
-                )
+                # Create a status panel
+                status_panel = Panel(Text(message, style="blue"))
+                
+                # Temporarily stop the Live display, show the header and status
+                if self.live and self.live.is_started:
+                    with self.live.suspend():
+                        self.clear_screen()
+                        self.show_header()
+                        self.console.print(status_panel)
             else:
                 # When not in progress mode:
                 if not self.setup_in_progress:

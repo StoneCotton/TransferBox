@@ -502,8 +502,7 @@ class FileProcessor:
             return True
             
         # Log the start of the transfer
-        logger.info(f"Starting transfer of {total_files} files from {source_path} to {target_dir}")
-        transfer_logger.log_message(f"Starting transfer of {total_files} files")
+        #transfer_logger.log_message(f"Starting transfer of {total_files} files")
         
         # Process all files
         try:
