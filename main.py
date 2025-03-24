@@ -221,15 +221,27 @@ class TransferBox:
                     else:
                         # Check if source drive was removed
                         if not source_drive.exists() or not os.path.ismount(str(source_drive)):
-                            self.display.show_error("Source removed")
-                            source_removed_error_shown = True
-                            error_occurred = True
+                            if not source_removed_error_shown:
+                                self.display.show_error("Source removed")
+                                source_removed_error_shown = True
                             if self.sound_manager:
                                 self.sound_manager.play_error()
                         else:
-                            # Only show transfer failed if it wasn't due to source removal
-                            self.display.show_error("Transfer failed")
-                            error_occurred = True
+                            # Only show transfer failed if it wasn't due to source removal or no files
+                            # Don't attempt to unmount if no files were found - let user verify and unmount manually
+                            if self.file_transfer.no_files_found:
+                                # No need to do anything - messages already shown by FileProcessor
+                                pass
+                            else:
+                                self.display.show_error("Transfer failed")
+                                error_occurred = True
+                                # Try to unmount the drive only if transfer failed (not if no files found)
+                                logger.info(f"Attempting to unmount source drive after failed transfer: {source_drive}")
+                                try:
+                                    if self.storage.unmount_drive(source_drive):
+                                        self.display.show_status("Safe to remove card")
+                                except Exception as unmount_err:
+                                    logger.warning(f"Failed to unmount drive after failed transfer: {unmount_err}")
                 except Exception as e:
                     # Log the error
                     logger.error(f"Error during transfer: {e}", exc_info=True)
@@ -329,9 +341,21 @@ class TransferBox:
                             if self.sound_manager:
                                 self.sound_manager.play_error()
                         else:
-                            # Only show transfer failed if it wasn't due to source removal
-                            self.display.show_error("Transfer failed")
-                            error_occurred = True
+                            # Only show transfer failed if it wasn't due to source removal or no files
+                            # Don't attempt to unmount if no files were found - let user verify and unmount manually
+                            if self.file_transfer.no_files_found:
+                                # No need to do anything - messages already shown by FileProcessor
+                                pass
+                            else:
+                                self.display.show_error("Transfer failed")
+                                error_occurred = True
+                                # Try to unmount the drive only if transfer failed (not if no files found)
+                                logger.info(f"Attempting to unmount source drive after failed transfer: {source_drive}")
+                                try:
+                                    if self.storage.unmount_drive(source_drive):
+                                        self.display.show_status("Safe to remove card")
+                                except Exception as unmount_err:
+                                    logger.warning(f"Failed to unmount drive after failed transfer: {unmount_err}")
                 except Exception as e:
                     # Log the error
                     logger.error(f"Error during transfer: {e}", exc_info=True)

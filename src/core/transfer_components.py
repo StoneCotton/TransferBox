@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 from typing import Optional, Tuple, List, Dict, Any, Union
 from datetime import datetime
+import time
 
 from .config_manager import TransferConfig
 from .interfaces.display import DisplayInterface
@@ -330,6 +331,7 @@ class FileProcessor:
         self.config = config
         self.sound_manager = sound_manager
         self.progress_tracker = ProgressTracker(display)
+        self.no_files_found = False  # Flag to track if no files were found
         
     def process_files(self, source_path: Path, target_dir: Path, log_file: Path = None) -> bool:
         """
@@ -343,6 +345,9 @@ class FileProcessor:
         Returns:
             bool: True if all files processed successfully
         """
+        # Reset no_files_found flag at start of processing
+        self.no_files_found = False
+        
         # Create transfer logger instance
         transfer_logger = TransferLogger(log_file)
         
@@ -387,6 +392,20 @@ class FileProcessor:
             
         total_files = len(files_to_transfer)
         
+        # Handle empty source directory before initializing any transfer state
+        if total_files == 0:
+            logger.warning(f"No files to transfer from {source_path}")
+            self.display.show_status("No valid media files found")
+            if self.sound_manager:
+                self.sound_manager.play_error()
+            time.sleep(1)  # Brief pause
+            self.display.show_status("Please check files in Explorer")
+            time.sleep(1)  # Brief pause
+            self.display.show_status("Then safely eject the card")
+            transfer_logger.log_message("No files to transfer")
+            self.no_files_found = True  # Set the flag when no files are found
+            return False  # Return false to indicate no successful transfer
+        
         # Calculate total size for progress tracking
         total_size = 0
         for file_path in files_to_transfer:
@@ -404,20 +423,9 @@ class FileProcessor:
                     # Skip files that can't be accessed for other reasons
                     logger.warning(f"Could not access file for size calculation: {file_path} - {e}")
         
-        # Initialize progress tracking
+        # Only initialize progress tracking if we have files to transfer
         self.progress_tracker.start_transfer(total_files, total_size)
         self.progress_tracker.set_status(TransferStatus.COPYING)
-        
-        # Handle empty source directory
-        if total_files == 0:
-            logger.warning(f"No files to transfer from {source_path}")
-            self.display.show_status("No files found")
-            transfer_logger.log_message("No files to transfer")
-            self.progress_tracker.complete_transfer(successful=True)
-            return True
-            
-        # Log the start of the transfer
-        #transfer_logger.log_message(f"Starting transfer of {total_files} files")
         
         # Process all files
         try:

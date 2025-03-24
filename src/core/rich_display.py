@@ -407,12 +407,24 @@ class RichDisplay(DisplayInterface):
         # Create a status panel
         status_panel = Panel(Text(message, style="blue"))
         
-        # Temporarily stop the Live display, show the header and status
+        # Stop the current live display if it exists
         if self.live and self.live.is_started:
-            with self.live.suspend():
-                self.clear_screen()
-                self.show_header()
-                self.console.print(status_panel)
+            self.live.stop()
+        
+        # Clear screen and show header and status
+        self.clear_screen()
+        self.show_header()
+        self.console.print(status_panel)
+        
+        # Restart the live display if we were in a progress mode
+        if self.progress and self.display_mode != DisplayMode.NONE:
+            self.live = Live(
+                self.progress,
+                console=self.console,
+                refresh_per_second=15,
+                transient=False
+            )
+            self.live.start()
 
     def _show_status_in_normal_mode(self, message):
         """Show status when not in a progress display mode."""

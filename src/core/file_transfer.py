@@ -64,6 +64,7 @@ class FileTransfer:
         self.storage = storage
         self.config = config or TransferConfig()
         self.sound_manager = sound_manager
+        self.no_files_found = False  # Flag to track if no files were found
         
         # Use composition for specialized components
         self.validator = TransferValidator(display, storage, state_manager)
@@ -529,6 +530,9 @@ class FileTransfer:
             bool: True if transfer was successful, False otherwise
         """
         try:
+            # Reset no_files_found flag at start of transfer
+            self.no_files_found = False
+            
             # Check if the source path exists before starting
             if not source_path.exists() or not os.path.ismount(str(source_path)):
                 logger.error(f"Source drive not found or not mounted: {source_path}")
@@ -556,19 +560,13 @@ class FileTransfer:
                     self.sound_manager.play_error()
                 return False
             
-            # Process files with drive removal detection
-            try:
-                result = self.processor.process_files(source_path, target_dir, log_file)
-                if result and self.sound_manager:
-                    self.sound_manager.play_success()
-                return result
-            except (FileNotFoundError, PermissionError, OSError) as e:
-                # These specific errors are likely caused by drive removal
-                logger.error(f"Transfer failed - drive may have been removed: {e}")
-                self.display.show_error("Source removed")
-                if self.sound_manager:
-                    self.sound_manager.play_error()
-                return False
+            # Process files
+            success = self.processor.process_files(source_path, target_dir, log_file)
+            
+            # Set no_files_found flag based on processor result
+            self.no_files_found = self.processor.no_files_found if hasattr(self.processor, 'no_files_found') else False
+            
+            return success
             
         except Exception as e:
             logger.error(f"Error during file transfer: {e}", exc_info=True)
