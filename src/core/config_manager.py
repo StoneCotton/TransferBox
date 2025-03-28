@@ -38,7 +38,7 @@ class TransferConfig(BaseModel):
     ])
     
     # Directory structure
-    create_date_folders: bool = True
+    create_date_folders: bool = False
     date_folder_format: str = "%Y/%m/%d"
     create_device_folders: bool = False
     device_folder_template: str = "{device_name}"
