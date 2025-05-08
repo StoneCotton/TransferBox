@@ -9,6 +9,20 @@ import os
 from rich.logging import RichHandler
 from rich.console import Console
 from logging.handlers import RotatingFileHandler
+import platform
+
+def get_default_log_dir() -> Path:
+    system = platform.system()
+    if system == "Darwin":
+        return Path.home() / "Library" / "Logs" / "TransferBox"
+    elif system == "Windows":
+        appdata = os.environ.get("APPDATA")
+        if appdata:
+            return Path(appdata) / "TransferBox" / "Logs"
+        else:
+            return Path.home() / "AppData" / "Roaming" / "TransferBox" / "Logs"
+    else:
+        return Path.home() / ".local" / "share" / "TransferBox" / "logs"
 
 def setup_logging(
     log_dir: Optional[Path] = None,
@@ -28,22 +42,10 @@ def setup_logging(
         logger.setLevel(log_level)
         logger.handlers.clear()
         
-        # Resolve log directory path
-        try:
-            if log_dir is None:
-                try:
-                    project_dir = Path(__file__).parent.parent  # Go up two levels from core/
-                    log_dir = project_dir / 'logs'
-                except (NameError, ValueError, AttributeError) as path_err:
-                    print(f"Error resolving project directory: {path_err}", file=sys.stderr)
-                    # Fallback to current directory if path resolution fails
-                    log_dir = Path.cwd() / 'logs'
-                    print(f"Using fallback log directory: {log_dir}", file=sys.stderr)
-        except Exception as e:
-            print(f"Error setting log directory: {e}", file=sys.stderr)
-            # Last resort fallback
-            log_dir = Path.cwd() / 'logs'
-            
+        # Use best-practice log dir if not provided
+        if log_dir is None:
+            log_dir = get_default_log_dir()
+        
         # Create logs directory if it doesn't exist
         try:
             log_dir.mkdir(parents=True, exist_ok=True)

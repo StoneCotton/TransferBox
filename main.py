@@ -22,6 +22,8 @@ from src.core.path_utils import sanitize_path
 from src.core.exceptions import HardwareError, StorageError, StateError, FileTransferError
 from src.core.context_managers import operation_context
 import argparse
+import tempfile
+import platform
 
 # Initialize configuration first
 config_manager = ConfigManager()
