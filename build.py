@@ -69,17 +69,13 @@ def extract_metadata():
 def ensure_pyinstaller_installed():
     """
     Make sure PyInstaller is installed.
-    
-    Checks if PyInstaller is already available, and installs it
-    if not found. This ensures the script works even on fresh
-    development environments.
+    Checks if PyInstaller is available, and installs it if not.
     """
-    try:
-        import PyInstaller
-        print(f"Using PyInstaller {PyInstaller.__version__}")
-    except ImportError:
-        print("Installing PyInstaller...")
-        subprocess.check_call([sys.executable, '-m', 'pip', 'install', 'pyinstaller==6.5.0'])
+    if shutil.which("pyinstaller") is None:
+        print("Installing PyInstaller with uv...")
+        subprocess.check_call(['uv', 'pip', 'install', 'pyinstaller==6.5.0'])
+    else:
+        subprocess.run(["pyinstaller", "--version"])
 
 def get_platform_icon():
     """
