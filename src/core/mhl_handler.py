@@ -186,12 +186,15 @@ def add_file_to_mhl(
         
         # Calculate relative path with error handling
         try:
+            logger.debug(f"Calculating relative path for {file_path} relative to {mhl_filename.parent}")
             rel_path = Path(file_path).relative_to(mhl_filename.parent)
             path.text = str(rel_path)
+            logger.debug(f"Relative path calculated: {rel_path}")
         except ValueError as e:
             logger.warning(f"Could not determine relative path for {file_path}: {e}")
             # Fall back to filename only if relative path fails
             path.text = file_path.name
+            logger.debug(f"Using filename only as fallback: {file_path.name}")
             
         # Add last modification date with error handling
         try:
@@ -218,6 +221,7 @@ def add_file_to_mhl(
         
         # Write updated tree with error handling
         try:
+            logger.debug(f"Writing updated MHL file to {mhl_filename}")
             tree.write(mhl_filename, encoding='utf-8', xml_declaration=True)
         except PermissionError as e:
             logger.error(f"Permission denied writing to MHL file {mhl_filename}: {e}")

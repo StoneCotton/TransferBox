@@ -69,17 +69,13 @@ def extract_metadata():
 def ensure_pyinstaller_installed():
     """
     Make sure PyInstaller is installed.
-    
-    Checks if PyInstaller is already available, and installs it
-    if not found. This ensures the script works even on fresh
-    development environments.
+    Checks if PyInstaller is available, and installs it if not.
     """
-    try:
-        import PyInstaller
-        print(f"Using PyInstaller {PyInstaller.__version__}")
-    except ImportError:
-        print("Installing PyInstaller...")
-        subprocess.check_call([sys.executable, '-m', 'pip', 'install', 'pyinstaller==6.5.0'])
+    if shutil.which("pyinstaller") is None:
+        print("Installing PyInstaller with uv...")
+        subprocess.check_call(['uv', 'pip', 'install', 'pyinstaller==6.5.0'])
+    else:
+        subprocess.run(["pyinstaller", "--version"])
 
 def get_platform_icon():
     """
@@ -225,25 +221,58 @@ if __name__ == "__main__":
     
     return wrapper_path
 
+# Top-level launcher script for macOS .app bundle
+launcher_script = '''#!/usr/bin/env python3
+# Terminal launcher for TransferBox.
+# This script opens a Terminal window and launches the main application inside it.
+import os
+import sys
+import subprocess
+
+def main():
+    # Get the path to the actual executable
+    if getattr(sys, 'frozen', False):
+        app_dir = os.path.dirname(sys.executable)
+        main_exec = os.path.join(app_dir, '{main_exec_name}')
+    else:
+        app_dir = os.path.dirname(os.path.abspath(__file__))
+        main_exec = os.path.join(app_dir, 'main.py')
+
+    if not os.path.exists(main_exec):
+        print("Error: Main executable not found at {{}}".format(main_exec))
+        return 1
+
+    # AppleScript to open Terminal and run the main executable
+    applescript_cmd = 'tell application "Terminal" to do script "' + main_exec + '"'
+    try:
+        subprocess.run(['osascript', '-e', applescript_cmd], check=True)
+        return 0
+    except subprocess.CalledProcessError as e:
+        print("Error launching Terminal: {{}}".format(e))
+        return 1
+
+if __name__ == "__main__":
+    sys.exit(main())
+'''
+
 def build_macos(metadata):
     """
-    Build macOS application with improved Terminal support.
-    Creates both the main console executable and a launcher app that
-    opens Terminal to run the main executable.
+    Build macOS application with Terminal support.
+    Always creates both the main console executable and a launcher .app bundle
+    that opens Terminal to run the main executable. Sets the .app icon.
     """
     print(f"Building {metadata['project_name']} v{metadata['version']} for macOS...")
-    
+
     # Get the icon path
     icon_path = get_platform_icon()
-    
-    # First, build the main executable (not a .app, just a console app)
+
+    # Build the main executable (console app)
     main_exec_name = f"{metadata['project_name']}-main"
-    
     print("Building main executable...")
     pyinstaller_args = [
         'pyinstaller',
         '--clean',
-        '--onefile',  # Single executable file
+        '--onefile',
         '--name', main_exec_name,
         '--add-data', f'{ASSETS_DIR}:assets',
         '--add-data', f'{SOUNDS_DIR}:sounds',
@@ -253,126 +282,46 @@ def build_macos(metadata):
         '--icon', icon_path,
         'main.py'
     ]
-    
-    # Run PyInstaller for main executable
     print(f"Running PyInstaller with args: {' '.join(pyinstaller_args)}")
     subprocess.check_call(pyinstaller_args)
-    
-    # Now, build the launcher app
-    if "--app" in sys.argv:
-        print("Building launcher app...")
-        launcher_name = f"{metadata['project_name']}-{metadata['version']}"
-        
-        # Create the terminal launcher script if it doesn't exist
-        launcher_path = ROOT_DIR / "terminal_launcher.py"
-        if not launcher_path.exists():
-            with open(launcher_path, "w") as f:
-                f.write("""#!/usr/bin/env python3
-\"\"\"
-Terminal launcher for TransferBox.
-This script opens a Terminal window and launches the main application inside it.
-\"\"\"
-import os
-import sys
-import subprocess
 
-def resource_path(relative_path):
-    \"\"\"Get absolute path to resource, works for dev and for PyInstaller\"\"\"
-    if getattr(sys, 'frozen', False):
-        # Running from the bundled app
-        base_path = sys._MEIPASS
-    else:
-        # Running from source code
-        base_path = os.path.dirname(os.path.abspath(__file__))
-    
-    return os.path.join(base_path, relative_path)
+    # Create the launcher script (always)
+    launcher_name = f"{metadata['project_name']}-{metadata['version']}"
+    launcher_path = ROOT_DIR / "terminal_launcher.py"
+    with open(launcher_path, "w") as f:
+        f.write(launcher_script.format(main_exec_name=main_exec_name))
+    os.chmod(launcher_path, 0o755)
 
-def main():
-    # Get the path to the actual executable
-    if getattr(sys, 'frozen', False):
-        # Running from bundled app
-        app_dir = os.path.dirname(sys.executable)
-        main_exec = os.path.join(app_dir, "TransferBox-main")
-    else:
-        # Running from script
-        app_dir = os.path.dirname(os.path.abspath(__file__))
-        main_exec = os.path.join(app_dir, "main.py")
-    
-    # Create an AppleScript command to open Terminal and run the main app
-    if not os.path.exists(main_exec):
-        print(f"Error: Main executable not found at {main_exec}")
-        return 1
-    
-    # Create the AppleScript command
-    applescript_cmd = f'''
-    tell application "Terminal"
-        activate
-        do script "\\"{main_exec}\\""
-    end tell
-    '''
-    
-    # Execute the AppleScript
-    try:
-        subprocess.run(['osascript', '-e', applescript_cmd], check=True)
-        return 0
-    except subprocess.CalledProcessError as e:
-        print(f"Error launching Terminal: {e}")
-        return 1
+    # Build the launcher .app bundle
+    launcher_args = [
+        'pyinstaller',
+        '--clean',
+        '--windowed',  # Create .app bundle
+        '--name', launcher_name,
+        '--add-binary', f'{DIST_DIR}/{main_exec_name}:.',
+        '--osx-bundle-identifier', f'com.{metadata["author"].lower().replace(" ", "")}.{metadata["project_name"].lower()}',
+        '--icon', icon_path,
+        str(launcher_path)
+    ]
+    print(f"Running PyInstaller with args: {' '.join(launcher_args)}")
+    subprocess.check_call(launcher_args)
 
-if __name__ == "__main__":
-    sys.exit(main())
-""")
-            # Make it executable
-            os.chmod(launcher_path, 0o755)
-        
-        # Build the launcher app
-        launcher_args = [
-            'pyinstaller',
-            '--clean',
-            '--windowed',  # Create .app bundle
-            '--name', launcher_name,
-            '--add-binary', f'{DIST_DIR}/{main_exec_name}:.',  # Include the main executable
-            '--osx-bundle-identifier', f'com.{metadata["author"].lower().replace(" ", "")}.{metadata["project_name"].lower()}',
-            '--icon', icon_path,
-            str(launcher_path)
-        ]
-        
-        # Run PyInstaller for launcher app
-        print(f"Running PyInstaller with args: {' '.join(launcher_args)}")
-        subprocess.check_call(launcher_args)
-        
-        # Check if build was successful
-        app_path = DIST_DIR / f"{launcher_name}.app"
-        main_exec_in_app = app_path / "Contents" / "MacOS" / main_exec_name
-        
-        if app_path.exists() and (DIST_DIR / main_exec_name).exists():
-            # Copy the main executable into the app bundle if it's not already there
-            if not main_exec_in_app.exists():
-                shutil.copy2(DIST_DIR / main_exec_name, app_path / "Contents" / "MacOS")
-                os.chmod(app_path / "Contents" / "MacOS" / main_exec_name, 0o755)
-                print(f"Copied main executable to app bundle")
-            
-            print(f"\nBuild successful! Application bundle created at: {app_path}")
-            print("\nYou can now run the application by double-clicking it in Finder.")
-            print("It will open a Terminal window to run the main application.")
-            return True
-        else:
-            print("\nBuild failed: Missing components")
-            return False
+    # Check if build was successful
+    app_path = DIST_DIR / f"{launcher_name}.app"
+    main_exec_in_app = app_path / "Contents" / "MacOS" / main_exec_name
+    if app_path.exists() and (DIST_DIR / main_exec_name).exists():
+        # Copy the main executable into the app bundle if it's not already there
+        if not main_exec_in_app.exists():
+            shutil.copy2(DIST_DIR / main_exec_name, app_path / "Contents" / "MacOS")
+            os.chmod(app_path / "Contents" / "MacOS" / main_exec_name, 0o755)
+            print(f"Copied main executable to app bundle")
+        print(f"\nBuild successful! Application bundle created at: {app_path}")
+        print("\nYou can now run the application by double-clicking it in Finder.")
+        print("It will open a Terminal window to run the main application.")
+        return True
     else:
-        # Just build the command-line version
-        executable_path = DIST_DIR / main_exec_name
-        if executable_path.exists():
-            print(f"\nBuild successful! Executable created at: {executable_path}")
-            # Make executable
-            os.chmod(executable_path, 0o755)
-            print(f"File permissions set to executable")
-            print("\nYou can now run the application with:")
-            print(f"./dist/{main_exec_name}")
-            return True
-    
-    print("\nBuild failed! Executable not found.")
-    return False
+        print("\nBuild failed: Missing components")
+        return False
 
 def build_windows(metadata):
     """

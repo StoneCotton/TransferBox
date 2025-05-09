@@ -2,7 +2,7 @@
 TransferBox - A utility for secure file transfers with verification
 """
 
-__version__ = "1.2.0"
+__version__ = "1.3.6"
 __author__ = "Tyler Saari"
 __license__ = "MIT"
 __description__ = "A utility for secure file transfers with verification"

@@ -386,7 +386,19 @@ def sanitize_path(path_str: str) -> Path:
 
         # Platform-specific handling
         system = platform.system().lower()
-        if system == 'linux':  # Includes Raspberry Pi
+        if system == 'darwin':  # macOS specific handling
+            # Handle special characters that could cause issues on macOS
+            cleaned_path = cleaned_path.replace("\\ ", " ")  # Convert escaped spaces
+            cleaned_path = cleaned_path.replace("\\#", "#")
+            cleaned_path = cleaned_path.replace("\\(", "(")
+            cleaned_path = cleaned_path.replace("\\)", ")")
+            cleaned_path = cleaned_path.replace("\\&", "&")
+            
+            # Handle /Volumes paths properly
+            if cleaned_path.startswith('/Volumes/'):
+                # Keep path as is for /Volumes paths
+                pass
+        elif system == 'linux':  # Includes Raspberry Pi
             # For Linux/Raspberry Pi, handle spaces and special characters
             cleaned_path = cleaned_path.replace("\\ ", " ")  # Convert escaped spaces
             cleaned_path = cleaned_path.replace("\\#", "#")

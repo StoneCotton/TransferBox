@@ -107,32 +107,61 @@ class MacOSStorage(StorageInterface):
             raise StorageError(f"Failed to check mount status", path=path) from e
 
     def unmount_drive(self, path: Path) -> bool:
-        """Unmount a drive using diskutil"""
+        """Unmount a drive using diskutil with retries"""
         try:
             # First sync to ensure all writes are complete
             subprocess.run(['sync'], check=True)
             
+            # Wait a moment for sync to complete
+            time.sleep(0.5)
+            
             # Try unmounting with diskutil
-            subprocess.run(
-                ['diskutil', 'unmount', str(path)],
-                check=True,
-                capture_output=True,
-                text=True
-            )
+            max_retries = 3
+            retry_delay = 1
+            last_error = None
             
-            # Wait a moment to ensure unmount is complete
-            time.sleep(1)
+            for attempt in range(max_retries):
+                try:
+                    result = subprocess.run(
+                        ['diskutil', 'unmount', str(path)],
+                        check=True,
+                        capture_output=True,
+                        text=True
+                    )
+                    
+                    # Wait a moment to ensure unmount is complete
+                    time.sleep(0.5)
+                    
+                    # Verify the unmount was successful
+                    if not path.exists() or not path.is_mount():
+                        logger.info(f"Successfully unmounted {path} on attempt {attempt + 1}")
+                        return True
+                        
+                    # If we get here, the path still exists and is mounted
+                    logger.warning(f"Unmount appeared successful but drive still mounted, retrying...")
+                    time.sleep(retry_delay)
+                    continue
+                    
+                except subprocess.CalledProcessError as e:
+                    last_error = e
+                    logger.warning(f"Unmount attempt {attempt + 1} failed: {e.stderr}")
+                    if attempt < max_retries - 1:
+                        time.sleep(retry_delay)
+                    continue
             
-            logger.info(f"Successfully unmounted {path}")
-            return True
-        
-        except subprocess.CalledProcessError as e:
-            logger.error(f"Failed to unmount {path}: {e.stderr}")
-            raise StorageError(f"Unmount failed", path=path) from e
+            # If we get here, all retries failed
+            if last_error:
+                logger.error(f"Failed to unmount {path} after {max_retries} attempts: {last_error.stderr}")
+                raise StorageError(f"Unmount failed after {max_retries} attempts", path=path) from last_error
+            else:
+                logger.error(f"Failed to unmount {path} - drive still mounted after {max_retries} attempts")
+                raise StorageError(f"Unmount verification failed", path=path)
         
         except Exception as e:
-            logger.error(f"Error during unmount of {path}: {e}")
-            raise StorageError(f"Unexpected unmount error", path=path) from e
+            if not isinstance(e, StorageError):
+                logger.error(f"Error during unmount of {path}: {e}")
+                raise StorageError(f"Unexpected unmount error", path=path) from e
+            raise
 
     def get_dump_drive(self) -> Optional[Path]:
         """Get the dump drive location"""

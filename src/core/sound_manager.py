@@ -84,7 +84,11 @@ class SoundManager:
                 
             # Load success sound
             try:
-                success_path = app_root / self.config.success_sound_path
+                success_sound_path = "sounds/success.mp3"  # Default path
+                if hasattr(self.config, 'success_sound_path'):
+                    success_sound_path = self.config.success_sound_path
+                
+                success_path = app_root / success_sound_path
                 if success_path.exists():
                     try:
                         self._sounds['success'] = pygame.mixer.Sound(str(success_path))
@@ -101,7 +105,11 @@ class SoundManager:
                 
             # Load error sound
             try:
-                error_path = app_root / self.config.error_sound_path
+                error_sound_path = "sounds/error.mp3"  # Default path
+                if hasattr(self.config, 'error_sound_path'):
+                    error_sound_path = self.config.error_sound_path
+                
+                error_path = app_root / error_sound_path
                 if error_path.exists():
                     try:
                         self._sounds['error'] = pygame.mixer.Sound(str(error_path))
@@ -118,7 +126,11 @@ class SoundManager:
                 
             # Set volume for all sounds
             try:
-                volume = max(0, min(1.0, self.config.sound_volume / 100))
+                sound_volume = 50  # Default volume
+                if hasattr(self.config, 'sound_volume'):
+                    sound_volume = self.config.sound_volume
+                    
+                volume = max(0, min(1.0, sound_volume / 100))
                 for sound_key, sound in self._sounds.items():
                     if sound:
                         try:
@@ -139,7 +151,7 @@ class SoundManager:
         Args:
             sound_type: Type of sound to play ('success' or 'error')
         """
-        if not self.config.enable_sounds or not self._initialized:
+        if not hasattr(self.config, 'enable_sounds') or not self.config.enable_sounds or not self._initialized:
             return
             
         try:

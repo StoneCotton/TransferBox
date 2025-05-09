@@ -100,7 +100,10 @@ class ProxyGenerator:
                 return False
 
             # Create proxy subfolder
-            proxy_dir = destination_dir / self.config.proxy_subfolder
+            proxy_subfolder = "proxies"  # Default value
+            if hasattr(self.config, 'proxy_subfolder'):
+                proxy_subfolder = self.config.proxy_subfolder
+            proxy_dir = destination_dir / proxy_subfolder
             proxy_dir.mkdir(parents=True, exist_ok=True)
             
             # Create output path with timestamp
@@ -110,8 +113,15 @@ class ProxyGenerator:
             # Find watermark file
             watermark_path = self.project_root / "assets" / "adobe_proxy_logo.png"
             
-            # Build FFmpeg command
-            command = self._build_ffmpeg_command(source_path, output_path, watermark_path)
+            # Add watermark if enabled and exists
+            include_watermark = False
+            if hasattr(self.config, 'include_proxy_watermark'):
+                include_watermark = self.config.include_proxy_watermark
+            
+            if include_watermark and watermark_path.exists():
+                command = self._build_ffmpeg_command(source_path, output_path, watermark_path)
+            else:
+                command = self._build_ffmpeg_command(source_path, output_path, None)
             logger.debug(f"FFmpeg command: {' '.join(command)}")
             
             # Run FFmpeg process
@@ -139,7 +149,7 @@ class ProxyGenerator:
             return False
 
     def _build_ffmpeg_command(self, source_path: Path, output_path: Path, 
-                            watermark_path: Path) -> List[str]:
+                            watermark_path: Optional[Path] = None) -> List[str]:
         """Build FFmpeg command with appropriate settings."""
         command = [
             'ffmpeg',
@@ -148,7 +158,7 @@ class ProxyGenerator:
         ]
         
         # Add watermark if enabled and exists
-        if self.config.include_proxy_watermark and watermark_path.exists():
+        if watermark_path is not None and watermark_path.exists():
             command.extend([
                 '-i', str(watermark_path),
                 '-filter_complex',

@@ -8,12 +8,21 @@ import sys
 import os
 from rich.logging import RichHandler
 from rich.console import Console
+from logging.handlers import RotatingFileHandler
+import platform
+from .config_manager import ConfigManager
+
+def get_default_log_dir() -> Path:
+    appdata_dir = ConfigManager.get_appdata_dir()
+    return appdata_dir / "logs"
 
 def setup_logging(
     log_dir: Optional[Path] = None,
     log_level: int = logging.DEBUG,
     log_format: str = '%(message)s',  # Simplified format for Rich
-    console_level: Optional[int] = None
+    console_level: Optional[int] = None,
+    log_file_rotation: int = 5,       # Number of backup log files
+    log_file_max_size: int = 10       # Size in MB
 ) -> logging.Logger:
     """Setup logging configuration with Rich integration."""
     logger = None
@@ -25,22 +34,10 @@ def setup_logging(
         logger.setLevel(log_level)
         logger.handlers.clear()
         
-        # Resolve log directory path
-        try:
-            if log_dir is None:
-                try:
-                    project_dir = Path(__file__).parent.parent  # Go up two levels from core/
-                    log_dir = project_dir / 'logs'
-                except (NameError, ValueError, AttributeError) as path_err:
-                    print(f"Error resolving project directory: {path_err}", file=sys.stderr)
-                    # Fallback to current directory if path resolution fails
-                    log_dir = Path.cwd() / 'logs'
-                    print(f"Using fallback log directory: {log_dir}", file=sys.stderr)
-        except Exception as e:
-            print(f"Error setting log directory: {e}", file=sys.stderr)
-            # Last resort fallback
-            log_dir = Path.cwd() / 'logs'
-            
+        # Use best-practice log dir if not provided
+        if log_dir is None:
+            log_dir = get_default_log_dir()
+        
         # Create logs directory if it doesn't exist
         try:
             log_dir.mkdir(parents=True, exist_ok=True)
@@ -69,7 +66,16 @@ def setup_logging(
                 file_formatter = logging.Formatter(
                     '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
                 )
-                file_handler = logging.FileHandler(log_file, encoding='utf-8')
+                
+                # Use RotatingFileHandler instead of FileHandler to respect rotation settings
+                max_bytes = log_file_max_size * 1024 * 1024  # Convert MB to bytes
+                file_handler = RotatingFileHandler(
+                    log_file, 
+                    maxBytes=max_bytes,
+                    backupCount=log_file_rotation,
+                    encoding='utf-8'
+                )
+                
                 file_handler.setLevel(log_level)
                 file_handler.setFormatter(file_formatter)
                 logger.addHandler(file_handler)
@@ -113,6 +119,7 @@ def setup_logging(
             if file_handler is not None and file_handler in logger.handlers:
                 logger.info(f"Log file created at: {log_file}")
             logger.info(f"Logging level: {logging.getLevelName(log_level)}")
+            logger.info(f"Log rotation: {log_file_rotation} files, {log_file_max_size}MB max size")
             logger.info(f"Python version: {sys.version}")
             logger.info(f"Platform: {sys.platform}")
         

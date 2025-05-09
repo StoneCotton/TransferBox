@@ -4,12 +4,21 @@ colorama==0.4.6
 rich==13.9.4
 pyyaml==6.0.2
 matplotlib==3.10.1
+pydantic==2.10.6
 
 # Linux/Raspberry Pi only
 smbus==1.1.post2; sys_platform == 'linux'
+gpiozero==2.0; sys_platform == 'linux' and platform_machine == 'armv7l'
+lgpio==0.2.2.0; sys_platform == 'linux' and platform_machine == 'armv7l'
+
+# Unix-like systems (Linux and macOS)
+xattr==1.1.4; sys_platform != 'win32'
 
 # Desktop platforms (Windows, macOS, Linux)
 pygame==2.6.1; sys_platform != 'linux' or platform_machine != 'armv7l'
+
+# Windows-specific dependencies
+pywin32==310; sys_platform == 'win32'
 
 # Build tools
 pyinstaller==6.5.0; sys_platform == 'darwin' or sys_platform == 'win32'
