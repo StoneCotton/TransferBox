@@ -288,3 +288,15 @@ def mocked_logging() -> Iterator[None]:
     logging.getLogger().setLevel(logging.CRITICAL)
     yield
     logging.getLogger().setLevel(original_level)
+
+@pytest.fixture
+def mock_display_interface(mocker) -> Any:
+    """
+    Provide a mock DisplayInterface for checksum tests.
+    Returns:
+        Mocked DisplayInterface instance.
+    """
+    mock_display = mocker.Mock()
+    mock_display.show_progress = mocker.Mock()
+    mock_display.show_error = mocker.Mock()
+    return mock_display
