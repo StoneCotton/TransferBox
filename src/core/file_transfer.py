@@ -127,20 +127,26 @@ class FileTransfer:
             # Check utility mode first
             if not self._check_utility_mode():
                 return False
-                
             # Validate path type
             if destination_path is None:
                 logger.error("No destination path provided")
                 self.display.show_error("No destination")
                 return False
-                
-            try:
-                dest_path = Path(destination_path)
-            except TypeError:
+            # Strict type and conversion check
+            if not isinstance(destination_path, (str, Path)):
                 logger.error(f"Invalid destination path type: {type(destination_path).__name__}")
                 self.display.show_error("Invalid path type")
                 return False
-                
+            try:
+                dest_path = Path(destination_path)
+            except Exception:
+                logger.error(f"Invalid destination path value: {destination_path}")
+                self.display.show_error("Invalid path value")
+                return False
+            if not str(dest_path).strip():
+                logger.error("Destination path is empty or invalid")
+                self.display.show_error("Invalid path value")
+                return False
             # Handle existing vs non-existing destination
             if dest_path.exists():
                 # Check if it's a directory
@@ -148,29 +154,23 @@ class FileTransfer:
                     logger.error(f"Destination exists but is not a directory: {dest_path}")
                     self.display.show_error("Not a directory")
                     return False
-                    
                 # Check write permissions
                 if not os.access(dest_path, os.W_OK):
                     logger.error(f"No write permission for destination: {dest_path}")
                     self.display.show_error("Write permission denied")
                     return False
-                    
                 logger.info(f"Using existing directory: {dest_path}")
                 return True
-                
             # For non-existing destination, validate parent and create
             parent = dest_path.parent
-            
             if not parent.exists():
                 logger.error(f"Parent directory doesn't exist: {parent}")
                 self.display.show_error("Parent dir missing")
                 return False
-                
             if not os.access(parent, os.W_OK):
                 logger.error(f"No write permission for parent directory: {parent}")
                 self.display.show_error("Parent write denied")
                 return False
-                
             # Create the destination directory
             try:
                 dest_path.mkdir(parents=True, exist_ok=True)
@@ -616,4 +616,5 @@ class FileTransfer:
         except Exception as e:
             logger.error(f"Error during proxy generation: {e}", exc_info=True)
             self.display.show_error("Proxy Error")
+            return False
             return False
