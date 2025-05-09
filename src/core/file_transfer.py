@@ -321,201 +321,203 @@ class FileTransfer:
                     
             return files_to_transfer, total_size, total_files
     
-    def _transfer_single_file(self, src_file: Path, target_dir: Path, source_path: Path,
-                           file_number: int, total_files: int, total_transferred: int,
-                           total_size: int, mhl_data: Optional[Tuple], transfer_logger: TransferLogger) -> Tuple[bool, Optional[int], Optional[str]]:
-        """
-        Transfer a single file.
-        
-        Args:
-            src_file: Source file path
-            target_dir: Target directory
-            source_path: Source root path
-            file_number: Current file number
-            total_files: Total number of files
-            total_transferred: Total bytes transferred so far
-            total_size: Total size of all files in bytes
-            mhl_data: Optional MHL data tuple
-            transfer_logger: Transfer logger object
-            
-        Returns:
-            Tuple of (success_flag, size_transferred, failure_reason):
-                success_flag: True if transfer succeeded
-                size_transferred: Size of transferred file if successful, None otherwise
-                failure_reason: Reason for failure if failed, None otherwise
-        """
-        with file_operation(self.display, self.sound_manager, f"Transfer File {file_number}/{total_files}"):
-            # Check if file still exists
-            if not src_file.exists():
-                logger.warning(f"File disappeared before transfer: {src_file}")
-                transfer_logger.log_failure(src_file, None, "File disappeared")
-                return False, None, f"{src_file} (disappeared)"
-                
-            # Get file size
-            try:
-                file_size = src_file.stat().st_size
-            except Exception as e:
-                logger.error(f"Failed to get file size: {e}")
-                transfer_logger.log_failure(src_file, None, f"Size error: {e}")
-                return False, None, f"{src_file} (size error)"
-                
-            # Create destination path
-            try:
-                rename_with_timestamp = False
-                preserve_original_filename = True
-                timestamp_format = "%Y%m%d_%H%M%S"
-                filename_template = "{original}_{timestamp}"
-                
-                if hasattr(self.config, 'rename_with_timestamp'):
-                    rename_with_timestamp = self.config.rename_with_timestamp
-                    
-                if hasattr(self.config, 'preserve_original_filename'):
-                    preserve_original_filename = self.config.preserve_original_filename
-                    
-                if hasattr(self.config, 'timestamp_format'):
-                    timestamp_format = self.config.timestamp_format
-                    
-                if hasattr(self.config, 'filename_template'):
-                    filename_template = self.config.filename_template
-                
-                dst_path = create_destination_path(
-                    src_file, target_dir, source_path,
-                    rename_with_timestamp,
-                    preserve_original_filename,
-                    timestamp_format,
-                    filename_template
-                )
-            except Exception as e:
-                logger.error(f"Failed to create destination path: {e}")
-                transfer_logger.log_failure(src_file, None, f"Path error: {e}")
-                return False, None, f"{src_file} (path error)"
-                
-            # Initialize progress tracking
-            self.progress_tracker.start_file(
-                src_file, file_number, total_files,
-                file_size, total_size, total_transferred
-            )
-                
-            # Get source metadata
-            try:
-                metadata = self.file_ops.get_metadata(src_file)
-            except Exception as e:
-                logger.warning(f"Failed to get metadata: {e}")
-                metadata = None
-                
-            # Copy file with progress tracking
-            try:
-                # Initialize hash calculator
-                xxh64_hash = self.checksum_calculator.create_hash()
-                
-                # Create progress callback
-                progress_callback = self.progress_tracker.create_progress_callback()
-                
-                # Perform file copy
-                success, checksum = self.file_ops.copy_file_with_hash(
-                    src_file, dst_path, xxh64_hash, progress_callback
-                )
-                
-                if not success:
-                    transfer_logger.log_failure(src_file, dst_path, "Copy failed")
-                    return False, None, str(src_file)
-                    
-                # Apply metadata if available
-                if metadata:
-                    self.file_ops.apply_metadata(dst_path, metadata)
-                    
-                # Set progress status to checksum verification
-                self.progress_tracker.set_status(TransferStatus.CHECKSUMMING)
-                
-                # Verify checksum
-                verify_result = self.file_ops.verify_checksum(
-                    dst_path, checksum, progress_callback
-                )
-                
-                if not verify_result:
-                    logger.error(f"Checksum verification failed for {dst_path}")
-                    transfer_logger.log_failure(src_file, dst_path, "Checksum verification failed")
-                    
-                    # Cleanup the file
-                    try:
-                        if dst_path.exists():
-                            dst_path.unlink()
-                    except Exception as cleanup_err:
-                        logger.warning(f"Failed to clean up file after checksum failure: {cleanup_err}")
-                        
-                    return False, None, str(src_file)
-                    
-                # Add to MHL file if needed
-                if mhl_data:
-                    try:
-                        mhl_filename, tree, hashes = mhl_data
-                        logger.info(f"Adding file to MHL: {dst_path}")
-                        add_file_to_mhl(mhl_filename, tree, hashes, dst_path, checksum, file_size)
-                        logger.info(f"Successfully added file to MHL: {dst_path}")
-                    except Exception as mhl_err:
-                        logger.error(f"Failed to add file to MHL: {mhl_err}", exc_info=True)
-                        # Continue without stopping the transfer
-                        
-                # Mark progress as complete
-                self.progress_tracker.complete_file(True)
-                
-                # Log success
-                transfer_logger.log_success(src_file, dst_path)
-                
-                return True, file_size, None
-                
-            except Exception as e:
-                logger.error(f"Error transferring file {src_file}: {e}")
-                transfer_logger.log_failure(src_file, dst_path, f"Transfer error: {e}")
-                return False, None, f"{src_file} (error: {e})"
+    #TODO: Test if this is needed or if it is legacy code that can be removed.
     
-    def _execute_file_transfers(self, files_to_transfer: List[Path], target_dir: Path,
-                             source_path: Path, total_files: int, total_size: int,
-                             mhl_data: Optional[Tuple], log_file: Path) -> Optional[Tuple[List[str], int]]:
-        """
-        Execute file transfers for all files.
+    # def _transfer_single_file(self, src_file: Path, target_dir: Path, source_path: Path,
+    #                        file_number: int, total_files: int, total_transferred: int,
+    #                        total_size: int, mhl_data: Optional[Tuple], transfer_logger: TransferLogger) -> Tuple[bool, Optional[int], Optional[str]]:
+    #     """
+    #     Transfer a single file.
         
-        Args:
-            files_to_transfer: List of files to transfer
-            target_dir: Target directory
-            source_path: Source root path
-            total_files: Total number of files
-            total_size: Total size of all files in bytes
-            mhl_data: Optional MHL data tuple
-            log_file: Path to log file
+    #     Args:
+    #         src_file: Source file path
+    #         target_dir: Target directory
+    #         source_path: Source root path
+    #         file_number: Current file number
+    #         total_files: Total number of files
+    #         total_transferred: Total bytes transferred so far
+    #         total_size: Total size of all files in bytes
+    #         mhl_data: Optional MHL data tuple
+    #         transfer_logger: Transfer logger object
             
-        Returns:
-            Optional[Tuple]: (failures, total_transferred) if successful, None otherwise
-        """
-        with file_operation(self.display, self.sound_manager, "Execute File Transfers"):
-            # Initialize transfer logger
-            transfer_logger = TransferLogger(log_file)
-            transfer_start_time = transfer_logger.start_transfer(
-                source_path, target_dir, total_files, total_size
-            )
-            
-            failures = []
-            total_transferred = 0
-            file_number = 0
-            
-            for src_file in files_to_transfer:
-                file_number += 1
-                success, size_transferred, failure = self._transfer_single_file(
-                    src_file, target_dir, source_path, 
-                    file_number, total_files, total_transferred, 
-                    total_size, mhl_data, transfer_logger
-                )
+    #     Returns:
+    #         Tuple of (success_flag, size_transferred, failure_reason):
+    #             success_flag: True if transfer succeeded
+    #             size_transferred: Size of transferred file if successful, None otherwise
+    #             failure_reason: Reason for failure if failed, None otherwise
+    #     """
+    #     with file_operation(self.display, self.sound_manager, f"Transfer File {file_number}/{total_files}"):
+    #         # Check if file still exists
+    #         if not src_file.exists():
+    #             logger.warning(f"File disappeared before transfer: {src_file}")
+    #             transfer_logger.log_failure(src_file, None, "File disappeared")
+    #             return False, None, f"{src_file} (disappeared)"
                 
-                if success:
-                    total_transferred += size_transferred
-                else:
-                    failures.append(failure)
+    #         # Get file size
+    #         try:
+    #             file_size = src_file.stat().st_size
+    #         except Exception as e:
+    #             logger.error(f"Failed to get file size: {e}")
+    #             transfer_logger.log_failure(src_file, None, f"Size error: {e}")
+    #             return False, None, f"{src_file} (size error)"
+                
+    #         # Create destination path
+    #         try:
+    #             rename_with_timestamp = False
+    #             preserve_original_filename = True
+    #             timestamp_format = "%Y%m%d_%H%M%S"
+    #             filename_template = "{original}_{timestamp}"
+                
+    #             if hasattr(self.config, 'rename_with_timestamp'):
+    #                 rename_with_timestamp = self.config.rename_with_timestamp
                     
-            # Complete transfer logging
-            successful_files = total_files - len(failures)
-            transfer_logger.complete_transfer(total_files, successful_files, failures)
+    #             if hasattr(self.config, 'preserve_original_filename'):
+    #                 preserve_original_filename = self.config.preserve_original_filename
+                    
+    #             if hasattr(self.config, 'timestamp_format'):
+    #                 timestamp_format = self.config.timestamp_format
+                    
+    #             if hasattr(self.config, 'filename_template'):
+    #                 filename_template = self.config.filename_template
+                
+    #             dst_path = create_destination_path(
+    #                 src_file, target_dir, source_path,
+    #                 rename_with_timestamp,
+    #                 preserve_original_filename,
+    #                 timestamp_format,
+    #                 filename_template
+    #             )
+    #         except Exception as e:
+    #             logger.error(f"Failed to create destination path: {e}")
+    #             transfer_logger.log_failure(src_file, None, f"Path error: {e}")
+    #             return False, None, f"{src_file} (path error)"
+                
+    #         # Initialize progress tracking
+    #         self.progress_tracker.start_file(
+    #             src_file, file_number, total_files,
+    #             file_size, total_size, total_transferred
+    #         )
+                
+    #         # Get source metadata
+    #         try:
+    #             metadata = self.file_ops.get_metadata(src_file)
+    #         except Exception as e:
+    #             logger.warning(f"Failed to get metadata: {e}")
+    #             metadata = None
+                
+    #         # Copy file with progress tracking
+    #         try:
+    #             # Initialize hash calculator
+    #             xxh64_hash = self.checksum_calculator.create_hash()
+                
+    #             # Create progress callback
+    #             progress_callback = self.progress_tracker.create_progress_callback()
+                
+    #             # Perform file copy
+    #             success, checksum = self.file_ops.copy_file_with_hash(
+    #                 src_file, dst_path, xxh64_hash, progress_callback
+    #             )
+                
+    #             if not success:
+    #                 transfer_logger.log_failure(src_file, dst_path, "Copy failed")
+    #                 return False, None, str(src_file)
+                    
+    #             # Apply metadata if available
+    #             if metadata:
+    #                 self.file_ops.apply_metadata(dst_path, metadata)
+                    
+    #             # Set progress status to checksum verification
+    #             self.progress_tracker.set_status(TransferStatus.CHECKSUMMING)
+                
+    #             # Verify checksum
+    #             verify_result = self.file_ops.verify_checksum(
+    #                 dst_path, checksum, progress_callback
+    #             )
+                
+    #             if not verify_result:
+    #                 logger.error(f"Checksum verification failed for {dst_path}")
+    #                 transfer_logger.log_failure(src_file, dst_path, "Checksum verification failed")
+                    
+    #                 # Cleanup the file
+    #                 try:
+    #                     if dst_path.exists():
+    #                         dst_path.unlink()
+    #                 except Exception as cleanup_err:
+    #                     logger.warning(f"Failed to clean up file after checksum failure: {cleanup_err}")
+                        
+    #                 return False, None, str(src_file)
+                    
+    #             # Add to MHL file if needed
+    #             if mhl_data:
+    #                 try:
+    #                     mhl_filename, tree, hashes = mhl_data
+    #                     logger.info(f"Adding file to MHL: {dst_path}")
+    #                     add_file_to_mhl(mhl_filename, tree, hashes, dst_path, checksum, file_size)
+    #                     logger.info(f"Successfully added file to MHL: {dst_path}")
+    #                 except Exception as mhl_err:
+    #                     logger.error(f"Failed to add file to MHL: {mhl_err}", exc_info=True)
+    #                     # Continue without stopping the transfer
+                        
+    #             # Mark progress as complete
+    #             self.progress_tracker.complete_file(True)
+                
+    #             # Log success
+    #             transfer_logger.log_success(src_file, dst_path)
+                
+    #             return True, file_size, None
+                
+    #         except Exception as e:
+    #             logger.error(f"Error transferring file {src_file}: {e}")
+    #             transfer_logger.log_failure(src_file, dst_path, f"Transfer error: {e}")
+    #             return False, None, f"{src_file} (error: {e})"
+    
+    # def _execute_file_transfers(self, files_to_transfer: List[Path], target_dir: Path,
+    #                          source_path: Path, total_files: int, total_size: int,
+    #                          mhl_data: Optional[Tuple], log_file: Path) -> Optional[Tuple[List[str], int]]:
+    #     """
+    #     Execute file transfers for all files.
+        
+    #     Args:
+    #         files_to_transfer: List of files to transfer
+    #         target_dir: Target directory
+    #         source_path: Source root path
+    #         total_files: Total number of files
+    #         total_size: Total size of all files in bytes
+    #         mhl_data: Optional MHL data tuple
+    #         log_file: Path to log file
             
-            return failures, total_transferred
+    #     Returns:
+    #         Optional[Tuple]: (failures, total_transferred) if successful, None otherwise
+    #     """
+    #     with file_operation(self.display, self.sound_manager, "Execute File Transfers"):
+    #         # Initialize transfer logger
+    #         transfer_logger = TransferLogger(log_file)
+    #         transfer_start_time = transfer_logger.start_transfer(
+    #             source_path, target_dir, total_files, total_size
+    #         )
+            
+    #         failures = []
+    #         total_transferred = 0
+    #         file_number = 0
+            
+    #         for src_file in files_to_transfer:
+    #             file_number += 1
+    #             success, size_transferred, failure = self._transfer_single_file(
+    #                 src_file, target_dir, source_path, 
+    #                 file_number, total_files, total_transferred, 
+    #                 total_size, mhl_data, transfer_logger
+    #             )
+                
+    #             if success:
+    #                 total_transferred += size_transferred
+    #             else:
+    #                 failures.append(failure)
+                    
+    #         # Complete transfer logging
+    #         successful_files = total_files - len(failures)
+    #         transfer_logger.complete_transfer(total_files, successful_files, failures)
+            
+    #         return failures, total_transferred
     
     def copy_sd_to_dump(self, source_path: Path, destination_path: Path, log_file: Path = None) -> bool:
         """
