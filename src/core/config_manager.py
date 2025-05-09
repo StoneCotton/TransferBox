@@ -5,6 +5,8 @@ import yaml
 from pathlib import Path
 from typing import List, Optional, Dict, Any
 from pydantic import BaseModel, Field, validator
+import sys
+import os
 
 from .exceptions import ConfigError
 
@@ -157,10 +159,24 @@ class TransferConfig(BaseModel):
 class ConfigManager:
     """Simplified config manager using Pydantic"""
     
+    @staticmethod
+    def get_appdata_dir() -> Path:
+        """
+        Get the platform-appropriate appdata/config directory for TransferBox.
+        Returns:
+            Path: The directory path for storing user data (config, logs, etc.)
+        """
+        if sys.platform == "win32":
+            base = Path(os.getenv("APPDATA", Path.home() / "AppData" / "Roaming"))
+            return base / "TransferBox"
+        elif sys.platform == "darwin":
+            return Path.home() / "Library" / "Application Support" / "TransferBox"
+        else:
+            # Linux and other POSIX
+            return Path(os.getenv("XDG_CONFIG_HOME", Path.home() / ".config")) / "transferbox"
+
     DEFAULT_CONFIG_PATHS = [
-        Path("config.yml"),
-        Path.home() / ".transferbox/config.yml",
-        Path("/etc/transferbox/config.yml"),
+        get_appdata_dir.__func__() / "config.yml",
     ]
     
     def __init__(self, config_path: Optional[Path] = None):
@@ -212,11 +228,9 @@ class ConfigManager:
         """
         if self.config_path:
             return self.config_path
-            
         for path in self.DEFAULT_CONFIG_PATHS:
             if path.exists():
                 return path
-                
         # Use first default path if none found
         return self.DEFAULT_CONFIG_PATHS[0]
     

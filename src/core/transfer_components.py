@@ -642,6 +642,7 @@ class FileProcessor:
             # Use copy_file_with_hash for checksumming
             xxh64_hash = None
             success = False
+            metadata_copied = False
             
             try:
                 if hasattr(self.config, 'verify_transfers') and self.config.verify_transfers:
@@ -686,6 +687,22 @@ class FileProcessor:
                     self.display.show_error("Transfer error")
                 
                 success = False
+            
+            # --- METADATA COPY LOGIC ---
+            # After a successful file copy, always copy metadata from source to destination
+            if success:
+                try:
+                    src_metadata = file_ops.get_metadata(file_path)
+                    if src_metadata:
+                        apply_result = file_ops.apply_metadata(dest_path, src_metadata)
+                        if not apply_result:
+                            logger.warning(f"Failed to apply metadata to {dest_path}")
+                        else:
+                            metadata_copied = True
+                    else:
+                        logger.warning(f"No metadata retrieved from {file_path}")
+                except Exception as meta_exc:
+                    logger.error(f"Exception during metadata copy for {file_path} -> {dest_path}: {meta_exc}")
             
             if success and mhl_data:
                 # Add to MHL if needed - only if we have a checksum (verify_transfers was enabled)

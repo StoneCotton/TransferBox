@@ -10,19 +10,11 @@ from rich.logging import RichHandler
 from rich.console import Console
 from logging.handlers import RotatingFileHandler
 import platform
+from .config_manager import ConfigManager
 
 def get_default_log_dir() -> Path:
-    system = platform.system()
-    if system == "Darwin":
-        return Path.home() / "Library" / "Logs" / "TransferBox"
-    elif system == "Windows":
-        appdata = os.environ.get("APPDATA")
-        if appdata:
-            return Path(appdata) / "TransferBox" / "Logs"
-        else:
-            return Path.home() / "AppData" / "Roaming" / "TransferBox" / "Logs"
-    else:
-        return Path.home() / ".local" / "share" / "TransferBox" / "logs"
+    appdata_dir = ConfigManager.get_appdata_dir()
+    return appdata_dir / "logs"
 
 def setup_logging(
     log_dir: Optional[Path] = None,
