@@ -1,14 +1,18 @@
+import sys
 import pytest
 from unittest import mock
 from pathlib import Path
-from src.platform.macos.storage_macos import MacOSStorage
 from src.core.exceptions import StorageError
+
+pytestmark = pytest.mark.skipif(sys.platform != 'darwin', reason='macOS-specific tests')
 
 @pytest.fixture
 def storage():
+    from src.platform.macos.storage_macos import MacOSStorage
     return MacOSStorage()
 
 def test_get_available_drives_success(monkeypatch, tmp_path):
+    from src.platform.macos.storage_macos import MacOSStorage
     vol_dir = tmp_path / "Volumes"
     vol_dir.mkdir()
     drive = vol_dir / "Drive1"
@@ -23,12 +27,14 @@ def test_get_available_drives_success(monkeypatch, tmp_path):
     assert drives == [drive]
 
 def test_get_available_drives_permission_error(monkeypatch):
+    from src.platform.macos.storage_macos import MacOSStorage
     monkeypatch.setattr('pathlib.Path.iterdir', mock.Mock(side_effect=PermissionError("denied")))
     s = MacOSStorage()
     with pytest.raises(StorageError):
         s.get_available_drives()
 
 def test_get_drive_info_success(monkeypatch, tmp_path):
+    from src.platform.macos.storage_macos import MacOSStorage
     s = MacOSStorage()
     fake_df = mock.Mock()
     fake_df.stdout = "Filesystem 1K-blocks Used Available Capacity Mounted on\n/dev/disk1s1 1000 200 800 20% /"
@@ -39,23 +45,27 @@ def test_get_drive_info_success(monkeypatch, tmp_path):
     assert info['free'] == 800 * 1024
 
 def test_get_drive_info_df_error(monkeypatch, tmp_path):
+    from src.platform.macos.storage_macos import MacOSStorage
     s = MacOSStorage()
     monkeypatch.setattr('subprocess.run', mock.Mock(side_effect=mock.Mock(side_effect=Exception('fail'))))
     with pytest.raises(StorageError):
         s.get_drive_info(tmp_path)
 
 def test_is_drive_mounted_success(monkeypatch, tmp_path):
+    from src.platform.macos.storage_macos import MacOSStorage
     s = MacOSStorage()
     monkeypatch.setattr('pathlib.Path.is_mount', lambda self: True)
     assert s.is_drive_mounted(tmp_path)
 
 def test_is_drive_mounted_error(monkeypatch, tmp_path):
+    from src.platform.macos.storage_macos import MacOSStorage
     s = MacOSStorage()
     monkeypatch.setattr('pathlib.Path.is_mount', mock.Mock(side_effect=Exception('fail')))
     with pytest.raises(StorageError):
         s.is_drive_mounted(tmp_path)
 
 def test_unmount_drive_success(monkeypatch, tmp_path):
+    from src.platform.macos.storage_macos import MacOSStorage
     s = MacOSStorage()
     monkeypatch.setattr('subprocess.run', mock.Mock())
     monkeypatch.setattr('time.sleep', lambda x: None)
@@ -64,23 +74,27 @@ def test_unmount_drive_success(monkeypatch, tmp_path):
     assert s.unmount_drive(tmp_path)
 
 def test_unmount_drive_failure(monkeypatch, tmp_path):
+    from src.platform.macos.storage_macos import MacOSStorage
     s = MacOSStorage()
     monkeypatch.setattr('subprocess.run', mock.Mock(side_effect=Exception('fail')))
     with pytest.raises(StorageError):
         s.unmount_drive(tmp_path)
 
 def test_get_and_set_dump_drive(tmp_path):
+    from src.platform.macos.storage_macos import MacOSStorage
     s = MacOSStorage()
     s.set_dump_drive(tmp_path)
     assert s.get_dump_drive() == tmp_path
 
 def test_set_dump_drive_error(monkeypatch):
+    from src.platform.macos.storage_macos import MacOSStorage
     s = MacOSStorage()
     monkeypatch.setattr('os.access', mock.Mock(return_value=False))
     with pytest.raises(StorageError):
         s.set_dump_drive('/no/perm')
 
 def test_wait_for_new_drive(monkeypatch):
+    from src.platform.macos.storage_macos import MacOSStorage
     s = MacOSStorage()
     initial = [Path('/Volumes/Drive1')]
     monkeypatch.setattr(s, 'get_available_drives', mock.Mock(side_effect=[[Path('/Volumes/Drive1')], [Path('/Volumes/Drive1'), Path('/Volumes/Drive2')]]))
@@ -89,6 +103,7 @@ def test_wait_for_new_drive(monkeypatch):
     assert result == Path('/Volumes/Drive2')
 
 def test_wait_for_drive_removal(monkeypatch):
+    from src.platform.macos.storage_macos import MacOSStorage
     s = MacOSStorage()
     path = Path('/Volumes/Drive1')
     states = [True, False]
@@ -98,12 +113,14 @@ def test_wait_for_drive_removal(monkeypatch):
     s.wait_for_drive_removal(path)
 
 def test_has_enough_space(monkeypatch, tmp_path):
+    from src.platform.macos.storage_macos import MacOSStorage
     s = MacOSStorage()
     monkeypatch.setattr(s, 'get_drive_info', lambda path: {'free': 2000})
     assert s.has_enough_space(tmp_path, 1000)
     assert not s.has_enough_space(tmp_path, 3000)
 
 def test_get_file_metadata(monkeypatch, tmp_path):
+    from src.platform.macos.storage_macos import MacOSStorage
     s = MacOSStorage()
     f = tmp_path / 'file.txt'
     f.write_text('x')
@@ -119,6 +136,7 @@ def test_get_file_metadata(monkeypatch, tmp_path):
     assert meta['xattrs'] == {'foo': b'bar'}
 
 def test_set_file_metadata(monkeypatch, tmp_path):
+    from src.platform.macos.storage_macos import MacOSStorage
     s = MacOSStorage()
     f = tmp_path / 'file.txt'
     f.write_text('x')

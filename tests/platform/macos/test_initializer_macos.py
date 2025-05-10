@@ -1,15 +1,19 @@
+import sys
 import pytest
 from unittest import mock
-from src.platform.macos.initializer_macos import MacOSInitializer
 from src.core.exceptions import DisplayError, StorageError
 
+pytestmark = pytest.mark.skipif(sys.platform != 'darwin', reason='macOS-specific tests')
+
 def test_initialize_hardware_logs(caplog):
+    from src.platform.macos.initializer_macos import MacOSInitializer
     init = MacOSInitializer()
     with caplog.at_level('DEBUG'):
         init.initialize_hardware()
     assert "MacOS hardware initialization" in caplog.text
 
 def test_initialize_display_success(monkeypatch):
+    from src.platform.macos.initializer_macos import MacOSInitializer
     init = MacOSInitializer()
     fake_display = mock.Mock()
     monkeypatch.setattr('src.platform.macos.initializer_macos.RichDisplay', lambda: fake_display)
@@ -18,6 +22,7 @@ def test_initialize_display_success(monkeypatch):
     fake_display.clear.assert_called_once()
 
 def test_initialize_display_failure(monkeypatch):
+    from src.platform.macos.initializer_macos import MacOSInitializer
     init = MacOSInitializer()
     monkeypatch.setattr('src.platform.macos.initializer_macos.RichDisplay', mock.Mock(side_effect=Exception('fail')))
     with pytest.raises(DisplayError) as excinfo:
@@ -25,6 +30,7 @@ def test_initialize_display_failure(monkeypatch):
     assert "Failed to initialize display" in str(excinfo.value)
 
 def test_initialize_storage_success(monkeypatch):
+    from src.platform.macos.initializer_macos import MacOSInitializer
     init = MacOSInitializer()
     fake_storage = mock.Mock()
     monkeypatch.setattr('src.platform.macos.initializer_macos.MacOSStorage', lambda: fake_storage)
@@ -32,6 +38,7 @@ def test_initialize_storage_success(monkeypatch):
     assert hasattr(init, 'storage')
 
 def test_initialize_storage_failure(monkeypatch):
+    from src.platform.macos.initializer_macos import MacOSInitializer
     init = MacOSInitializer()
     monkeypatch.setattr('src.platform.macos.initializer_macos.MacOSStorage', mock.Mock(side_effect=Exception('fail')))
     with pytest.raises(StorageError) as excinfo:
@@ -39,6 +46,7 @@ def test_initialize_storage_failure(monkeypatch):
     assert "Failed to initialize storage" in str(excinfo.value)
 
 def test_cleanup_success(monkeypatch, caplog):
+    from src.platform.macos.initializer_macos import MacOSInitializer
     init = MacOSInitializer()
     fake_display = mock.Mock()
     init.display = fake_display
@@ -48,6 +56,7 @@ def test_cleanup_success(monkeypatch, caplog):
     assert "Performing macOS cleanup" in caplog.text
 
 def test_cleanup_no_display(caplog):
+    from src.platform.macos.initializer_macos import MacOSInitializer
     init = MacOSInitializer()
     init.display = None
     with caplog.at_level('INFO'):
@@ -55,6 +64,7 @@ def test_cleanup_no_display(caplog):
     assert "Performing macOS cleanup" in caplog.text
 
 def test_cleanup_error(monkeypatch, caplog):
+    from src.platform.macos.initializer_macos import MacOSInitializer
     init = MacOSInitializer()
     fake_display = mock.Mock()
     fake_display.clear.side_effect = Exception('fail')
