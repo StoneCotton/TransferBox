@@ -31,3 +31,6 @@ class TransferProgress:
     proxy_total_files: int = 0
     speed_bytes_per_sec: float = 0.0
     eta_seconds: float = 0.0
+    total_elapsed: float = 0.0  # Total transfer elapsed time
+    file_elapsed: float = 0.0   # Current file copy elapsed time
+    checksum_elapsed: float = 0.0  # Current file checksum elapsed time
