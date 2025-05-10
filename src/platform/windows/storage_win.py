@@ -456,9 +456,9 @@ class WindowsStorage(StorageInterface):
                 try:
                     win32file.SetFileTime(
                         handle,
-                        self._datetime_to_filetime(metadata['creation_time']),
-                        self._datetime_to_filetime(metadata['access_time']),
-                        self._datetime_to_filetime(metadata['write_time'])
+                        metadata['creation_time'],
+                        metadata['access_time'],
+                        metadata['write_time']
                     )
                 except Exception as e:
                     raise StorageError(
@@ -467,7 +467,7 @@ class WindowsStorage(StorageInterface):
                         error_type="permission"
                     )
                 
-                # Set security descriptor
+                # Set security descriptor (DACL only, skip owner)
                 try:
                     security_info = win32security.GetFileSecurity(
                         str(path),
@@ -475,10 +475,8 @@ class WindowsStorage(StorageInterface):
                         win32security.GROUP_SECURITY_INFORMATION |
                         win32security.DACL_SECURITY_INFORMATION
                     )
-                    
-                    security_info.SetSecurityDescriptorOwner(metadata['security_descriptor'])
-                    security_info.SetSecurityDescriptorDacl(1, metadata['acl'], 0)
-                    
+                    if metadata['acl'] is not None:
+                        security_info.SetSecurityDescriptorDacl(1, metadata['acl'], 0)
                     win32security.SetFileSecurity(
                         str(path),
                         win32security.OWNER_SECURITY_INFORMATION |
