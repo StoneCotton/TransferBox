@@ -1,6 +1,7 @@
 import pytest
 import platform
-from pathlib import Path
+import sys
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from src.core import path_utils
 from src.core.exceptions import StorageError, FileTransferError
 
@@ -51,6 +52,8 @@ def test_get_safe_path_invalid(monkeypatch):
 # --- validate_destination_path ---
 def test_validate_destination_path_linux_success(monkeypatch):
     monkeypatch.setattr(platform, "system", lambda: "Linux")
+    if not sys.platform.startswith("linux"):
+        pytest.skip("Skipping Linux-specific test on non-Linux platform.")
     # Patch os.access to always return True
     monkeypatch.setattr(path_utils.os, "access", lambda p, m: True)
     p = path_utils.validate_destination_path(Path("/tmp/testfile.txt"), DummyStorage())
@@ -70,29 +73,25 @@ def test_validate_destination_path_unsupported(monkeypatch):
 # --- Platform-specific: macOS and Windows (mocked) ---
 def test_validate_destination_path_macos_success(monkeypatch):
     monkeypatch.setattr(platform, "system", lambda: "Darwin")
+    if not sys.platform.startswith("darwin") and not sys.platform.startswith("mac"):  # macOS
+        pytest.skip("Skipping macOS-specific test on non-macOS platform.")
     monkeypatch.setattr(path_utils.os, "access", lambda p, m: True)
     p = path_utils.validate_destination_path(Path("/Users/testuser/testfile.txt"), DummyStorage())
     assert isinstance(p, Path)
 
 def test_validate_destination_path_windows_success(monkeypatch):
     monkeypatch.setattr(platform, "system", lambda: "Windows")
+    if not sys.platform.startswith("win"):
+        pytest.skip("Skipping Windows-specific test on non-Windows platform.")
     monkeypatch.setattr(path_utils.os, "access", lambda p, m: True)
-    # Patch Path.drive to return 'C:' for test
-    class FakePath(Path):
-        _flavour = type(Path())._flavour
-        @property
-        def drive(self):
-            return "C:"
-    p = path_utils.validate_destination_path(FakePath("C:/testfile.txt"), DummyStorage())
+    p = path_utils.validate_destination_path(Path("C:/testfile.txt"), DummyStorage())
     assert isinstance(p, Path)
 
 def test_validate_destination_path_windows_no_drive(monkeypatch):
     monkeypatch.setattr(platform, "system", lambda: "Windows")
+    if not sys.platform.startswith("win"):
+        pytest.skip("Skipping Windows-specific test on non-Windows platform.")
     monkeypatch.setattr(path_utils.os, "access", lambda p, m: True)
-    class FakePath(Path):
-        _flavour = type(Path())._flavour
-        @property
-        def drive(self):
-            return ""
+    # Path without drive
     with pytest.raises(StorageError):
-        path_utils.validate_destination_path(FakePath("testfile.txt"), DummyStorage()) 
+        path_utils.validate_destination_path(Path("testfile.txt"), DummyStorage()) 
