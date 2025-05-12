@@ -4,6 +4,7 @@ import shutil
 from pathlib import Path
 import xml.etree.ElementTree as ET
 from src.core import mhl_handler
+import os
 
 # --- Fixtures ---
 @pytest.fixture
@@ -40,11 +41,13 @@ def test_initialize_mhl_file_non_path_target():
 def test_initialize_mhl_file_unwritable(tmp_path):
     import sys
     if sys.platform.startswith("win"):  # Windows cannot reliably make a directory unwritable with chmod
-        import pytest
         pytest.skip("Skipping unwritable directory test on Windows due to platform limitations.")
     unwritable = tmp_path / "unwritable"
     unwritable.mkdir()
     unwritable.chmod(0o400)  # Read-only
+    # Check if directory is actually unwritable
+    if os.access(unwritable, os.W_OK):
+        pytest.skip("Directory is still writable after chmod; skipping test.")
     try:
         with pytest.raises(OSError):
             mhl_handler.initialize_mhl_file("testdir", unwritable)
