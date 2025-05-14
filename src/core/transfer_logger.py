@@ -4,6 +4,10 @@ import logging
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional, Dict, Any, Union
+import getpass
+import os
+import stat
+from src.core.utils import format_size, format_duration
 
 logger = logging.getLogger(__name__)
 
@@ -52,47 +56,60 @@ class TransferLogger:
             logger.error(f"Failed to start transfer log: {e}")
             return self.start_time
     
-    def log_success(self, src_path: Path, dst_path: Path) -> None:
+    def log_success(self, src_path: Path, dst_path: Path, file_size: int, duration: float, src_xxhash: str, dst_xxhash: str, retries: int, ext: str, src_mtime: str, dst_mtime: str, user: str, src_perm: str, dst_perm: str) -> None:
         """
-        Log successful file transfer.
-        
-        Args:
-            src_path: Source file path
-            dst_path: Destination file path
+        Log successful file transfer with detailed info (multi-line, indented, no user).
         """
         if not self._ensure_log_open():
             return
-            
         try:
-            # Format with timestamp for better logging
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            log_entry = f"[{timestamp}] Success: {src_path} -> {dst_path}"
+            log_entry = (
+                f"[{timestamp}] Success: {src_path} -> {dst_path}\n"
+                f"    size: {format_size(file_size)}\n"
+                f"    duration: {duration:.2f}s\n"
+                f"    src_xxhash: {src_xxhash}\n"
+                f"    dst_xxhash: {dst_xxhash}\n"
+                f"    retries: {retries}\n"
+                f"    ext: {ext}\n"
+                f"    src_mtime: {src_mtime}\n"
+                f"    dst_mtime: {dst_mtime}\n"
+                f"    src_perm: {src_perm}\n"
+                f"    dst_perm: {dst_perm}"
+            )
             self._write_line(log_entry)
             logger.info(f"Transferred: {src_path}")
         except Exception as e:
             logger.warning(f"Error logging successful transfer: {e}")
     
-    def log_failure(self, src_path: Path, dst_path: Optional[Path] = None, reason: str = None) -> None:
+    def log_failure(self, src_path: Path, dst_path: Path = None, reason: str = None, file_size: int = 0, duration: float = 0.0, src_xxhash: str = None, dst_xxhash: str = None, retries: int = 0, ext: str = None, src_mtime: str = None, dst_mtime: str = None, user: str = None, src_perm: str = None, dst_perm: str = None, error_message: str = None) -> None:
         """
-        Log failed file transfer.
-        
-        Args:
-            src_path: Source file path
-            dst_path: Optional destination file path
-            reason: Optional reason for failure
+        Log failed file transfer with detailed info (multi-line, indented, no user).
         """
         if not self._ensure_log_open():
             return
-            
         try:
-            # Format with timestamp and reason for better diagnostics
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             dst_str = f" -> {dst_path}" if dst_path else ""
-            reason_text = f" - Reason: {reason}" if reason else ""
-            log_entry = f"[{timestamp}] Failed: {src_path}{dst_str}{reason_text}"
+            log_entry = (
+                f"[{timestamp}] Failed: {src_path}{dst_str}\n"
+                f"    size: {format_size(file_size)}\n"
+                f"    duration: {duration:.2f}s\n"
+                f"    src_xxhash: {src_xxhash}\n"
+                f"    retries: {retries}\n"
+                f"    ext: {ext}\n"
+                f"    src_mtime: {src_mtime}\n"
+                f"    src_perm: {src_perm}"
+            )
+            if dst_xxhash:
+                log_entry += f"\n    dst_xxhash: {dst_xxhash}"
+            if dst_mtime:
+                log_entry += f"\n    dst_mtime: {dst_mtime}"
+            if dst_perm:
+                log_entry += f"\n    dst_perm: {dst_perm}"
+            if error_message:
+                log_entry += f"\n    error: {error_message}"
             self._write_line(log_entry)
-            
-            # Include reason in log message if available
             if reason:
                 logger.error(f"Failed to transfer: {src_path} - {reason}")
             else:
@@ -100,34 +117,38 @@ class TransferLogger:
         except Exception as e:
             logger.warning(f"Error logging failed transfer: {e}")
     
-    def complete_transfer(self, total_files: int, successful_files: int, failures: List[str] = None) -> None:
+    def complete_transfer(self, total_files: int, successful_files: int, failures: list = None, total_data_transferred: int = 0, average_file_size: int = 0, average_speed: float = 0.0, total_retries: int = 0, skipped_files: int = 0, error_breakdown: dict = None, user: str = None, duration_str: str = None) -> None:
         """
-        Complete transfer logging with summary.
-        
-        Args:
-            total_files: Total number of files
-            successful_files: Number of successfully transferred files
-            failures: Optional list of failed transfers
+        Complete transfer logging with summary and new fields (user only in summary).
         """
         if not self.start_time or not self._ensure_log_open():
             return
-            
         try:
             end_time = datetime.now()
             duration = (end_time - self.start_time).total_seconds()
-            
-            self._write_line("")  # Empty line
+            if not duration_str:
+                duration_str = format_duration(duration)
+            self._write_line("")
             self._write_line(f"Transfer completed at {end_time.isoformat()}")
-            self._write_line(f"Duration: {duration:.1f} seconds")
+            self._write_line(f"Duration: {duration_str}")
             self._write_line(f"Files transferred: {successful_files}/{total_files}")
-            
             if failures:
                 self._write_line(f"Failed files: {len(failures)}")
-                # Only log the first 10 failures to avoid excessive log file size
                 for i, failure in enumerate(failures[:10]):
                     self._write_line(f"  {i+1}. {failure}")
                 if len(failures) > 10:
                     self._write_line(f"  ... and {len(failures) - 10} more")
+            self._write_line(f"Total data transferred: {format_size(total_data_transferred)}")
+            self._write_line(f"Average file size: {format_size(average_file_size)}")
+            self._write_line(f"Average speed: {average_speed:.2f} MB/s")
+            self._write_line(f"Total retries: {total_retries}")
+            self._write_line(f"Skipped files: {skipped_files}")
+            if error_breakdown:
+                self._write_line("Failures:")
+                for err, count in error_breakdown.items():
+                    self._write_line(f"  {err}: {count}")
+            if user:
+                self._write_line(f"User: {user}")
         except Exception as e:
             logger.error(f"Error completing transfer log: {e}")
         finally:
@@ -218,64 +239,82 @@ class TransferLogger:
         except Exception as e:
             logger.error(f"Error logging error message: {e}")
     
-    def log_file_transfer(self, source_file: Path, dest_file: Path, success: bool) -> None:
+    def log_file_transfer(self, source_file: Path, dest_file: Path, success: bool, file_size: int, duration: float, src_xxhash: str, dst_xxhash: str, retries: int, ext: str, src_mtime: str, dst_mtime: str, user: str, src_perm: str, dst_perm: str, error_message: str = None) -> None:
         """
-        Log a file transfer result.
-        
-        Args:
-            source_file: Source file path
-            dest_file: Destination file path
-            success: Whether the transfer was successful
+        Log a file transfer result with all new fields.
         """
         if success:
-            self.log_success(source_file, dest_file)
+            self.log_success(
+                src_path=source_file,
+                dst_path=dest_file,
+                file_size=file_size,
+                duration=duration,
+                src_xxhash=src_xxhash,
+                dst_xxhash=dst_xxhash,
+                retries=retries,
+                ext=ext,
+                src_mtime=src_mtime,
+                dst_mtime=dst_mtime,
+                user=user,
+                src_perm=src_perm,
+                dst_perm=dst_perm
+            )
         else:
-            self.log_failure(source_file, dest_file, "Transfer failed")
+            self.log_failure(
+                src_path=source_file,
+                dst_path=dest_file,
+                reason=error_message,
+                file_size=file_size,
+                duration=duration,
+                src_xxhash=src_xxhash,
+                dst_xxhash=dst_xxhash,
+                retries=retries,
+                ext=ext,
+                src_mtime=src_mtime,
+                dst_mtime=dst_mtime,
+                user=user,
+                src_perm=src_perm,
+                dst_perm=dst_perm,
+                error_message=error_message
+            )
     
-    def log_transfer_summary(self, source_path: Path, destination_path: Path, 
-                          start_time: datetime, end_time: datetime,
-                          total_files: int, successful_files: int, 
-                          failures: List[str] = None) -> None:
+    def log_transfer_summary(self, source_path: Path, destination_path: Path, start_time: datetime, end_time: datetime, total_files: int, successful_files: int, failures: list = None, total_data_transferred: int = 0, average_file_size: int = 0, average_speed: float = 0.0, total_retries: int = 0, skipped_files: int = 0, error_breakdown: dict = None, user: str = None, duration_str: str = None) -> None:
         """
-        Log a summary of the transfer operation.
-        
-        Args:
-            source_path: Source path
-            destination_path: Destination path
-            start_time: Start time of the transfer
-            end_time: End time of the transfer
-            total_files: Total number of files
-            successful_files: Number of successfully transferred files
-            failures: Optional list of failed transfers
+        Log a summary of the transfer operation with new fields.
         """
         if not self._ensure_log_open():
             return
-            
         try:
-            duration = (end_time - start_time).total_seconds()
-            
-            self._write_line("")  # Empty line
+            if not duration_str:
+                duration = (end_time - start_time).total_seconds()
+                duration_str = format_duration(duration)
+            self._write_line("")
             self._write_line(f"Transfer Summary")
             self._write_line(f"---------------")
             self._write_line(f"Source: {source_path}")
             self._write_line(f"Destination: {destination_path}")
             self._write_line(f"Start time: {start_time.isoformat()}")
             self._write_line(f"End time: {end_time.isoformat()}")
-            self._write_line(f"Duration: {duration:.1f} seconds")
+            self._write_line(f"Duration: {duration_str}")
             self._write_line(f"Files transferred: {successful_files}/{total_files}")
-            
             if failures:
                 self._write_line(f"Failed files: {len(failures)}")
-                # Only log the first 10 failures to avoid excessive log file size
                 for i, failure in enumerate(failures[:10]):
                     self._write_line(f"  {i+1}. {failure}")
                 if len(failures) > 10:
                     self._write_line(f"  ... and {len(failures) - 10} more")
-            
-            transfer_rate = successful_files / duration if duration > 0 else 0
-            self._write_line(f"Transfer rate: {transfer_rate:.2f} files/second")
-            
-            logger.info(f"Transfer summary: {successful_files}/{total_files} files transferred in {duration:.1f} seconds")
+            self._write_line(f"Total data transferred: {format_size(total_data_transferred)}")
+            self._write_line(f"Average file size: {format_size(average_file_size)}")
+            self._write_line(f"Average speed: {average_speed:.2f} MB/s")
+            self._write_line(f"Total retries: {total_retries}")
+            self._write_line(f"Skipped files: {skipped_files}")
+            if error_breakdown:
+                self._write_line("Failures:")
+                for err, count in error_breakdown.items():
+                    self._write_line(f"  {err}: {count}")
+            if user:
+                self._write_line(f"User: {user}")
+            logger.info(f"Transfer summary: {successful_files}/{total_files} files transferred in {duration_str}")
         except Exception as e:
             logger.error(f"Error logging transfer summary: {e}")
 

@@ -6,6 +6,8 @@ from pathlib import Path
 from typing import Optional, Tuple, List, Dict, Any, Union
 from datetime import datetime
 import time
+import stat
+import getpass
 
 from .config_manager import TransferConfig
 from .interfaces.display import DisplayInterface
@@ -355,6 +357,7 @@ class FileProcessor:
         successful_files = 0
         start_time = datetime.now()
         failures = []
+        total_data_transferred = 0  # Track total bytes transferred for successful files
         
         # Set up MHL if enabled
         mhl_data = None
@@ -501,6 +504,10 @@ class FileProcessor:
                 
                 if success:
                     successful_files += 1
+                    try:
+                        total_data_transferred += file_path.stat().st_size
+                    except Exception:
+                        pass
                 else:
                     failures.append(file_path)
                     
@@ -508,8 +515,9 @@ class FileProcessor:
             
             # Complete transfer
             end_time = datetime.now()
-            
-            # Log transfer results
+            duration_seconds = (end_time - start_time).total_seconds()
+            average_file_size = int(total_data_transferred / successful_files) if successful_files > 0 else 0
+            average_speed = (total_data_transferred / duration_seconds / (1024*1024)) if duration_seconds > 0 else 0.0
             transfer_logger.log_transfer_summary(
                 source_path=source_path,
                 destination_path=target_dir,
@@ -517,7 +525,11 @@ class FileProcessor:
                 end_time=end_time,
                 total_files=total_files,
                 successful_files=successful_files,
-                failures=failures
+                failures=failures,
+                total_data_transferred=total_data_transferred,
+                average_file_size=average_file_size,
+                average_speed=average_speed,
+                user=getpass.getuser()
             )
             
             # Finalize progress tracking
@@ -703,17 +715,15 @@ class FileProcessor:
                         logger.warning(f"No metadata retrieved from {file_path}")
                 except Exception as meta_exc:
                     logger.error(f"Exception during metadata copy for {file_path} -> {dest_path}: {meta_exc}")
-            
+
+            # --- MHL FILE ADDITION LOGIC ---
             if success and mhl_data:
                 # Add to MHL if needed - only if we have a checksum (verify_transfers was enabled)
                 if 'checksum' in locals() and checksum:
                     try:
                         mhl_filename, tree, hashes = mhl_data
                         logger.info(f"Adding file to MHL: {dest_path}")
-                        
-                        # Use the properly imported function from mhl_handler
                         add_file_to_mhl(mhl_filename, tree, hashes, dest_path, checksum, file_size)
-                        
                         logger.info(f"Successfully added file to MHL: {dest_path}")
                     except Exception as mhl_err:
                         logger.error(f"Failed to add file to MHL: {mhl_err}")
@@ -721,12 +731,52 @@ class FileProcessor:
                         # Continue without stopping the transfer
                 else:
                     logger.warning(f"Skipping MHL entry for {dest_path} - no checksum available")
-                
+
+            # --- Prepare logging fields ---
+            ext = file_path.suffix
+            try:
+                src_mtime = datetime.fromtimestamp(os.path.getmtime(file_path)).strftime('%Y-%m-%d %H:%M:%S')
+            except Exception:
+                src_mtime = None
+            try:
+                dst_mtime = datetime.fromtimestamp(os.path.getmtime(dest_path)).strftime('%Y-%m-%d %H:%M:%S') if dest_path.exists() else None
+            except Exception:
+                dst_mtime = None
+            try:
+                src_perm = stat.filemode(os.stat(file_path).st_mode)
+            except Exception:
+                src_perm = None
+            try:
+                dst_perm = stat.filemode(os.stat(dest_path).st_mode) if dest_path.exists() else None
+            except Exception:
+                dst_perm = None
+            user = getpass.getuser()
+            # Duration and retries tracking
+            # For now, set duration to 0.0 and retries to 0 (unless you have retry logic)
+            duration = 0.0
+            retries = 0
+            # xxhash/checksum
+            src_xxhash = checksum if success and 'checksum' in locals() else None
+            dst_xxhash = checksum if success and 'checksum' in locals() else None
+            error_message = None if success else error_msg if 'error_msg' in locals() else None
+            
             # Log the transfer
             transfer_logger.log_file_transfer(
                 source_file=file_path,
                 dest_file=dest_path,
-                success=success
+                success=success,
+                file_size=file_size,
+                duration=duration,
+                src_xxhash=src_xxhash,
+                dst_xxhash=dst_xxhash,
+                retries=retries,
+                ext=ext,
+                src_mtime=src_mtime,
+                dst_mtime=dst_mtime,
+                user=user,
+                src_perm=src_perm,
+                dst_perm=dst_perm,
+                error_message=error_message
             )
             
             # Mark the file as complete in progress tracker

@@ -238,4 +238,17 @@ def get_directory_size(path: Path) -> int:
         return total_size
     except Exception as e:
         logger.error(f"Error calculating directory size for {path}: {e}")
-        raise FileTransferError(f"Error calculating directory size for {path}: {e}", source=path) 
+        raise FileTransferError(f"Error calculating directory size for {path}: {e}", source=path)
+
+def format_duration(seconds: float) -> str:
+    """
+    Format seconds as H:MM:SS string.
+    Args:
+        seconds: Duration in seconds
+    Returns:
+        str: Formatted duration string
+    """
+    seconds = int(round(seconds))
+    hours, remainder = divmod(seconds, 3600)
+    minutes, secs = divmod(remainder, 60)
+    return f"{hours}:{minutes:02}:{secs:02}" 
