@@ -60,12 +60,10 @@ class TestTransferLogger:
             assert "Total size:" in content
 
     def test_log_success(self, transfer_logger):
-        """Test logging successful transfer with new fields."""
+        """Test logging successful transfer with new fields and multi-line format."""
         source_path = Path("/source/file.txt")
         dest_path = Path("/dest/file.txt")
-        # Simulate new logging API with all fields
         transfer_logger.start_transfer(source_path.parent, dest_path.parent, 1, 1024)
-        # Mock values for new fields
         transfer_logger.log_success(
             src_path=source_path,
             dst_path=dest_path,
@@ -86,20 +84,20 @@ class TestTransferLogger:
             assert "Success:" in content
             assert str(source_path) in content
             assert str(dest_path) in content
-            assert "size:" in content
-            assert "duration:" in content
-            assert "src_xxhash:" in content
-            assert "dst_xxhash:" in content
-            assert "retries:" in content
-            assert "ext:" in content
-            assert "src_mtime:" in content
-            assert "dst_mtime:" in content
-            assert "user:" in content
-            assert "src_perm:" in content
-            assert "dst_perm:" in content
+            assert "\n    size:" in content
+            assert "\n    duration:" in content
+            assert "\n    src_xxhash:" in content
+            assert "\n    dst_xxhash:" in content
+            assert "\n    retries:" in content
+            assert "\n    ext:" in content
+            assert "\n    src_mtime:" in content
+            assert "\n    dst_mtime:" in content
+            assert "\n    src_perm:" in content
+            assert "\n    dst_perm:" in content
+            assert "user:" not in content  # user should not be in per-file log
 
     def test_log_failure(self, transfer_logger):
-        """Test logging failed transfer with new fields."""
+        """Test logging failed transfer with new fields and multi-line format."""
         source_path = Path("/source/file.txt")
         dest_path = Path("/dest/file.txt")
         reason = "File not found"
@@ -127,15 +125,15 @@ class TestTransferLogger:
             assert str(source_path) in content
             assert str(dest_path) in content
             assert reason in content
-            assert "size:" in content
-            assert "duration:" in content
-            assert "src_xxhash:" in content
-            assert "retries:" in content
-            assert "ext:" in content
-            assert "src_mtime:" in content
-            assert "user:" in content
-            assert "src_perm:" in content
-            assert "error:" in content
+            assert "\n    size:" in content
+            assert "\n    duration:" in content
+            assert "\n    src_xxhash:" in content
+            assert "\n    retries:" in content
+            assert "\n    ext:" in content
+            assert "\n    src_mtime:" in content
+            assert "\n    src_perm:" in content
+            assert "\n    error:" in content
+            assert "user:" not in content  # user should not be in per-file log
 
     def test_complete_transfer(self, transfer_logger):
         """Test completing transfer with summary and new fields."""
@@ -226,7 +224,6 @@ class TestTransferLogger:
             assert "ext:" in content
             assert "src_mtime:" in content
             assert "dst_mtime:" in content
-            assert "user:" in content
             assert "src_perm:" in content
             assert "dst_perm:" in content
         # Test failed transfer
@@ -257,7 +254,6 @@ class TestTransferLogger:
             assert "retries:" in content
             assert "ext:" in content
             assert "src_mtime:" in content
-            assert "user:" in content
             assert "src_perm:" in content
             assert "error:" in content
 
@@ -299,6 +295,63 @@ class TestTransferLogger:
             assert "Failures:" in content
             assert "User:" in content
             assert "0:02:00" in content
+
+    def test_log_multiple_files_and_summary(self, transfer_logger):
+        """Test logging multiple files and correct summary stats."""
+        source_path = Path("/source")
+        dest_path = Path("/dest")
+        transfer_logger.start_transfer(source_path, dest_path, 2, 246912)
+        # Log two successful files
+        transfer_logger.log_success(
+            src_path=source_path/"file1.txt",
+            dst_path=dest_path/"file1.txt",
+            file_size=123456,
+            duration=0.5,
+            src_xxhash="hash1",
+            dst_xxhash="hash1",
+            retries=0,
+            ext=".txt",
+            src_mtime="2024-06-10 12:00:00",
+            dst_mtime="2024-06-10 12:34:56",
+            user="alice",
+            src_perm="rw-r--r--",
+            dst_perm="rw-r--r--"
+        )
+        transfer_logger.log_success(
+            src_path=source_path/"file2.txt",
+            dst_path=dest_path/"file2.txt",
+            file_size=123456,
+            duration=0.6,
+            src_xxhash="hash2",
+            dst_xxhash="hash2",
+            retries=0,
+            ext=".txt",
+            src_mtime="2024-06-10 12:01:00",
+            dst_mtime="2024-06-10 12:35:56",
+            user="alice",
+            src_perm="rw-r--r--",
+            dst_perm="rw-r--r--"
+        )
+        # Complete transfer
+        transfer_logger.complete_transfer(
+            total_files=2,
+            successful_files=2,
+            failures=[],
+            total_data_transferred=246912,
+            average_file_size=123456,
+            average_speed=10.0,
+            user="alice",
+            duration_str="0:00:01"
+        )
+        with open(transfer_logger.log_file, 'r') as f:
+            content = f.read()
+            assert "Success:" in content
+            assert "\n    size:" in content
+            assert "Transfer completed at" in content
+            assert "Total data transferred: " in content
+            assert "Average file size: " in content
+            assert "Average speed: " in content
+            assert "User: alice" in content
 
 class TestCreateTransferLog:
     """Test suite for create_transfer_log function."""

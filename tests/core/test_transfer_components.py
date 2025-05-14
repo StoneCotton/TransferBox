@@ -13,6 +13,7 @@ from src.core.transfer_components import (
 from src.core.interfaces.types import TransferStatus
 from src.core.exceptions import FileTransferError, StorageError
 from unittest.mock import Mock, patch
+import types
 
 class MockTransferLogger:
     def __init__(self):
@@ -22,8 +23,8 @@ class MockTransferLogger:
     def log_message(self, message):
         self.messages.append(message)
 
-    def log_file_transfer(self, source_file, dest_file, success):
-        self.transfers.append((source_file, dest_file, success))
+    def log_file_transfer(self, source_file, dest_file, success, **kwargs):
+        self.transfers.append((source_file, dest_file, success, kwargs))
 
 @pytest.fixture
 def mock_transfer_logger():
@@ -40,6 +41,13 @@ def temp_source_dir():
 def temp_dest_dir():
     with tempfile.TemporaryDirectory() as tmpdir:
         yield Path(tmpdir)
+
+@pytest.fixture(autouse=True)
+def patch_mock_storage_interface(monkeypatch):
+    from tests.conftest import mock_storage_interface
+    if not hasattr(mock_storage_interface, 'get_file_metadata'):
+        mock_storage_interface.get_file_metadata = types.MethodType(lambda self, path: {}, mock_storage_interface)
+    yield
 
 class TestGetValidMediaFiles:
     """Test suite for get_valid_media_files function."""
@@ -202,4 +210,55 @@ class TestFileProcessor:
                 None,  # No MHL data
                 mock_transfer_logger
             )
-            assert result is True 
+            assert result is True
+
+    def test_process_files_success_and_summary(self, mock_display_interface, mock_storage_interface,
+                                 mock_config, temp_source_dir, temp_dest_dir):
+        """Test successful file processing and summary stats."""
+        from src.core.transfer_logger import TransferLogger
+        import getpass
+        processor = FileProcessor(mock_display_interface, mock_storage_interface, mock_config)
+        mock_config.media_only_transfer = True
+        mock_config.media_extensions = ['.mp4', '.mov']
+
+        # Create two test files
+        test_file1 = temp_source_dir / "test1.mp4"
+        test_file2 = temp_source_dir / "test2.mp4"
+        test_file1.write_bytes(b"a" * 1024 * 1024)  # 1 MB
+        test_file2.write_bytes(b"b" * 1024 * 1024)  # 1 MB
+
+        # Patch storage interface to simulate successful copy
+        mock_storage_interface.copy_file.return_value = True
+
+        log_file = temp_dest_dir / "test_transfer.log"
+        with patch('os.path.ismount', return_value=True):
+            result = processor.process_files(temp_source_dir, temp_dest_dir, log_file=log_file)
+            assert result is True
+            # Check log file for correct summary
+            with open(log_file, 'r') as f:
+                content = f.read()
+                assert "Total data transferred: " in content
+                assert "Average file size: " in content
+                assert "Average speed: " in content
+                assert f"User: {getpass.getuser()}" in content
+                assert "Success:" in content
+                assert "test1.mp4" in content
+                assert "test2.mp4" in content
+
+    def test_process_files_empty_source_summary(self, mock_display_interface, mock_storage_interface,
+                                      mock_config, temp_dest_dir):
+        """Test processing with empty source directory and summary stats are zero."""
+        from src.core.transfer_logger import TransferLogger
+        import getpass
+        processor = FileProcessor(mock_display_interface, mock_storage_interface, mock_config)
+        empty_dir = Path(tempfile.mkdtemp())
+        log_file = temp_dest_dir / "test_transfer.log"
+        try:
+            with patch('os.path.ismount', return_value=True):
+                result = processor.process_files(empty_dir, temp_dest_dir, log_file=log_file)
+                assert result is False
+                with open(log_file, 'r') as f:
+                    content = f.read()
+                    assert "No files to transfer" in content or "Transfer completed at" not in content
+        finally:
+            empty_dir.rmdir() 
