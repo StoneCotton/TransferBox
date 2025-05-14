@@ -85,4 +85,28 @@ def test_log_level_validator():
     config = TransferConfig(log_level="invalid")
     assert config.log_level == "INFO"
     config = TransferConfig(log_level="ERROR")
-    assert config.log_level == "ERROR" 
+    assert config.log_level == "ERROR"
+
+def test_tutorial_mode_config(tmp_path, monkeypatch):
+    config_path = tmp_path / "config.yml"
+    # Explicitly set tutorial_mode True
+    config_data = {"tutorial_mode": True}
+    with open(config_path, 'w') as f:
+        yaml.dump(config_data, f)
+    monkeypatch.setattr(ConfigManager, "DEFAULT_CONFIG_PATHS", [config_path])
+    mgr = ConfigManager()
+    config = mgr.load_config()
+    assert config.tutorial_mode is True
+    # Save and reload
+    config.tutorial_mode = False
+    mgr.save_config(config)
+    mgr2 = ConfigManager()
+    monkeypatch.setattr(ConfigManager, "DEFAULT_CONFIG_PATHS", [config_path])
+    loaded = mgr2.load_config()
+    assert loaded.tutorial_mode is False
+    # Default if not set
+    config_path2 = tmp_path / "config2.yml"
+    monkeypatch.setattr(ConfigManager, "DEFAULT_CONFIG_PATHS", [config_path2])
+    mgr3 = ConfigManager()
+    config3 = mgr3.load_config()
+    assert config3.tutorial_mode is False 

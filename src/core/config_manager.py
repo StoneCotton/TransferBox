@@ -67,6 +67,9 @@ class TransferConfig(BaseModel):
     log_file_rotation: int = 5  # Number of log files to keep
     log_file_max_size: int = 10  # MB
     
+    # User Experience settings
+    tutorial_mode: bool = True
+    
     @field_validator('media_extensions')
     def validate_media_extensions(cls, v):
         """Ensure all media extensions have a leading dot"""
@@ -140,6 +143,9 @@ class TransferConfig(BaseModel):
         config_dict["log_file_rotation"] = self.log_file_rotation
         config_dict["log_file_max_size"] = self.log_file_max_size
         
+        # User Experience settings
+        config_dict["tutorial_mode"] = self.tutorial_mode
+        
         return config_dict
     
     def get(self, key, default=None):
@@ -197,26 +203,31 @@ class ConfigManager:
             TransferConfig: Validated configuration object
         """
         config_file = self._find_config_file()
-        
+        missing_fields = []
         try:
             if config_file and config_file.exists():
                 with open(config_file, 'r') as f:
                     config_data = yaml.safe_load(f)
-                    
                 # Remove comment entries which start with #
                 if config_data:
                     config_data = {k: v for k, v in config_data.items() if not isinstance(k, str) or not k.startswith('#')}
-                    
+                else:
+                    config_data = {}
                 self.config = TransferConfig.model_validate(config_data or {})
                 logger.info(f"Loaded configuration from {config_file}")
+                # Check for missing fields
+                model_fields = set(self.config.model_fields.keys())
+                file_fields = set(config_data.keys())
+                missing_fields = model_fields - file_fields
+                if missing_fields:
+                    logger.info(f"Adding missing config fields to {config_file}: {missing_fields}")
+                    self.save_config()  # This will write all fields, preserving existing values
             else:
                 self.config = TransferConfig()
                 self._save_default_config(config_file)
-                
         except Exception as e:
             logger.error(f"Error loading config: {e}")
             self.config = TransferConfig()
-            
         return self.config
     
     def _find_config_file(self) -> Path:
@@ -270,6 +281,9 @@ class ConfigManager:
                 f.write("\n# Logging settings\n")
                 yaml.dump({k: config_dict[k] for k in ["log_level", "log_file_rotation", "log_file_max_size"]}, f, default_flow_style=False, sort_keys=False)
                 
+                f.write("\n# User Experience settings\n")
+                yaml.dump({k: config_dict[k] for k in ["tutorial_mode"]}, f, default_flow_style=True, sort_keys=False)
+                
             logger.info(f"Created default configuration at {config_file}")
             
         except Exception as e:
@@ -319,6 +333,9 @@ class ConfigManager:
                 
                 f.write("\n# Logging settings\n")
                 yaml.dump({k: config_dict[k] for k in ["log_level", "log_file_rotation", "log_file_max_size"]}, f, default_flow_style=False, sort_keys=False)
+                
+                f.write("\n# User Experience settings\n")
+                yaml.dump({k: config_dict[k] for k in ["tutorial_mode"]}, f, default_flow_style=True, sort_keys=False)
                 
             logger.info(f"Saved configuration to {config_file}")
             

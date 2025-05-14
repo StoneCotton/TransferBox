@@ -236,6 +236,12 @@ class DesktopTransferBox(BaseTransferBox):
     
     def _get_destination_path(self):
         """Get and validate destination path from user"""
+        if getattr(self.config, 'tutorial_mode', False):
+            if not hasattr(self, '_tutorial_shown'):
+                self._tutorial_shown = False
+            if not self._tutorial_shown:
+                self._run_tutorial_flow()
+                self._tutorial_shown = True
         self.display.show_status("Enter destination path:")
         raw_destination = input()
         
@@ -256,6 +262,49 @@ class DesktopTransferBox(BaseTransferBox):
             logger.error(f"Error sanitizing path: {e}")
             self.display.show_error(f"Invalid path format")
             return None
+    
+    def _run_tutorial_flow(self):
+        """Interactive tutorial for first-time users in desktop mode."""
+        platform = get_platform()
+        console = None
+        try:
+            from rich.console import Console
+            console = Console()
+        except ImportError:
+            pass
+        def print_msg(msg):
+            if console:
+                console.print(msg)
+            else:
+                print(msg)
+        def get_valid_input(prompt, valid):
+            while True:
+                print_msg(prompt)
+                resp = input().strip().lower()
+                if resp in valid:
+                    return resp
+                print_msg("[red]Invalid input. Please choose a correct option.[/red]")
+        # Step 1
+        step1_prompt = "[bold cyan]Step 1:[/bold cyan] Make sure that your SD card is not plugged into the system. If it is, safely eject the card.\nPress Enter to continue or type 'skip' to skip tutorial..."
+        resp = get_valid_input(step1_prompt, {'', 'skip'})
+        if resp == 'skip':
+            return
+        # Step 2/2a loop
+        while True:
+            step2_prompt = "[bold cyan]Step 2:[/bold cyan] Have you located the directory that the media will be transferred to? ([green]y[/green]/[red]n[/red]/skip)"
+            resp = get_valid_input(step2_prompt, {'y', 'yes', 'n', 'no', 'skip'})
+            if resp == 'skip':
+                return
+            if resp in {'y', 'yes'}:
+                break
+            # Step 2a
+            if platform == 'darwin':
+                print_msg("[yellow]Go to Finder, and find the destination that you want to transfer your media. Once found, right click on the destination and press 'Option' to then 'Copy as Pathname'.[/yellow]")
+            elif platform == 'windows':
+                print_msg("[yellow]Go to Explorer, and find the destination that you want to transfer your media. Once found, highlight and copy the destination path from the navigation pane.[/yellow]")
+            else:
+                print_msg("[yellow]Locate your destination directory using your file manager and copy its path.[/yellow]")
+        print_msg("[bold green]Great! Proceeding to destination path entry...[/bold green]")
     
     def _wait_for_source_drive(self):
         """Wait for source drive insertion"""
