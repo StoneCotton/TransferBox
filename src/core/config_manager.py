@@ -282,7 +282,7 @@ class ConfigManager:
                 yaml.dump({k: config_dict[k] for k in ["log_level", "log_file_rotation", "log_file_max_size"]}, f, default_flow_style=False, sort_keys=False)
                 
                 f.write("\n# User Experience settings\n")
-                yaml.dump({k: config_dict[k] for k in ["tutorial_mode"]}, f, default_flow_style=True, sort_keys=False)
+                yaml.dump({k: config_dict[k] for k in ["tutorial_mode"]}, f, default_flow_style=False, sort_keys=False)
                 
             logger.info(f"Created default configuration at {config_file}")
             
@@ -335,7 +335,7 @@ class ConfigManager:
                 yaml.dump({k: config_dict[k] for k in ["log_level", "log_file_rotation", "log_file_max_size"]}, f, default_flow_style=False, sort_keys=False)
                 
                 f.write("\n# User Experience settings\n")
-                yaml.dump({k: config_dict[k] for k in ["tutorial_mode"]}, f, default_flow_style=True, sort_keys=False)
+                yaml.dump({k: config_dict[k] for k in ["tutorial_mode"]}, f, default_flow_style=False, sort_keys=False)
                 
             logger.info(f"Saved configuration to {config_file}")
             

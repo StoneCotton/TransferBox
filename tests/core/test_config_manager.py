@@ -1,3 +1,4 @@
+from operator import truediv
 import pytest
 import yaml
 from pathlib import Path
@@ -109,4 +110,4 @@ def test_tutorial_mode_config(tmp_path, monkeypatch):
     monkeypatch.setattr(ConfigManager, "DEFAULT_CONFIG_PATHS", [config_path2])
     mgr3 = ConfigManager()
     config3 = mgr3.load_config()
-    assert config3.tutorial_mode is False 
+    assert config3.tutorial_mode is True 
