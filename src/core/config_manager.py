@@ -4,7 +4,7 @@ import logging
 import yaml
 from pathlib import Path
 from typing import List, Optional, Dict, Any
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, field_validator
 import sys
 import os
 
@@ -67,12 +67,12 @@ class TransferConfig(BaseModel):
     log_file_rotation: int = 5  # Number of log files to keep
     log_file_max_size: int = 10  # MB
     
-    @validator('media_extensions')
+    @field_validator('media_extensions')
     def validate_media_extensions(cls, v):
         """Ensure all media extensions have a leading dot"""
         return [ext if ext.startswith('.') else f'.{ext}' for ext in v]
     
-    @validator('buffer_size')
+    @field_validator('buffer_size')
     def validate_buffer_size(cls, v):
         """Ensure buffer size is reasonable"""
         if v < 4096:  # 4KB minimum
@@ -81,7 +81,7 @@ class TransferConfig(BaseModel):
             return 100 * 1024 * 1024
         return v
     
-    @validator('log_level')
+    @field_validator('log_level')
     def validate_log_level(cls, v):
         """Validate log level"""
         valid_levels = ['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL']
