@@ -410,18 +410,13 @@ class RichDisplay(DisplayInterface):
 
     def _show_status_in_progress_mode(self, message):
         """Show status when in a progress display mode."""
-        # Create a status panel
-        status_panel = Panel(Text(message, style="blue"))
-        
         # Stop the current live display if it exists
         if self.live and self.live.is_started:
             self.live.stop()
-        
         # Clear screen and show header and status
         self.clear_screen()
         self.show_header()
-        self.console.print(status_panel)
-        
+        self.console.print(message, markup=True)
         # Restart the live display if we were in a progress mode
         if self.progress and self.display_mode != DisplayMode.NONE:
             self.live = Live(
@@ -438,28 +433,22 @@ class RichDisplay(DisplayInterface):
             # Clear screen and show header before displaying new status
             self.clear_screen()
             self.show_header()
-        
         # Print the status message below the header
-        self.console.print(Text(message, style="blue"))
+        self.console.print(message, markup=True)
 
     def show_error(self, message: str) -> None:
         """Display an error message."""
         try:
             # Make error message more prominent by printing it to console regardless of mode
-            error_text = Text(f"❌ ERROR: {message}", style="red bold")
-            
+            error_text = f"[bold red]❌ ERROR: {message}[/bold red]"
             if self.display_mode != DisplayMode.NONE:
                 # Clean up any existing progress display first
                 self._cleanup_progress(preserve_errors=True)
-            
             # Clear screen and show header before displaying the error
             self.clear_screen()
             self.show_header()
-            
             # Create an error panel and display it
-            error_panel = Panel(error_text, border_style="red")
-            self.console.print(error_panel)
-            
+            self.console.print(error_text, markup=True)
             logger.error(f"Display error: {message}")
         except Exception as e:
             self._handle_exception("Error displaying error message", e, "error_display")

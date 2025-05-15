@@ -223,6 +223,9 @@ class DesktopTransferBox(BaseTransferBox):
                 if not destination_path:
                     continue
                 
+                # Show the destination path to the user
+                self.display.show_status(f"[bold yellow]Destination set to: {destination_path}[/bold yellow]")
+                
                 # Wait for source drive
                 source_drive = self._wait_for_source_drive()
                 if not source_drive:
