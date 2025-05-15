@@ -110,4 +110,76 @@ def test_tutorial_mode_config(tmp_path, monkeypatch):
     monkeypatch.setattr(ConfigManager, "DEFAULT_CONFIG_PATHS", [config_path2])
     mgr3 = ConfigManager()
     config3 = mgr3.load_config()
-    assert config3.tutorial_mode is True 
+    assert config3.tutorial_mode is True
+
+def test_config_version_added_and_migrated(tmp_path, monkeypatch, caplog):
+    config_data = {"rename_with_timestamp": True, "media_only_transfer": False}  # No version
+    config_path = tmp_path / "config.yml"
+    write_yaml(config_path, config_data)
+    monkeypatch.setattr(ConfigManager, "DEFAULT_CONFIG_PATHS", [config_path])
+    mgr = ConfigManager()
+    with caplog.at_level("WARNING"):
+        config = mgr.load_config()
+    from src import __version__
+    assert config.version == __version__
+    assert "Migrating config" in caplog.text
+    # Should add missing fields
+    assert hasattr(config, "tutorial_mode")
+    # Should remove unknown fields
+    with open(config_path) as f:
+        loaded = yaml.safe_load(f)
+    assert "version" in loaded
+    assert loaded["version"] == __version__
+
+def test_config_old_version_triggers_migration(tmp_path, monkeypatch, caplog):
+    config_data = {"version": "0.0.1", "rename_with_timestamp": True}
+    config_path = tmp_path / "config.yml"
+    write_yaml(config_path, config_data)
+    monkeypatch.setattr(ConfigManager, "DEFAULT_CONFIG_PATHS", [config_path])
+    mgr = ConfigManager()
+    with caplog.at_level("WARNING"):
+        config = mgr.load_config()
+    from src import __version__
+    assert config.version == __version__
+    assert "Migrating config" in caplog.text
+
+def test_config_removes_unknown_fields(tmp_path, monkeypatch):
+    config_data = {"rename_with_timestamp": True, "unknown_field": 123}
+    config_path = tmp_path / "config.yml"
+    write_yaml(config_path, config_data)
+    monkeypatch.setattr(ConfigManager, "DEFAULT_CONFIG_PATHS", [config_path])
+    mgr = ConfigManager()
+    config = mgr.load_config()
+    assert not hasattr(config, "unknown_field")
+    with open(config_path) as f:
+        loaded = yaml.safe_load(f)
+    assert "unknown_field" not in loaded
+
+def test_config_saves_with_current_version(tmp_path, monkeypatch):
+    config_path = tmp_path / "config.yml"
+    monkeypatch.setattr(ConfigManager, "DEFAULT_CONFIG_PATHS", [config_path])
+    mgr = ConfigManager()
+    config = TransferConfig(rename_with_timestamp=True)
+    mgr.save_config(config)
+    from src import __version__
+    with open(config_path) as f:
+        loaded = yaml.safe_load(f)
+    assert loaded["version"] == __version__
+
+def test_config_backup_and_preserve_values(tmp_path, monkeypatch):
+    config_data = {"rename_with_timestamp": True, "sound_volume": 99, "buffer_size": 1}  # buffer_size is invalid
+    config_path = tmp_path / "config.yml"
+    write_yaml(config_path, config_data)
+    monkeypatch.setattr(ConfigManager, "DEFAULT_CONFIG_PATHS", [config_path])
+    mgr = ConfigManager()
+    backup_path = config_path.with_suffix(".yml.bak")
+    if backup_path.exists():
+        backup_path.unlink()  # Ensure clean state
+    config = mgr.load_config()
+    # Backup should exist
+    assert backup_path.exists()
+    # User value preserved
+    assert config.rename_with_timestamp is True
+    assert config.sound_volume == 99
+    # Invalid value replaced with default
+    assert config.buffer_size == 4096 

@@ -9,12 +9,14 @@ import sys
 import os
 
 from .exceptions import ConfigError
+from src import __version__  # 1) Import program version
 
 logger = logging.getLogger(__name__)
 
 class TransferConfig(BaseModel):
     """Configuration settings for TransferBox using Pydantic for validation"""
     
+    version: str = __version__  # 2) Add version field
     # File handling
     rename_with_timestamp: bool = False
     preserve_original_filename: bool = True
@@ -101,6 +103,7 @@ class TransferConfig(BaseModel):
             Dictionary representation of config with comments
         """
         config_dict = {}
+        config_dict["version"] = self.version  # 3) Include version
         
         # File handling
         config_dict["rename_with_timestamp"] = self.rename_with_timestamp
@@ -213,6 +216,15 @@ class ConfigManager:
                     config_data = {k: v for k, v in config_data.items() if not isinstance(k, str) or not k.startswith('#')}
                 else:
                     config_data = {}
+                # 4) Version check and migration
+                file_version = config_data.get("version")
+                if file_version != __version__:
+                    # Backup before migration
+                    self._backup_config(config_file)
+                    logger.warning(f"Config version mismatch: file has {file_version}, program is {__version__}. Migrating config.")
+                    config_data = self._migrate_config(config_data)
+                    config_data["version"] = __version__
+                    self.save_config(TransferConfig.model_validate(config_data))
                 self.config = TransferConfig.model_validate(config_data or {})
                 logger.info(f"Loaded configuration from {config_file}")
                 # Check for missing fields
@@ -229,6 +241,40 @@ class ConfigManager:
             logger.error(f"Error loading config: {e}")
             self.config = TransferConfig()
         return self.config
+    
+    def _backup_config(self, config_file: Path):
+        """
+        Backup the existing config file before migration.
+        """
+        try:
+            backup_path = config_file.with_suffix(config_file.suffix + ".bak")
+            if config_file.exists():
+                import shutil
+                shutil.copy2(config_file, backup_path)
+                logger.info(f"Backed up config to {backup_path}")
+        except Exception as e:
+            logger.error(f"Failed to backup config: {e}")
+    
+    def _migrate_config(self, config_data: dict) -> dict:
+        """
+        Migrate an old config dict to the latest version using the TransferConfig model.
+        Removes unknown fields and fills in missing ones with defaults. Preserves user values unless invalid.
+        """
+        valid_fields = set(TransferConfig.model_fields.keys())
+        migrated = {}
+        # Validate and preserve user values if valid, else use default
+        for k in valid_fields:
+            if k in config_data:
+                try:
+                    # Validate single field using Pydantic
+                    test_config = TransferConfig(**{k: config_data[k]})
+                    migrated[k] = getattr(test_config, k)
+                except Exception:
+                    migrated[k] = getattr(TransferConfig(), k)
+            else:
+                migrated[k] = getattr(TransferConfig(), k)
+        migrated["version"] = __version__
+        return migrated
     
     def _find_config_file(self) -> Path:
         """
@@ -261,7 +307,7 @@ class ConfigManager:
             with open(config_file, 'w') as f:
                 # Add section headers as comments
                 f.write("# File handling - Control how files are renamed and processed\n")
-                yaml.dump({k: config_dict[k] for k in ["rename_with_timestamp", "preserve_original_filename", "filename_template", "timestamp_format", "create_mhl_files"]}, f, default_flow_style=False, sort_keys=False)
+                yaml.dump({k: config_dict[k] for k in ["version", "rename_with_timestamp", "preserve_original_filename", "filename_template", "timestamp_format", "create_mhl_files"]}, f, default_flow_style=False, sort_keys=False)
                 
                 f.write("\n# Media transfer settings\n")
                 yaml.dump({k: config_dict[k] for k in ["media_only_transfer", "preserve_folder_structure", "transfer_destination", "media_extensions"]}, f, default_flow_style=False, sort_keys=False)
@@ -314,7 +360,7 @@ class ConfigManager:
             with open(config_file, 'w') as f:
                 # Add section headers as comments
                 f.write("# File handling - Control how files are renamed and processed\n")
-                yaml.dump({k: config_dict[k] for k in ["rename_with_timestamp", "preserve_original_filename", "filename_template", "timestamp_format", "create_mhl_files"]}, f, default_flow_style=False, sort_keys=False)
+                yaml.dump({k: config_dict[k] for k in ["version", "rename_with_timestamp", "preserve_original_filename", "filename_template", "timestamp_format", "create_mhl_files"]}, f, default_flow_style=False, sort_keys=False)
                 
                 f.write("\n# Media transfer settings\n")
                 yaml.dump({k: config_dict[k] for k in ["media_only_transfer", "preserve_folder_structure", "transfer_destination", "media_extensions"]}, f, default_flow_style=False, sort_keys=False)
