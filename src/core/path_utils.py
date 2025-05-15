@@ -523,10 +523,14 @@ def is_plausible_user_path(path_str: str) -> tuple[bool, str | None]:
       - Absolute paths (macOS/Linux: /..., Windows: C:\..., C:/...)
       - UNC/network paths (Windows: \\...)
     Disallows relative, single-word, or nonsense input.
+    Accepts paths wrapped in single or double quotes (e.g., from macOS Copy as Pathname).
     """
     if not isinstance(path_str, str):
         return False, "Input is not a string."
     s = path_str.strip()
+    # Strip leading/trailing single or double quotes
+    if (s.startswith("'") and s.endswith("'")) or (s.startswith('"') and s.endswith('"')):
+        s = s[1:-1].strip()
     if not s:
         return False, "Path cannot be empty."
     # Only slashes/backslashes

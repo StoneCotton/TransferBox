@@ -247,26 +247,50 @@ class DesktopTransferBox(BaseTransferBox):
             example_path = '/home/yourname/Media'
         else:
             example_path = '/absolute/path/to/destination'
+        def get_valid_input(prompt, valid, max_attempts=3):
+            attempts = 0
+            while attempts < max_attempts:
+                self.display.show_status(prompt)
+                resp = input().strip().lower()
+                if resp in valid:
+                    return resp
+                self.display.show_error("Invalid input. Please choose a correct option.")
+                attempts += 1
+            self.display.show_error("Too many invalid attempts.")
+            return 'exit'
         if getattr(self.config, 'tutorial_mode', False):
             if not hasattr(self, '_tutorial_shown'):
                 self._tutorial_shown = False
             if not self._tutorial_shown:
                 self._run_tutorial_flow()
                 self._tutorial_shown = True
-        
+        max_attempts = 3
+        attempts = 0
         while True:
+            if attempts >= max_attempts:
+                # Hybrid: ask user if they want to retry tutorial or exit
+                prompt = "Too many invalid attempts. Would you like to retry the tutorial or exit? (retry/exit)"
+                resp = get_valid_input(prompt, {'retry', 'exit'}, max_attempts=1)
+                if resp == 'retry':
+                    self._run_tutorial_flow()
+                    attempts = 0
+                    continue
+                else:
+                    self.display.show_error("Exiting destination entry.")
+                    return None
             self.display.show_status(f"Enter destination path (e.g., {example_path}):")
             raw_destination = input().strip()
-
             plausible, plausible_error = is_plausible_user_path(raw_destination)
             if not plausible:
                 self.display.show_error(f"{plausible_error} Example: {example_path}")
+                attempts += 1
                 continue
             try:
                 sanitized_destination = sanitize_path(raw_destination)
             except Exception as e:
                 logger.error(f"Error sanitizing path: {e}")
                 self.display.show_error(f"Invalid path format. Example: {example_path}")
+                attempts += 1
                 continue
             is_valid, error_msg = validate_path(
                 sanitized_destination, 
@@ -275,6 +299,7 @@ class DesktopTransferBox(BaseTransferBox):
             )
             if not is_valid:
                 self.display.show_error(f"{error_msg} Example: {example_path}")
+                attempts += 1
                 continue
             return sanitized_destination
     
@@ -292,13 +317,17 @@ class DesktopTransferBox(BaseTransferBox):
                 console.print(msg)
             else:
                 print(msg)
-        def get_valid_input(prompt, valid):
-            while True:
+        def get_valid_input(prompt, valid, max_attempts=3):
+            attempts = 0
+            while attempts < max_attempts:
                 print_msg(prompt)
                 resp = input().strip().lower()
                 if resp in valid:
                     return resp
                 print_msg("[red]Invalid input. Please choose a correct option.[/red]")
+                attempts += 1
+            print_msg("[yellow]Too many invalid attempts. Skipping this step.[/yellow]")
+            return 'skip'
         # Step 1
         step1_prompt = "[bold cyan]Make sure that your SD card is not plugged into the system. If it is, safely eject the card.[/bold cyan]\nPress Enter to continue or type 'skip' to skip tutorial..."
         resp = get_valid_input(step1_prompt, {'', 'skip'})
