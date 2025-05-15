@@ -18,7 +18,7 @@ from src.core.file_transfer import FileTransfer
 from src.core.logger_setup import setup_logging
 from src.core.sound_manager import SoundManager
 from src.core.utils import validate_path, get_platform
-from src.core.path_utils import sanitize_path
+from src.core.path_utils import sanitize_path, is_plausible_user_path
 from src.core.exceptions import HardwareError, StorageError, StateError, FileTransferError
 from src.core.context_managers import operation_context
 import argparse
@@ -235,33 +235,48 @@ class DesktopTransferBox(BaseTransferBox):
                 self._handle_completion(source_drive, error_occurred)
     
     def _get_destination_path(self):
-        """Get and validate destination path from user"""
+        """Get and validate destination path from user, with robust input validation."""
+        from src.core.path_utils import is_plausible_user_path
+        import platform as plt
+        system = plt.system().lower()
+        if system == 'darwin':
+            example_path = '/Volumes/BM-PRODUCTION/01_Burden Media/#2025 Content/05_FPV Shoot'
+        elif system == 'windows':
+            example_path = r'K:\BM-PRODUCTION\01_Burden Media\2025 Content\05_FPV Shoot'
+        elif system == 'linux':
+            example_path = '/home/yourname/Media'
+        else:
+            example_path = '/absolute/path/to/destination'
         if getattr(self.config, 'tutorial_mode', False):
             if not hasattr(self, '_tutorial_shown'):
                 self._tutorial_shown = False
             if not self._tutorial_shown:
                 self._run_tutorial_flow()
                 self._tutorial_shown = True
-        self.display.show_status("Enter destination path:")
-        raw_destination = input()
         
-        try:
-            sanitized_destination = sanitize_path(raw_destination)
+        while True:
+            self.display.show_status(f"Enter destination path (e.g., {example_path}):")
+            raw_destination = input().strip()
+
+            plausible, plausible_error = is_plausible_user_path(raw_destination)
+            if not plausible:
+                self.display.show_error(f"{plausible_error} Example: {example_path}")
+                continue
+            try:
+                sanitized_destination = sanitize_path(raw_destination)
+            except Exception as e:
+                logger.error(f"Error sanitizing path: {e}")
+                self.display.show_error(f"Invalid path format. Example: {example_path}")
+                continue
             is_valid, error_msg = validate_path(
                 sanitized_destination, 
                 must_exist=False, 
                 must_be_writable=True
             )
-            
             if not is_valid:
-                self.display.show_error(error_msg)
-                return None
-            
+                self.display.show_error(f"{error_msg} Example: {example_path}")
+                continue
             return sanitized_destination
-        except Exception as e:
-            logger.error(f"Error sanitizing path: {e}")
-            self.display.show_error(f"Invalid path format")
-            return None
     
     def _run_tutorial_flow(self):
         """Interactive tutorial for first-time users in desktop mode."""
@@ -285,13 +300,13 @@ class DesktopTransferBox(BaseTransferBox):
                     return resp
                 print_msg("[red]Invalid input. Please choose a correct option.[/red]")
         # Step 1
-        step1_prompt = "[bold cyan]Step 1:[/bold cyan] Make sure that your SD card is not plugged into the system. If it is, safely eject the card.\nPress Enter to continue or type 'skip' to skip tutorial..."
+        step1_prompt = "[bold cyan]Make sure that your SD card is not plugged into the system. If it is, safely eject the card.[/bold cyan]\nPress Enter to continue or type 'skip' to skip tutorial..."
         resp = get_valid_input(step1_prompt, {'', 'skip'})
         if resp == 'skip':
             return
         # Step 2/2a loop
         while True:
-            step2_prompt = "[bold cyan]Step 2:[/bold cyan] Have you located the directory that the media will be transferred to? ([green]y[/green]/[red]n[/red]/skip)"
+            step2_prompt = "[bold cyan]Have you located the directory that the media will be transferred to?[/bold cyan]\n([green]YES[/green] / [red]NO[/red] / SKIP)"
             resp = get_valid_input(step2_prompt, {'y', 'yes', 'n', 'no', 'skip'})
             if resp == 'skip':
                 return
