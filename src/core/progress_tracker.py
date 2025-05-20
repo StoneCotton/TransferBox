@@ -32,6 +32,7 @@ class ProgressTracker:
         # Time tracking for speed and ETA calculation
         self.start_time = time.time()
         self.file_start_time = time.time()
+        self.checksum_start_time = None  # Track checksum start time
         self.last_update_time = time.time()
         self.last_bytes = 0
         self.speed_bytes_per_sec = 0
@@ -54,6 +55,7 @@ class ProgressTracker:
         self.start_time = time.time()
         self.last_update_time = time.time()
         self.last_bytes = 0
+        self.checksum_start_time = None
         self._update_display()
     
     def start_file(self, file_path, file_number: int, total_files: int, 
@@ -80,6 +82,7 @@ class ProgressTracker:
         self.overall_progress = (file_number - 1) / total_files
         self.status = TransferStatus.COPYING
         self.file_start_time = time.time()
+        self.checksum_start_time = None
         self.last_update_time = time.time()
         self.last_bytes = 0
         self._update_display()
@@ -166,6 +169,8 @@ class ProgressTracker:
             status: New transfer status
         """
         self.status = status
+        if status == TransferStatus.CHECKSUMMING:
+            self.checksum_start_time = time.time()
         self._update_display()
     
     def complete_file(self, success: bool = True) -> None:
@@ -205,6 +210,10 @@ class ProgressTracker:
         """Update the display with current progress."""
         if self.display:
             try:
+                now = time.time()
+                total_elapsed = now - self.start_time if self.start_time else 0.0
+                file_elapsed = now - self.file_start_time if self.file_start_time else 0.0
+                checksum_elapsed = (now - self.checksum_start_time) if (self.checksum_start_time and self.status == TransferStatus.CHECKSUMMING) else 0.0
                 progress = TransferProgress(
                     current_file=self.current_file,
                     file_number=self.file_number,
@@ -216,9 +225,11 @@ class ProgressTracker:
                     current_file_progress=self.current_file_progress,
                     overall_progress=self.overall_progress,
                     status=self.status,
-                    # Add extra fields for speed and ETA if your TransferProgress class accepts them
                     speed_bytes_per_sec=getattr(self, 'speed_bytes_per_sec', 0),
-                    eta_seconds=getattr(self, 'eta_seconds', 0)
+                    eta_seconds=getattr(self, 'eta_seconds', 0),
+                    total_elapsed=total_elapsed,
+                    file_elapsed=file_elapsed,
+                    checksum_elapsed=checksum_elapsed
                 )
                 self.display.show_progress(progress)
             except Exception as e:

@@ -6,8 +6,9 @@ import logging
 import stat
 import urllib.parse
 from pathlib import Path
-from typing import Union
+from typing import Union, Tuple, Optional
 from .exceptions import StorageError, FileTransferError
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -513,3 +514,50 @@ def get_safe_path(unsafe_path: Union[str, Path]) -> Path:
             f"Cannot safely convert path: {unsafe_path}",
             error_type="io"
         )
+
+def is_plausible_user_path(path_str: str) -> tuple[bool, str | None]:
+    """
+    Check if a user input string is a plausible absolute path for the current platform.
+    Returns (True, None) if plausible, (False, reason) if not.
+    Only allows:
+      - Absolute paths (macOS/Linux: /..., Windows: C:\..., C:/...)
+      - UNC/network paths (Windows: \\...)
+    Disallows relative, single-word, or nonsense input.
+    Accepts paths wrapped in single or double quotes (e.g., from macOS Copy as Pathname).
+    """
+    if not isinstance(path_str, str):
+        return False, "Input is not a string."
+    s = path_str.strip()
+    # Strip leading/trailing single or double quotes
+    if (s.startswith("'") and s.endswith("'")) or (s.startswith('"') and s.endswith('"')):
+        s = s[1:-1].strip()
+    if not s:
+        return False, "Path cannot be empty."
+    # Only slashes/backslashes
+    if all(c in '/\\' for c in s):
+        return False, "Path must contain directory or file name."
+    # Only special characters (not alphanumeric, not . or _ or -)
+    if not re.search(r'[\w\.-]', s):
+        return False, "Path must contain at least one alphanumeric or valid character."
+    system = platform.system().lower()
+    # macOS/Linux: must be absolute (start with /)
+    if system in ('darwin', 'linux'):
+        if not s.startswith('/'):
+            return False, "Path must be an absolute path starting with '/'."
+        return True, None
+    # Windows: allow drive letter, UNC, or absolute
+    if system == 'windows':
+        # UNC/network path
+        if s.startswith('\\\\'):
+            return True, None
+        # Drive letter path (C:\ or C:/)
+        if re.match(r'^[a-zA-Z]:[\\/]', s):
+            return True, None
+        # Absolute path with forward slash (e.g., /Users/...)
+        if s.startswith('/'):
+            return True, None
+        return False, "Path must be an absolute path (C:\\..., C:/..., \\server\\..., or /...)."
+    # Fallback: require absolute
+    if not os.path.isabs(s):
+        return False, "Path must be absolute."
+    return True, None

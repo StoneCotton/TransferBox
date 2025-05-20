@@ -127,7 +127,10 @@ class ChecksumError(FileTransferError):
             "Retry the transfer process",
             "Check for transfer medium errors"
         ]
-        super().__init__(message, recoverable=True, recovery_steps=recovery_steps, *args)
+        # Call FileTransferError without recoverable/recovery_steps, then set them
+        super().__init__(message, *args)
+        self.recoverable = True
+        self.recovery_steps = recovery_steps
 
 class HardwareError(TransferBoxError):
     """Hardware related errors (Raspberry Pi specific)"""

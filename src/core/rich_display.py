@@ -3,7 +3,6 @@ from rich.progress import (
     Progress,
     TextColumn,
     BarColumn,
-    TimeElapsedColumn,
     TimeRemainingColumn,
     MofNCompleteColumn,
     FileSizeColumn,
@@ -86,12 +85,6 @@ class RichDisplay(DisplayInterface):
     def _create_progress_instance(self, style: str = "blue"):
         """
         Create a new Progress instance with standard columns.
-        
-        Args:
-            style: The style color for the progress bar
-        
-        Returns:
-            A new Progress instance
         """
         return Progress(
             SpinnerColumn(),
@@ -101,12 +94,25 @@ class RichDisplay(DisplayInterface):
             TextColumn("/"),
             TotalFileSizeColumn(),
             TransferSpeedColumn(),
-            TimeElapsedColumn(),
+            TextColumn("Elapsed:"),
+            TextColumn("[cyan]{task.fields[elapsed]:>8}"),
             TextColumn("ETA:"),
             TimeRemainingColumn(),
             expand=True,
             console=self.console
         )
+
+    @staticmethod
+    def _format_time(seconds: float) -> str:
+        # Format seconds as H:MM:SS
+        seconds = int(seconds)
+        h = seconds // 3600
+        m = (seconds % 3600) // 60
+        s = seconds % 60
+        if h > 0:
+            return f"{h}:{m:02}:{s:02}"
+        else:
+            return f"{m}:{s:02}"
 
     def _initialize_display_mode(self, mode: DisplayMode):
         """
@@ -150,77 +156,74 @@ class RichDisplay(DisplayInterface):
 
     def _initialize_proxy_tasks(self):
         """Initialize tasks for proxy generation mode."""
+        default_fields = dict(elapsed="")
         if self._current_progress:
             self.proxy_total_task_id = self.progress.add_task(
                 "Total Progress",
                 total=self._current_progress.total_size,
                 completed=self._current_progress.total_transferred,
-                visible=True
+                visible=True,
+                **default_fields
             )
             
             self.proxy_current_task_id = self.progress.add_task(
                 "Proxy Progress",
                 total=self._current_progress.total_bytes,
                 completed=self._current_progress.bytes_transferred,
-                visible=True
+                visible=True,
+                **default_fields
             )
         else:
             # Fallback initialization if no progress info available
-            self.proxy_total_task_id = self.progress.add_task("Total Progress", total=100, visible=True)
-            self.proxy_current_task_id = self.progress.add_task("Proxy Progress", total=100, visible=True)
+            self.proxy_total_task_id = self.progress.add_task("Total Progress", total=100, visible=True, **default_fields)
+            self.proxy_current_task_id = self.progress.add_task("Proxy Progress", total=100, visible=True, **default_fields)
 
     def _initialize_transfer_tasks(self):
         """Initialize tasks for file transfer mode."""
+        default_fields = dict(elapsed="")
         if self._current_progress:
             self.total_task_id = self.progress.add_task(
                 "Total Progress",
                 total=self._current_progress.total_size,
                 completed=self._current_progress.total_transferred,
-                visible=True
+                visible=True,
+                **default_fields
             )
-            
             # Initialize current file progress
             self.copy_task_id = self.progress.add_task(
                 "Copy Progress",
                 total=self._current_progress.total_bytes,
                 completed=self._current_progress.bytes_transferred,
-                visible=True
+                visible=True,
+                **default_fields
             )
-            
             # Initialize checksum progress
             self.checksum_task_id = self.progress.add_task(
                 "Checksum Progress",
                 total=self._current_progress.total_bytes,
                 completed=0,
-                visible=True
+                visible=True,
+                **default_fields
             )
         else:
-            # Fallback initialization if no progress info available
-            self.total_task_id = self.progress.add_task("Total Progress", total=100, visible=True)
-            self.copy_task_id = self.progress.add_task("Copy Progress", total=100, visible=True)
-            self.checksum_task_id = self.progress.add_task("Checksum Progress", total=100, visible=True)
+            self.total_task_id = self.progress.add_task("Total Progress", total=100, visible=True, **default_fields)
+            self.copy_task_id = self.progress.add_task("Copy Progress", total=100, visible=True, **default_fields)
+            self.checksum_task_id = self.progress.add_task("Checksum Progress", total=100, visible=True, **default_fields)
 
-    def _update_progress_task(self, task_id, progress, description, completed=None, total=None):
+    def _update_progress_task(self, task_id, progress, description, completed=None, total=None, elapsed=None):
         """
         Helper method to update a progress task with common parameters.
-        
-        Args:
-            task_id: The ID of the task to update
-            progress: The TransferProgress object with current progress info
-            description: The description text for the task
-            completed: Override for the completed value (optional)
-            total: Override for the total value (optional)
         """
         if task_id is None:
             return
-            
         self.progress.update(
             task_id,
             completed=completed if completed is not None else progress.bytes_transferred,
             total=total if total is not None else progress.total_bytes,
             description=description,
             speed=progress.speed_bytes_per_sec if progress.speed_bytes_per_sec > 0 else None,
-            time_remaining=progress.eta_seconds if progress.eta_seconds > 0 else None
+            time_remaining=progress.eta_seconds if progress.eta_seconds > 0 else None,
+            elapsed=elapsed if elapsed is not None else "-:--:--"
         )
 
     def show_progress(self, progress: TransferProgress) -> None:
@@ -266,33 +269,34 @@ class RichDisplay(DisplayInterface):
 
     def _update_proxy_progress(self, progress):
         """Update progress displays for proxy generation mode."""
-        # Update the total progress task
+        # Update the total progress task (show total elapsed time)
         self._update_progress_task(
             self.proxy_total_task_id,
             progress,
             f"Total Progress ({progress.proxy_file_number}/{progress.proxy_total_files})",
             completed=progress.total_transferred,
-            total=progress.total_size
+            total=progress.total_size,
+            elapsed=self._format_time(progress.total_elapsed) if hasattr(progress, 'total_elapsed') and progress.total_elapsed > 0 else "-:--:--"
         )
-        
-        # Update the current file progress task
+        # Update the current file progress task (show file elapsed time)
         self._update_progress_task(
             self.proxy_current_task_id,
             progress,
-            f"Generating: {progress.current_file}"
+            f"Generating: {progress.current_file}",
+            elapsed=self._format_time(progress.file_elapsed) if hasattr(progress, 'file_elapsed') and progress.file_elapsed > 0 else "-:--:--"
         )
 
     def _update_transfer_progress(self, progress):
         """Update progress displays for file transfer mode."""
-        # Update the total progress task
+        # Update the total progress task (show total elapsed time)
         self._update_progress_task(
             self.total_task_id,
             progress,
             f"Total Progress ({progress.file_number}/{progress.total_files})",
             completed=progress.total_transferred,
-            total=progress.total_size
+            total=progress.total_size,
+            elapsed=self._format_time(progress.total_elapsed) if hasattr(progress, 'total_elapsed') and progress.total_elapsed > 0 else "-:--:--"
         )
-
         # Update tasks based on current transfer status
         if progress.status == TransferStatus.COPYING:
             self._update_copy_progress(progress)
@@ -301,40 +305,42 @@ class RichDisplay(DisplayInterface):
 
     def _update_copy_progress(self, progress):
         """Update progress displays during file copying."""
-        # Update copy progress
+        # Update copy progress (show file elapsed time)
         self._update_progress_task(
             self.copy_task_id,
             progress,
-            f"Copying: {progress.current_file}"
+            f"Copying: {progress.current_file}",
+            elapsed=self._format_time(progress.file_elapsed) if hasattr(progress, 'file_elapsed') and progress.file_elapsed > 0 else "-:--:--"
         )
-        
-        # Reset checksum progress
+        # Reset checksum progress (blank elapsed)
         if self.checksum_task_id is not None:
             self.progress.update(
                 self.checksum_task_id,
                 completed=0,
                 total=progress.total_bytes,
-                description="Waiting for checksum"
+                description="Waiting for checksum",
+                elapsed="-:--:--"
             )
 
     def _update_checksum_progress(self, progress):
         """Update progress displays during checksumming."""
-        # Mark copy as complete
+        # Mark copy as complete (blank elapsed)
         if self.copy_task_id is not None:
             self.progress.update(
                 self.copy_task_id,
                 completed=progress.total_bytes,
                 total=progress.total_bytes,
-                description=f"Copied: {progress.current_file}"
+                description=f"Copied: {progress.current_file}",
+                elapsed="-:--:--"
             )
-        
-        # Update checksum progress
+        # Update checksum progress (show checksum elapsed time)
         checksum_completed = int(progress.current_file_progress * progress.total_bytes)
         self._update_progress_task(
             self.checksum_task_id,
             progress,
             f"Checksumming: {progress.current_file}",
-            completed=checksum_completed
+            completed=checksum_completed,
+            elapsed=self._format_time(progress.checksum_elapsed) if hasattr(progress, 'checksum_elapsed') and progress.checksum_elapsed > 0 else "-:--:--"
         )
 
     def _handle_exception(self, message, exception, error_type):
@@ -404,18 +410,13 @@ class RichDisplay(DisplayInterface):
 
     def _show_status_in_progress_mode(self, message):
         """Show status when in a progress display mode."""
-        # Create a status panel
-        status_panel = Panel(Text(message, style="blue"))
-        
         # Stop the current live display if it exists
         if self.live and self.live.is_started:
             self.live.stop()
-        
         # Clear screen and show header and status
         self.clear_screen()
         self.show_header()
-        self.console.print(status_panel)
-        
+        self.console.print(message, markup=True)
         # Restart the live display if we were in a progress mode
         if self.progress and self.display_mode != DisplayMode.NONE:
             self.live = Live(
@@ -432,28 +433,22 @@ class RichDisplay(DisplayInterface):
             # Clear screen and show header before displaying new status
             self.clear_screen()
             self.show_header()
-        
         # Print the status message below the header
-        self.console.print(Text(message, style="blue"))
+        self.console.print(message, markup=True)
 
     def show_error(self, message: str) -> None:
         """Display an error message."""
         try:
             # Make error message more prominent by printing it to console regardless of mode
-            error_text = Text(f"❌ ERROR: {message}", style="red bold")
-            
+            error_text = f"[bold red]❌ ERROR: {message}[/bold red]"
             if self.display_mode != DisplayMode.NONE:
                 # Clean up any existing progress display first
                 self._cleanup_progress(preserve_errors=True)
-            
             # Clear screen and show header before displaying the error
             self.clear_screen()
             self.show_header()
-            
             # Create an error panel and display it
-            error_panel = Panel(error_text, border_style="red")
-            self.console.print(error_panel)
-            
+            self.console.print(error_text, markup=True)
             logger.error(f"Display error: {message}")
         except Exception as e:
             self._handle_exception("Error displaying error message", e, "error_display")

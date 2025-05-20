@@ -12,6 +12,7 @@ import yaml
 import pytest
 from typing import TYPE_CHECKING
 import logging
+from unittest.mock import Mock
 if TYPE_CHECKING:
     from _pytest.monkeypatch import MonkeyPatch
     from pytest_mock.plugin import MockerFixture
@@ -288,3 +289,67 @@ def mocked_logging() -> Iterator[None]:
     logging.getLogger().setLevel(logging.CRITICAL)
     yield
     logging.getLogger().setLevel(original_level)
+
+@pytest.fixture
+def mock_display_interface(mocker) -> Any:
+    """
+    Provide a mock DisplayInterface for checksum tests.
+    Returns:
+        Mocked DisplayInterface instance.
+    """
+    mock_display = mocker.Mock()
+    mock_display.show_progress = mocker.Mock()
+    mock_display.show_error = mocker.Mock()
+    return mock_display
+
+@pytest.fixture
+def mock_config():
+    """Provide a mock configuration object."""
+    class MockConfig:
+        def __init__(self):
+            self.media_only_transfer = False
+            self.media_extensions = ['.mp4', '.mov', '.mxf']
+            self.create_mhl_files = False
+            self.verify_transfers = False
+            self.recursive_search = True
+            self.rename_with_timestamp = False
+            self.preserve_original_filename = True
+            self.timestamp_format = "%Y%m%d_%H%M%S"
+            self.filename_template = "{original}_{timestamp}"
+            self.create_date_folders = False
+            self.create_device_folders = False
+            self.device_folder_template = "{device_name}"
+            self.buffer_size = 1048576
+            self.log_level = "INFO"
+            self.log_file_rotation = 5
+            self.log_file_max_size = 10
+
+    return MockConfig()
+
+@pytest.fixture
+def mock_storage_interface():
+    """Provide a mock storage interface."""
+    class MockStorageInterface:
+        def __init__(self):
+            self.copy_file = Mock(return_value=True)
+            self.copy_file_with_hash = Mock(return_value=(True, "test_hash"))
+            self.verify_checksum = Mock(return_value=True)
+            self.get_metadata = Mock(return_value={"test": "metadata"})
+            self.apply_metadata = Mock(return_value=True)
+        def path_exists(self, path):
+            return True
+        def is_mounted(self, path):
+            return True
+
+    return MockStorageInterface()
+
+@pytest.fixture
+def mock_state_manager():
+    """Provide a mock state manager."""
+    class MockStateManager:
+        def __init__(self):
+            self.is_utility = Mock(return_value=False)
+            self.is_standby = Mock(return_value=True)
+            self.is_transfer = Mock(return_value=False)
+
+    return MockStateManager()

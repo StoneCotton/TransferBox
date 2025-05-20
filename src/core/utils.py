@@ -6,6 +6,7 @@ import shutil
 import tempfile
 from pathlib import Path
 from typing import Optional, Tuple, List, Dict, Any
+from .exceptions import FileTransferError
 
 logger = logging.getLogger(__name__)
 
@@ -20,10 +21,14 @@ def ensure_directory(path: Path) -> Path:
         Path: Same path that was passed in
         
     Raises:
-        OSError: If directory cannot be created
+        FileTransferError: If directory cannot be created
     """
-    path.mkdir(parents=True, exist_ok=True)
-    return path
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+    except Exception as e:
+        logger.error(f"Failed to create directory {path}: {e}")
+        raise FileTransferError(f"Failed to create directory: {e}", source=path)
 
 def safe_copy(source: Path, destination: Path, temp_extension: str = ".tmp") -> bool:
     """
@@ -36,6 +41,8 @@ def safe_copy(source: Path, destination: Path, temp_extension: str = ".tmp") -> 
         
     Returns:
         bool: True if copy was successful, False otherwise
+    Raises:
+        FileTransferError: If copy fails
     """
     temp_path = destination.with_suffix(temp_extension)
     try:
@@ -53,12 +60,12 @@ def safe_copy(source: Path, destination: Path, temp_extension: str = ".tmp") -> 
     except Exception as e:
         logger.error(f"Failed to copy {source} to {destination}: {e}")
         # Clean up temporary file if it exists
-        if temp_path.exists():
-            try:
+        try:
+            if temp_path.exists():
                 os.remove(temp_path)
-            except Exception:
-                pass
-        return False
+        except Exception as cleanup_err:
+            logger.warning(f"Failed to clean up temp file {temp_path}: {cleanup_err}")
+        raise FileTransferError(f"Failed to copy {source} to {destination}: {e}", source=source, destination=destination)
 
 def format_size(size_bytes: int) -> str:
     """
@@ -128,6 +135,8 @@ def validate_path(path: Path, must_exist: bool = True, must_be_dir: bool = False
         
     Returns:
         Tuple[bool, Optional[str]]: (is_valid, error_message)
+    Raises:
+        FileTransferError: If validation fails and exception is preferred
     """
     if path is None:
         return False, "Path is None"
@@ -154,13 +163,14 @@ def validate_path(path: Path, must_exist: bool = True, must_be_dir: bool = False
                 # Check parent directory
                 parent = path.parent
                 if not parent.exists():
-                    return False, f"Parent directory does not exist: {parent}"
+                    return False, f"Path does not exist: {path}"
                 if not os.access(parent, os.W_OK):
                     return False, f"No write permission for parent directory: {parent}"
                     
         return True, None
         
     except Exception as e:
+        logger.error(f"Error validating path {path}: {e}")
         return False, f"Error validating path: {e}"
 
 def generate_unique_path(base_path: Path, separator: str = "_") -> Path:
@@ -197,12 +207,14 @@ def get_file_size(path: Path) -> int:
         
     Returns:
         int: File size in bytes, or 0 if error
+    Raises:
+        FileTransferError: If file size cannot be determined
     """
     try:
         return path.stat().st_size
     except Exception as e:
         logger.error(f"Error getting file size for {path}: {e}")
-        return 0
+        raise FileTransferError(f"Error getting file size for {path}: {e}", source=path)
 
 def get_directory_size(path: Path) -> int:
     """
@@ -213,7 +225,11 @@ def get_directory_size(path: Path) -> int:
         
     Returns:
         int: Total size in bytes
+    Raises:
+        FileTransferError: If directory does not exist or size cannot be determined
     """
+    if not path.exists():
+        raise FileTransferError(f"Directory does not exist: {path}", source=path)
     total_size = 0
     try:
         for entry in path.glob('**/*'):
@@ -222,4 +238,17 @@ def get_directory_size(path: Path) -> int:
         return total_size
     except Exception as e:
         logger.error(f"Error calculating directory size for {path}: {e}")
-        return 0 
+        raise FileTransferError(f"Error calculating directory size for {path}: {e}", source=path)
+
+def format_duration(seconds: float) -> str:
+    """
+    Format seconds as H:MM:SS string.
+    Args:
+        seconds: Duration in seconds
+    Returns:
+        str: Formatted duration string
+    """
+    seconds = int(round(seconds))
+    hours, remainder = divmod(seconds, 3600)
+    minutes, secs = divmod(remainder, 60)
+    return f"{hours}:{minutes:02}:{secs:02}" 
