@@ -5,6 +5,7 @@ import logging
 import signal
 import sys
 import time
+import webbrowser
 from datetime import datetime
 from pathlib import Path
 from threading import Event
@@ -464,9 +465,166 @@ class EmbeddedTransferBox(BaseTransferBox):
         except Exception as e:
             logger.error(f"Platform-specific cleanup error: {e}")
 
-def create_transfer_box_app():
+class WebUITransferBox(DesktopTransferBox):
+    """Web UI specific TransferBox implementation"""
+    
+    def __init__(self, config_manager=None):
+        # Initialize with web-specific components
+        from src.core.websocket_display import WebSocketDisplay
+        from src.core.web_server import WebServer
+        
+        # Call BaseTransferBox.__init__ instead of DesktopTransferBox to skip Rich display
+        BaseTransferBox.__init__(self, config_manager)
+        
+        # Replace the display with WebSocket display
+        self.display = WebSocketDisplay()
+        
+        # Update components that use display
+        self.state_manager = StateManager(self.display)
+        self.file_transfer = FileTransfer(
+            state_manager=self.state_manager,
+            display=self.display,
+            storage=self.storage,
+            config=self.config,
+            sound_manager=self.sound_manager
+        )
+        
+        # Update transfer operation handler
+        self.transfer_op = TransferOperation(
+            self.display,
+            self.storage,
+            self.file_transfer,
+            self.sound_manager
+        )
+        
+        # Initialize web server
+        self.web_server = WebServer(self.display, self)
+        self.destination_path = None
+        
+    def setup(self):
+        """Web UI specific setup"""
+        super().setup()
+        
+        # Start the web server
+        self.web_server.start_server()
+        
+        # Start NextJS frontend in a separate process
+        self._start_nextjs_frontend()
+        
+        # Open the web browser
+        self._open_web_browser()
+        
+    def _start_nextjs_frontend(self):
+        """Start the NextJS frontend development server"""
+        import subprocess
+        import os
+        
+        webui_path = Path(__file__).parent / "webui"
+        
+        if not webui_path.exists():
+            logger.error("WebUI directory not found")
+            return
+            
+        try:
+            # Check if node_modules exists, if not run npm install
+            if not (webui_path / "node_modules").exists():
+                logger.info("Installing frontend dependencies...")
+                subprocess.run(["npm", "install"], cwd=webui_path, check=True)
+            
+            # Start the development server in the background
+            logger.info("Starting NextJS frontend server...")
+            env = os.environ.copy()
+            env["NEXT_PUBLIC_API_URL"] = "http://127.0.0.1:8000"
+            
+            self.nextjs_process = subprocess.Popen(
+                ["npm", "run", "dev"],
+                cwd=webui_path,
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE
+            )
+            
+            # Give the server time to start
+            time.sleep(5)
+            logger.info("NextJS frontend server started")
+            
+        except subprocess.CalledProcessError as e:
+            logger.error(f"Failed to start NextJS server: {e}")
+        except FileNotFoundError:
+            logger.error("npm not found. Please install Node.js and npm")
+    
+    def _open_web_browser(self):
+        """Open the web browser to the frontend URL"""
+        import webbrowser
+        
+        try:
+            # Wait a moment for servers to be ready
+            time.sleep(3)
+            
+            # Open the browser to the NextJS frontend
+            frontend_url = "http://localhost:3000"
+            logger.info(f"Opening web browser to {frontend_url}")
+            webbrowser.open(frontend_url)
+            
+        except Exception as e:
+            logger.error(f"Failed to open web browser: {e}")
+            logger.info("Please manually navigate to http://localhost:3000")
+    
+    def set_destination_path(self, path: Path):
+        """Set the destination path for transfers"""
+        self.destination_path = path
+        logger.info(f"Destination path set to: {path}")
+    
+    def _get_destination_path(self):
+        """Get destination path for web UI transfers"""
+        # In web UI mode, the path should be set via the web interface
+        if self.destination_path:
+            return self.destination_path
+        
+        # If no path is set, wait for it to be set via web interface
+        self.display.show_status("Waiting for destination path via web interface...")
+        
+        # Poll for destination path to be set
+        while not self.destination_path and not self.stop_event.is_set():
+            time.sleep(1)
+        
+        return self.destination_path
+    
+    def _run_tutorial_flow(self):
+        """Tutorial flow for web UI - handled by frontend"""
+        # In web UI mode, tutorial is handled by the frontend
+        # Just show a message that tutorial is available
+        self.display.show_status("Tutorial available in web interface")
+        time.sleep(2)
+    
+    def cleanup(self):
+        """Web UI specific cleanup"""
+        super().cleanup()
+        
+        # Stop the web server
+        if hasattr(self, 'web_server'):
+            self.web_server.stop_server()
+        
+        # Stop the NextJS process
+        if hasattr(self, 'nextjs_process'):
+            try:
+                self.nextjs_process.terminate()
+                self.nextjs_process.wait(timeout=5)
+            except Exception as e:
+                logger.error(f"Error stopping NextJS process: {e}")
+
+def create_transfer_box_app(use_webui=False):
     """Factory function to create the appropriate TransferBox instance"""
     platform = get_platform()
+    
+    if use_webui:
+        # Only allow web UI on desktop platforms
+        if platform in ["darwin", "windows"]:
+            return WebUITransferBox()
+        else:
+            logger.warning("Web UI not supported on embedded platforms, falling back to terminal UI")
+            return EmbeddedTransferBox()
+    
     if platform in ["darwin", "windows"]:
         return DesktopTransferBox()
     return EmbeddedTransferBox()
@@ -478,6 +636,7 @@ def parse_arguments():
     parser.add_argument("--buffer-sizes", type=str, help="Comma-separated list of buffer sizes in MB for benchmark")
     parser.add_argument("--file-sizes", type=str, help="Comma-separated list of file sizes in MB for benchmark")
     parser.add_argument("--iterations", type=int, default=3, help="Number of iterations per benchmark test")
+    parser.add_argument("--webui", action="store_true", help="Start web UI instead of terminal interface")
     return parser.parse_args()
 
 def run_benchmark(args):
@@ -502,7 +661,7 @@ def main():
         return run_benchmark(args)
     
     try:
-        app = create_transfer_box_app()
+        app = create_transfer_box_app(use_webui=args.webui)
         app.run()
         return 0
     except KeyboardInterrupt:

@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import Header from "./Header";
 import Button from "./Button";
 import PathInput from "./PathInput";
@@ -14,55 +14,12 @@ import FileTransferProgress from "./FileTransferProgress";
 // Import the LogEntry type from LogContainer to ensure consistency
 import type { LogEntry } from "./LogContainer";
 
-// Mock data for initial UI development
+// App metadata - will be dynamic in future
 const APP_DATA = {
   appName: "TransferBox",
   version: "1.4.0",
   author: "Tyler Saari",
 };
-
-const EXAMPLE_LOGS: LogEntry[] = [
-  {
-    id: "1",
-    message: "TransferBox started",
-    timestamp: "2023-08-15 10:30:22",
-    level: "info",
-  },
-  {
-    id: "2",
-    message: "Waiting for source drive",
-    timestamp: "2023-08-15 10:30:23",
-    level: "info",
-  },
-];
-
-// Mock file data for simulation
-const MOCK_FILES = [
-  {
-    name: "DCIM/100GOPRO/GH010047.MP4",
-    size: 1073741,
-  },
-  {
-    name: "DCIM/100GOPRO/GH010042.MP4",
-    size: 3865470566, // ~3.6GB
-  },
-  {
-    name: "DCIM/100GOPRO/GH010043.MP4",
-    size: 4294967296, // 4GB
-  },
-  {
-    name: "DCIM/100GOPRO/GH010044.MP4",
-    size: 2147483648, // 2GB
-  },
-  {
-    name: "DCIM/100GOPRO/GH010045.MP4",
-    size: 1073741824, // 1GB
-  },
-  {
-    name: "DCIM/100GOPRO/GH010046.MP4",
-    size: 536870912, // 512MB
-  },
-];
 
 const TUTORIAL_STEPS = [
   {
@@ -94,7 +51,35 @@ const TUTORIAL_STEPS = [
 // Store whether the tutorial has been shown
 const TUTORIAL_SHOWN_KEY = "transferbox_tutorial_shown";
 
-// This is a placeholder component until we connect to the real backend
+// WebSocket message types
+type WebSocketMessage = {
+  type: string;
+  data: any;
+  timestamp: string;
+};
+
+// Transfer progress data structure from backend
+type BackendTransferProgress = {
+  current_file: string;
+  file_number: number;
+  total_files: number;
+  bytes_transferred: number;
+  total_bytes: number;
+  total_transferred: number;
+  total_size: number;
+  current_file_progress: number;
+  overall_progress: number;
+  status: string;
+  proxy_progress: number;
+  proxy_file_number: number;
+  proxy_total_files: number;
+  speed_bytes_per_sec: number;
+  eta_seconds: number;
+  total_elapsed: number;
+  file_elapsed: number;
+  checksum_elapsed: number;
+};
+
 const TransferBox: React.FC = () => {
   // State
   const [destinationPath, setDestinationPath] = useState("");
@@ -102,283 +87,386 @@ const TransferBox: React.FC = () => {
     undefined
   );
   const [pathError, setPathError] = useState("");
-  const [currentStatus, setCurrentStatus] = useState("TransferBox Ready");
+  const [currentStatus, setCurrentStatus] = useState("Connecting...");
   const [statusType, setStatusType] = useState<
     "info" | "warning" | "error" | "success"
   >("info");
   const [isCardDetected, setIsCardDetected] = useState(false);
   const [deviceName, setDeviceName] = useState("");
-  const [logs, setLogs] = useState<LogEntry[]>(EXAMPLE_LOGS);
+  const [logs, setLogs] = useState<LogEntry[]>([]);
   const [showTutorialModal, setShowTutorialModal] = useState(false);
   const [tutorialStep, setTutorialStep] = useState(0);
-  const [hasSeenTutorial, setHasSeenTutorial] = useState(true); // Default to true, will be updated in useEffect
+  const [hasSeenTutorial, setHasSeenTutorial] = useState(true);
   const [logIdCounter, setLogIdCounter] = useState(0);
 
-  // Transfer simulation state
+  // Transfer progress state - connected to backend
+  const [transferProgress, setTransferProgress] =
+    useState<BackendTransferProgress | null>(null);
   const [isTransferring, setIsTransferring] = useState(false);
-  const [totalProgress, setTotalProgress] = useState(0);
-  const [fileProgress, setFileProgress] = useState(0);
-  const [checksumProgress, setChecksumProgress] = useState(0);
-  const [currentFileIndex, setCurrentFileIndex] = useState(0);
-  const [elapsedTime, setElapsedTime] = useState(0);
-  const [transferSpeed, setTransferSpeed] = useState(0);
-  const [totalTransferred, setTotalTransferred] = useState(0);
-
-  // Add these states for error handling
   const [transferError, setTransferError] = useState<string | null>(null);
   const [transferState, setTransferState] = useState<
     "idle" | "transferring" | "completed" | "failed"
   >("idle");
+  const [destinationSet, setDestinationSet] = useState(false);
 
-  // Calculate total size of all files
-  const totalSize = MOCK_FILES.reduce((acc, file) => acc + file.size, 0);
+  // WebSocket connection
+  const wsRef = useRef<WebSocket | null>(null);
+  const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const [isConnected, setIsConnected] = useState(false);
 
-  // Check local storage on component mount to see if the tutorial has been shown before
+  // API base URL
+  const API_BASE_URL =
+    process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
+
+  // Check local storage for tutorial
   useEffect(() => {
-    // Check if we're in a browser environment
     if (typeof window !== "undefined") {
       try {
-        // For testing, you can clear localStorage to simulate first visit
-        // localStorage.removeItem(TUTORIAL_SHOWN_KEY);
-
         const tutorialShown = localStorage.getItem(TUTORIAL_SHOWN_KEY);
-        console.log("Tutorial shown status:", tutorialShown);
-
-        // Only if explicitly set to 'true', consider it as shown
         if (tutorialShown === "true") {
           setHasSeenTutorial(true);
         } else {
-          // Either null, undefined, or any other value means not seen
           setHasSeenTutorial(false);
           setShowTutorialModal(true);
-          console.log("Opening tutorial modal on first visit");
         }
       } catch (error) {
         console.error("Error accessing localStorage:", error);
-        // If there's an error, show the tutorial anyway
         setShowTutorialModal(true);
       }
     }
   }, []);
 
-  // Simulation timer effect
+  // WebSocket connection and management
   useEffect(() => {
-    let timer: NodeJS.Timeout | null = null;
+    const connectWebSocket = () => {
+      try {
+        const wsUrl = `ws://127.0.0.1:8000/ws`;
+        console.log("Connecting to WebSocket:", wsUrl);
 
-    if (isTransferring) {
-      timer = setInterval(() => {
-        setElapsedTime((prev) => prev + 1);
+        wsRef.current = new WebSocket(wsUrl);
 
-        // Update elapsed time every second
-        if (currentFileIndex < MOCK_FILES.length) {
-          simulateProgress();
-        } else {
-          // Transfer complete
-          if (timer) clearInterval(timer);
-          setIsTransferring(false);
-          setCurrentStatus("Transfer complete");
-          setStatusType("success");
-          addLog("Transfer complete", "success");
-        }
-      }, 1000);
-    }
+        wsRef.current.onopen = () => {
+          console.log("WebSocket connected");
+          setIsConnected(true);
+          setCurrentStatus("Connected to TransferBox");
+          setStatusType("info");
+          addLog("Connected to TransferBox", "info");
 
-    return () => {
-      if (timer) clearInterval(timer);
+          // Clear any reconnection timeout
+          if (reconnectTimeoutRef.current) {
+            clearTimeout(reconnectTimeoutRef.current);
+            reconnectTimeoutRef.current = null;
+          }
+        };
+
+        wsRef.current.onmessage = (event) => {
+          try {
+            const message: WebSocketMessage = JSON.parse(event.data);
+            handleWebSocketMessage(message);
+          } catch (error) {
+            console.error("Error parsing WebSocket message:", error);
+          }
+        };
+
+        wsRef.current.onclose = () => {
+          console.log("WebSocket disconnected");
+          setIsConnected(false);
+          setCurrentStatus("Disconnected from TransferBox");
+          setStatusType("warning");
+
+          // Attempt to reconnect after 3 seconds
+          reconnectTimeoutRef.current = setTimeout(() => {
+            console.log("Attempting to reconnect...");
+            connectWebSocket();
+          }, 3000);
+        };
+
+        wsRef.current.onerror = (error) => {
+          console.error("WebSocket error:", error);
+          setCurrentStatus("Connection error");
+          setStatusType("error");
+        };
+      } catch (error) {
+        console.error("Error creating WebSocket:", error);
+        setCurrentStatus("Failed to connect");
+        setStatusType("error");
+      }
     };
-  }, [isTransferring, currentFileIndex, fileProgress, checksumProgress]);
 
-  // Simulate progress for current file
-  const simulateProgress = () => {
-    const currentFile = MOCK_FILES[currentFileIndex];
+    connectWebSocket();
 
-    // File transfer progress
-    if (fileProgress < 100) {
-      // Simulate realistic transfer speed (between 20MB/s and 120MB/s)
-      const speed = Math.random() * 100000000 + 20000000;
-      setTransferSpeed(speed);
-
-      // How much would be transferred in 1 second at this speed
-      const bytesPerInterval = speed;
-      const fileSizeBytes = currentFile.size;
-      const increment = (bytesPerInterval / fileSizeBytes) * 100;
-
-      // Cap the increment to ensure we don't exceed 100%
-      const newProgress = Math.min(fileProgress + increment, 100);
-      setFileProgress(newProgress);
-
-      // Update total transferred
-      const percentComplete = newProgress / 100;
-      const bytesTransferred = fileSizeBytes * percentComplete;
-      setTotalTransferred(
-        (prev) => prev + bytesTransferred - fileSizeBytes * (fileProgress / 100)
-      );
-
-      // Log significant progress
-      if (Math.floor(newProgress / 20) > Math.floor(fileProgress / 20)) {
-        addLog(
-          `Transferring ${currentFile.name}: ${Math.floor(newProgress)}%`,
-          "info"
-        );
+    // Cleanup on unmount
+    return () => {
+      if (reconnectTimeoutRef.current) {
+        clearTimeout(reconnectTimeoutRef.current);
       }
-
-      // Update total progress continuously - based on completed files plus current file progress
-      const completedFilesSize = MOCK_FILES.slice(0, currentFileIndex).reduce(
-        (acc, file) => acc + file.size,
-        0
-      );
-      const currentFileContribution = currentFile.size * (newProgress / 100);
-      const newTotalTransferred = completedFilesSize + currentFileContribution;
-      const newTotalProgress = (newTotalTransferred / totalSize) * 100;
-      setTotalProgress(newTotalProgress);
-    }
-    // Start checksum after file transfer completes
-    else if (checksumProgress < 100) {
-      // Checksum is typically faster - simulate checksum speed
-      const checksumSpeed = Math.random() * 150000000 + 50000000; // 50-200 MB/s
-      setTransferSpeed(checksumSpeed);
-
-      // Increment for checksum progress
-      const increment = 5 + Math.random() * 10; // 5-15% per second
-      const newProgress = Math.min(checksumProgress + increment, 100);
-      setChecksumProgress(newProgress);
-
-      // Log significant checksum progress
-      if (Math.floor(newProgress / 25) > Math.floor(checksumProgress / 25)) {
-        addLog(
-          `Checksumming ${currentFile.name}: ${Math.floor(newProgress)}%`,
-          "info"
-        );
+      if (wsRef.current) {
+        wsRef.current.close();
       }
-    }
-    // Move to next file when both transfer and checksum are complete
-    else {
-      addLog(
-        `Successfully transferred and verified: ${currentFile.name}`,
-        "success"
-      );
-      setCurrentFileIndex((prev) => prev + 1);
-      setFileProgress(0);
-      setChecksumProgress(0);
+    };
+  }, []);
+
+  // Handle WebSocket messages from backend
+  const handleWebSocketMessage = (message: WebSocketMessage) => {
+    console.log("Received WebSocket message:", message);
+
+    switch (message.type) {
+      case "initial_state":
+        // Handle initial state from backend
+        if (message.data.status) {
+          setCurrentStatus(message.data.status);
+          setStatusType("info");
+        }
+        if (message.data.errors && message.data.errors.length > 0) {
+          message.data.errors.forEach((error: string) => {
+            addLog(error, "error");
+          });
+        }
+        if (message.data.progress) {
+          setTransferProgress(message.data.progress);
+          setIsTransferring(message.data.progress.status !== "READY");
+        }
+        break;
+
+      case "status":
+        setCurrentStatus(message.data.message);
+
+        // Update card detection based on status message
+        if (
+          message.data.message.toLowerCase().includes("card detected") ||
+          message.data.message.toLowerCase().includes("source drive")
+        ) {
+          setIsCardDetected(true);
+          setDeviceName("SD Card");
+        } else if (
+          message.data.message.toLowerCase().includes("waiting for source")
+        ) {
+          setIsCardDetected(false);
+          setDeviceName("");
+        }
+
+        // Set appropriate status type
+        if (
+          message.data.message.toLowerCase().includes("error") ||
+          message.data.message.toLowerCase().includes("failed")
+        ) {
+          setStatusType("error");
+        } else if (
+          message.data.message.toLowerCase().includes("complete") ||
+          message.data.message.toLowerCase().includes("success")
+        ) {
+          setStatusType("success");
+        } else if (message.data.message.toLowerCase().includes("warning")) {
+          setStatusType("warning");
+        } else {
+          setStatusType("info");
+        }
+
+        addLog(message.data.message, "info");
+        break;
+
+      case "progress":
+        console.log("Progress data received:", message.data);
+        setTransferProgress(message.data);
+
+        // Update transfer state and UI based on progress status
+        const status = message.data.status;
+        console.log("Transfer status:", status);
+
+        if (
+          status === "COPYING" ||
+          status === "CHECKSUMMING" ||
+          status === "GENERATING_PROXY" ||
+          status === "VERIFYING"
+        ) {
+          setIsTransferring(true);
+          setTransferState("transferring");
+          setIsCardDetected(true);
+          setDeviceName("SD Card");
+
+          // Update status message based on current operation
+          let statusMessage = "";
+          switch (status) {
+            case "COPYING":
+              statusMessage = `Copying files... (${message.data.file_number}/${message.data.total_files})`;
+              break;
+            case "CHECKSUMMING":
+              statusMessage = `Verifying files... (${message.data.file_number}/${message.data.total_files})`;
+              break;
+            case "GENERATING_PROXY":
+              statusMessage = `Generating proxies... (${message.data.proxy_file_number}/${message.data.proxy_total_files})`;
+              break;
+            case "VERIFYING":
+              statusMessage = "Verifying transfer...";
+              break;
+          }
+          setCurrentStatus(statusMessage);
+          setStatusType("info");
+        } else if (status === "SUCCESS") {
+          setIsTransferring(false);
+          setTransferState("completed");
+          setStatusType("success");
+          setCurrentStatus("Transfer completed successfully");
+          setIsCardDetected(false);
+          setDeviceName("");
+          // Reset destination after successful transfer
+          setDestinationSet(false);
+          setIsPathValid(undefined);
+          addLog("Transfer completed successfully", "success");
+        } else if (status === "ERROR") {
+          setIsTransferring(false);
+          setTransferState("failed");
+          setStatusType("error");
+          setCurrentStatus("Transfer failed");
+          setTransferError("Transfer failed");
+          setIsCardDetected(false);
+          setDeviceName("");
+          // Reset destination after failed transfer
+          setDestinationSet(false);
+          setIsPathValid(undefined);
+          addLog("Transfer failed", "error");
+        }
+        break;
+
+      case "error":
+        setTransferError(message.data.message);
+        setTransferState("failed");
+        setStatusType("error");
+        setIsTransferring(false);
+        setIsCardDetected(false);
+        setDeviceName("");
+        // Reset destination after error
+        setDestinationSet(false);
+        setIsPathValid(undefined);
+        addLog(message.data.message, "error");
+        break;
+
+      case "clear":
+        if (!message.data.preserve_errors) {
+          setTransferError(null);
+          // Clear logs except errors if preserve_errors is false
+          setLogs((prev) => prev.filter((log) => log.level !== "error"));
+        }
+        setCurrentStatus("");
+        setTransferProgress(null);
+        setIsTransferring(false);
+        setIsCardDetected(false);
+        setDeviceName("");
+        break;
+
+      case "pong":
+        // Handle ping/pong for connection keepalive
+        break;
+
+      default:
+        console.log("Unknown WebSocket message type:", message.type);
     }
   };
 
-  // Mock handlers for UI interaction
-  const handleDestinationSubmit = () => {
-    if (destinationPath.trim() === "") {
+  // API functions
+  const validatePath = async (path: string) => {
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/validate-path`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ path }),
+      });
+
+      const result = await response.json();
+      return result;
+    } catch (error) {
+      console.error("Error validating path:", error);
+      return { is_valid: false, error_message: "Network error" };
+    }
+  };
+
+  const setDestinationPathAPI = async (
+    path: string
+  ): Promise<{ success: boolean; message?: string; path?: string }> => {
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/set-destination`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ path }),
+      });
+
+      const result = await response.json();
+      return result;
+    } catch (error) {
+      console.error("Error setting destination path:", error);
+      return { success: false, message: "Network error" };
+    }
+  };
+
+  // Event handlers
+  const handleDestinationSubmit = async () => {
+    if (!destinationPath.trim()) {
+      setPathError("Please enter a destination path");
       setIsPathValid(false);
-      setPathError("Destination path cannot be empty");
       return;
     }
 
-    // This would be validated by the backend in the real implementation
-    const mockValidation =
-      destinationPath.startsWith("/") || /^[A-Z]:\\/.test(destinationPath);
-    setIsPathValid(mockValidation);
+    setCurrentStatus("Validating path...");
+    addLog("Validating destination path...", "info");
 
-    if (mockValidation) {
-      setCurrentStatus(`Destination set to: ${destinationPath}`);
-      setStatusType("success");
-      addLog(`Destination set to: ${destinationPath}`, "success");
+    const validation = await validatePath(destinationPath);
+
+    if (validation.is_valid) {
+      setIsPathValid(true);
+      setPathError("");
+
+      // Set the destination in the backend
+      const result = await setDestinationPathAPI(validation.sanitized_path);
+
+      if (result.success) {
+        setCurrentStatus("Destination path set successfully");
+        setStatusType("success");
+        setDestinationSet(true);
+        addLog(`Destination set to: ${result.path}`, "success");
+      } else {
+        setPathError(result.message || "Failed to set destination");
+        setIsPathValid(false);
+        setStatusType("error");
+        addLog(`Failed to set destination: ${result.message}`, "error");
+      }
     } else {
-      setPathError("Invalid path format");
-      addLog(`Invalid destination path: ${destinationPath}`, "error");
+      setIsPathValid(false);
+      setPathError(validation.error_message || "Invalid path");
+      setStatusType("error");
+      addLog(`Path validation failed: ${validation.error_message}`, "error");
     }
-  };
-
-  const handleCardInserted = () => {
-    setIsCardDetected(true);
-    setDeviceName("SD CARD (F:)");
-    setCurrentStatus("SD Card detected. Starting transfer...");
-    setStatusType("info");
-    setTransferError(null);
-    setTransferState("transferring");
-    addLog("SD Card detected: SD CARD (F:)", "info");
-
-    // Reset transfer simulation stats
-    setIsTransferring(true);
-    setTotalProgress(0);
-    setFileProgress(0);
-    setChecksumProgress(0);
-    setCurrentFileIndex(0);
-    setElapsedTime(0);
-    setTransferSpeed(0);
-    setTotalTransferred(0);
-
-    // Log the start of the transfer
-    addLog(
-      `Starting transfer of ${MOCK_FILES.length} files (${(
-        totalSize / 1073741824
-      ).toFixed(2)} GB)`,
-      "info"
-    );
-
-    // Force a test error after a short delay
-    console.log("Setting up error simulation...");
-    setTimeout(() => {
-      console.log("Triggering simulated failure now");
-      simulateRandomFailure();
-    }, 3000); // Fail after 3 seconds - more predictable for testing
-  };
-
-  const simulateCardRemoval = () => {
-    // Only show error if we were actively transferring
-    if (isTransferring) {
-      setTransferError(
-        "Transfer Failed: SD Card was unexpectedly disconnected"
-      );
-      setTransferState("failed");
-      addLog(
-        "ERROR: Card removed during active transfer. Data may be incomplete or corrupted.",
-        "error"
-      );
-    } else {
-      addLog("Card removed", "info");
-    }
-
-    setIsCardDetected(false);
-    setDeviceName("");
-    setIsTransferring(false);
-    setCurrentStatus("Card removed. Transfer stopped.");
-    setStatusType("error"); // Changed from warning to error
   };
 
   const resetTransfer = () => {
-    setDestinationPath("");
-    setIsPathValid(undefined);
-    setPathError("");
-    setCurrentStatus("TransferBox Ready");
-    setStatusType("info");
-    setIsCardDetected(false);
-    setDeviceName("");
-    setIsTransferring(false);
-    setTotalProgress(0);
-    setFileProgress(0);
-    setChecksumProgress(0);
-    setCurrentFileIndex(0);
-    setElapsedTime(0);
-    setTransferSpeed(0);
-    setTotalTransferred(0);
     setTransferError(null);
     setTransferState("idle");
-    // Keep logs for history
+    setIsTransferring(false);
+    setTransferProgress(null);
+    setStatusType("info");
+    setCurrentStatus("Ready for transfer");
+    setDestinationSet(false);
+    setIsPathValid(undefined);
+    setIsCardDetected(false);
+    setDeviceName("");
+    addLog("Transfer reset", "info");
   };
 
   const addLog = (
     message: string,
     level: "info" | "warning" | "error" | "success" = "info"
   ) => {
-    // Create a unique ID by combining timestamp with a counter
-    const uniqueId = `${Date.now()}-${logIdCounter}`;
-    setLogIdCounter((prev) => prev + 1);
-
     const newLog: LogEntry = {
-      id: uniqueId,
+      id: (logIdCounter + 1).toString(),
       message,
-      timestamp: new Date().toISOString().replace("T", " ").substring(0, 19),
+      timestamp: new Date().toLocaleString(),
       level,
     };
-    setLogs((prevLogs) => [...prevLogs, newLog]);
+    setLogs((prev) => [...prev, newLog]);
+    setLogIdCounter((prev) => prev + 1);
   };
 
   // Tutorial handlers
@@ -391,14 +479,14 @@ const TransferBox: React.FC = () => {
   };
 
   const handleTutorialComplete = () => {
-    // Mark the tutorial as seen
-    if (typeof window !== "undefined") {
-      localStorage.setItem(TUTORIAL_SHOWN_KEY, "true");
-      setHasSeenTutorial(true);
-    }
     setShowTutorialModal(false);
     setTutorialStep(0);
-    addLog("Tutorial completed", "success");
+    try {
+      localStorage.setItem(TUTORIAL_SHOWN_KEY, "true");
+      setHasSeenTutorial(true);
+    } catch (error) {
+      console.error("Error saving tutorial state:", error);
+    }
   };
 
   const handleShowTutorial = () => {
@@ -407,74 +495,39 @@ const TransferBox: React.FC = () => {
   };
 
   const handleSkipTutorial = () => {
-    // Mark the tutorial as seen even if skipped
-    if (typeof window !== "undefined") {
-      localStorage.setItem(TUTORIAL_SHOWN_KEY, "true");
-      setHasSeenTutorial(true);
-    }
-    setShowTutorialModal(false);
-    setTutorialStep(0);
-    addLog("Tutorial skipped", "info");
+    handleTutorialComplete();
   };
 
-  // For development - reset tutorial state
   const resetTutorialState = () => {
-    if (typeof window !== "undefined") {
+    try {
       localStorage.removeItem(TUTORIAL_SHOWN_KEY);
-      window.location.reload();
+      setHasSeenTutorial(false);
+      addLog("Tutorial state reset - refresh to see tutorial", "info");
+    } catch (error) {
+      console.error("Error resetting tutorial state:", error);
     }
   };
 
-  // Calculate remaining time for total transfer
-  const calculateRemainingTime = () => {
-    if (transferSpeed === 0 || totalProgress === 100) return 0;
-
-    const remainingBytes = totalSize - totalTransferred;
-    return remainingBytes / transferSpeed;
+  // Helper functions for transfer progress
+  const formatBytes = (bytes: number) => {
+    if (bytes === 0) return "0 Bytes";
+    const k = 1024;
+    const sizes = ["Bytes", "KB", "MB", "GB", "TB"];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + " " + sizes[i];
   };
 
-  // Calculate remaining time for current file
-  const calculateFileRemainingTime = () => {
-    if (transferSpeed === 0 || fileProgress === 100) return 0;
+  const formatTime = (seconds: number) => {
+    const h = Math.floor(seconds / 3600);
+    const m = Math.floor((seconds % 3600) / 60);
+    const s = Math.floor(seconds % 60);
 
-    const currentFile =
-      currentFileIndex < MOCK_FILES.length
-        ? MOCK_FILES[currentFileIndex]
-        : null;
-    if (!currentFile) return 0;
-
-    const remainingBytes = currentFile.size * (1 - fileProgress / 100);
-    return remainingBytes / transferSpeed;
-  };
-
-  // Simulate a random failure
-  const simulateRandomFailure = () => {
-    console.log("simulateRandomFailure called", { isTransferring });
-
-    // Remove the isTransferring check - always show the error
-    const errorTypes = [
-      "Transfer Failed: Unexpected I/O error while reading from source",
-      "Transfer Failed: File system error on destination drive",
-      "Transfer Failed: Corrupted file detected during verification",
-      "Transfer Failed: Write permission denied on destination",
-    ];
-
-    const randomError =
-      errorTypes[Math.floor(Math.random() * errorTypes.length)];
-    console.log("Setting error:", randomError);
-
-    // Force display of error with timeout to ensure state updates properly
-    setTimeout(() => {
-      setTransferError(randomError);
-      setTransferState("failed");
-      setIsTransferring(false);
-      setStatusType("error");
-      setCurrentStatus("Transfer failed");
-      addLog(`ERROR: ${randomError}`, "error");
-
-      // Force a re-render by updating some state
-      setTotalProgress((prev) => (prev > 0 ? prev - 0.1 : 0.1));
-    }, 100);
+    if (h > 0) {
+      return `${h}:${m.toString().padStart(2, "0")}:${s
+        .toString()
+        .padStart(2, "0")}`;
+    }
+    return `${m}:${s.toString().padStart(2, "0")}`;
   };
 
   return (
@@ -489,13 +542,22 @@ const TransferBox: React.FC = () => {
       <main className="container mx-auto p-4 md:p-6">
         {/* Dev button for testing - remove in production */}
         {process.env.NODE_ENV === "development" && (
-          <div className="mb-4">
+          <div className="mb-4 flex gap-2">
             <Button
               label="Reset Tutorial State"
               onClick={resetTutorialState}
               size="sm"
               variant="secondary"
             />
+            <div
+              className={`px-3 py-1 rounded text-sm ${
+                isConnected
+                  ? "bg-green-100 text-green-800"
+                  : "bg-red-100 text-red-800"
+              }`}
+            >
+              {isConnected ? "Connected" : "Disconnected"}
+            </div>
           </div>
         )}
 
@@ -520,12 +582,28 @@ const TransferBox: React.FC = () => {
                       onSubmit={handleDestinationSubmit}
                     />
                   </div>
-                  <div className="ml-2 flex-shrink-0 self-start">
+                  <div className="ml-2 flex-shrink-0 self-start flex gap-2">
                     <Button
-                      label="Set"
+                      label={destinationSet ? "Set ✓" : "Set"}
                       onClick={handleDestinationSubmit}
                       size="md"
+                      disabled={
+                        !isConnected || destinationSet || isTransferring
+                      }
+                      variant={destinationSet ? "success" : "primary"}
                     />
+                    {destinationSet && !isTransferring && (
+                      <Button
+                        label="Reset"
+                        onClick={() => {
+                          setDestinationSet(false);
+                          setIsPathValid(undefined);
+                          addLog("Destination reset", "info");
+                        }}
+                        size="md"
+                        variant="secondary"
+                      />
+                    )}
                   </div>
                 </div>
               </div>
@@ -575,125 +653,129 @@ const TransferBox: React.FC = () => {
                 </div>
               )}
 
-              {isTransferring && (
+              {/* Transfer Progress Display */}
+              {transferProgress && isTransferring && (
                 <div className="space-y-5 mb-6">
+                  {/* Debug info - remove in production */}
+                  {process.env.NODE_ENV === "development" && (
+                    <div className="text-xs text-gray-500 p-2 bg-gray-100 rounded">
+                      <div>Status: {transferProgress.status}</div>
+                      <div>
+                        Overall Progress: {transferProgress.overall_progress}%
+                      </div>
+                      <div>
+                        File Progress: {transferProgress.current_file_progress}%
+                      </div>
+                      <div>Current File: {transferProgress.current_file}</div>
+                      <div>
+                        File {transferProgress.file_number}/
+                        {transferProgress.total_files}
+                      </div>
+                    </div>
+                  )}
+
                   {/* Overall Transfer Progress */}
                   <FileTransferProgress
                     title="Total Transfer Progress"
-                    progress={totalProgress}
+                    progress={transferProgress.overall_progress || 0}
                     itemCount={{
-                      current: currentFileIndex + (fileProgress < 100 ? 1 : 0),
-                      total: MOCK_FILES.length,
+                      current: transferProgress.file_number || 0,
+                      total: transferProgress.total_files || 0,
                     }}
                     size={{
-                      transferred: totalTransferred,
-                      total: totalSize,
+                      transferred: transferProgress.total_transferred || 0,
+                      total: transferProgress.total_size || 0,
                     }}
-                    speed={transferSpeed}
+                    speed={transferProgress.speed_bytes_per_sec || 0}
                     time={{
-                      elapsed: elapsedTime,
-                      remaining: calculateRemainingTime(),
+                      elapsed: transferProgress.total_elapsed || 0,
+                      remaining: transferProgress.eta_seconds || 0,
                     }}
                   />
 
-                  {/* Current File Transfer Progress */}
-                  {currentFileIndex < MOCK_FILES.length && (
-                    <FileTransferProgress
-                      title="File Transfer Progress"
-                      progress={fileProgress}
-                      currentItem={MOCK_FILES[currentFileIndex]?.name}
-                      size={{
-                        transferred:
-                          (fileProgress / 100) *
-                          MOCK_FILES[currentFileIndex]?.size,
-                        total: MOCK_FILES[currentFileIndex]?.size,
-                      }}
-                      speed={transferSpeed}
-                      time={{
-                        elapsed: elapsedTime,
-                        remaining: calculateFileRemainingTime(),
-                      }}
-                    />
-                  )}
-
-                  {/* Checksum Progress (only show when file transfer is complete) */}
-                  {fileProgress === 100 &&
-                    checksumProgress < 100 &&
-                    currentFileIndex < MOCK_FILES.length && (
+                  {/* File Transfer Progress - Show when copying */}
+                  {transferProgress.current_file &&
+                    transferProgress.status === "COPYING" && (
                       <FileTransferProgress
-                        title="Checksumming Progress"
-                        progress={checksumProgress}
-                        currentItem={MOCK_FILES[currentFileIndex]?.name}
+                        title="File Transfer Progress"
+                        progress={transferProgress.current_file_progress || 0}
+                        currentItem={transferProgress.current_file}
                         size={{
-                          transferred:
-                            (checksumProgress / 100) *
-                            MOCK_FILES[currentFileIndex]?.size,
-                          total: MOCK_FILES[currentFileIndex]?.size,
+                          transferred: transferProgress.bytes_transferred || 0,
+                          total: transferProgress.total_bytes || 0,
                         }}
-                        speed={transferSpeed}
+                        speed={transferProgress.speed_bytes_per_sec || 0}
                         time={{
-                          elapsed: elapsedTime,
-                          remaining: (100 - checksumProgress) / 10, // Rough estimate
+                          elapsed: transferProgress.file_elapsed || 0,
+                          remaining: transferProgress.eta_seconds || 0,
+                        }}
+                      />
+                    )}
+
+                  {/* Checksum Progress - Show when checksumming */}
+                  {transferProgress.current_file &&
+                    transferProgress.status === "CHECKSUMMING" && (
+                      <FileTransferProgress
+                        title="Checksum Verification Progress"
+                        progress={transferProgress.current_file_progress || 0}
+                        currentItem={transferProgress.current_file}
+                        size={{
+                          transferred: transferProgress.bytes_transferred || 0,
+                          total: transferProgress.total_bytes || 0,
+                        }}
+                        speed={transferProgress.speed_bytes_per_sec || 0}
+                        time={{
+                          elapsed: transferProgress.checksum_elapsed || 0,
+                          remaining: transferProgress.eta_seconds || 0,
+                        }}
+                      />
+                    )}
+
+                  {/* Proxy Generation Progress - Show when generating proxies */}
+                  {transferProgress.status === "GENERATING_PROXY" &&
+                    transferProgress.proxy_progress > 0 && (
+                      <FileTransferProgress
+                        title="Proxy Generation Progress"
+                        progress={transferProgress.proxy_progress || 0}
+                        itemCount={{
+                          current: transferProgress.proxy_file_number || 0,
+                          total: transferProgress.proxy_total_files || 0,
+                        }}
+                        time={{
+                          elapsed: transferProgress.total_elapsed || 0,
+                          remaining: transferProgress.eta_seconds || 0,
                         }}
                       />
                     )}
                 </div>
               )}
-
-              <div className="mt-6 flex flex-wrap gap-2">
-                {!isCardDetected ? (
-                  <Button
-                    label="Simulate Card Insert"
-                    onClick={handleCardInserted}
-                    disabled={!isPathValid}
-                    variant="primary"
-                    size="md"
-                  />
-                ) : (
-                  <Button
-                    label="Simulate Card Removal"
-                    onClick={simulateCardRemoval}
-                    variant="secondary"
-                    size="md"
-                  />
-                )}
-
-                <Button
-                  label="Reset"
-                  onClick={resetTransfer}
-                  variant="danger"
-                  size="md"
-                />
-              </div>
             </div>
           </div>
 
           {/* Right Column - Logs */}
-          <div className="md:col-span-1">
-            <LogContainer logs={logs} title="Transfer Logs" maxHeight="600px" />
+          <div className="space-y-6">
+            <LogContainer logs={logs} />
           </div>
         </div>
-      </main>
 
-      {/* Tutorial Modal */}
-      <Modal
-        isOpen={showTutorialModal}
-        onClose={handleSkipTutorial}
-        title="TransferBox Tutorial"
-        maxWidth="xl"
-        disableClickOutside={!hasSeenTutorial}
-        hideCloseButton={false}
-      >
-        <TutorialGuide
-          steps={TUTORIAL_STEPS}
-          currentStep={tutorialStep}
-          onNext={handleTutorialNext}
-          onPrevious={handleTutorialPrevious}
-          onSkip={handleSkipTutorial}
-          onComplete={handleTutorialComplete}
-          inModal={true}
-        />
-      </Modal>
+        {/* Tutorial Modal */}
+        {showTutorialModal && (
+          <Modal
+            isOpen={showTutorialModal}
+            onClose={handleSkipTutorial}
+            title="Tutorial"
+          >
+            <TutorialGuide
+              steps={TUTORIAL_STEPS}
+              currentStep={tutorialStep}
+              onNext={handleTutorialNext}
+              onPrevious={handleTutorialPrevious}
+              onComplete={handleTutorialComplete}
+              onSkip={handleSkipTutorial}
+            />
+          </Modal>
+        )}
+      </main>
     </div>
   );
 };
