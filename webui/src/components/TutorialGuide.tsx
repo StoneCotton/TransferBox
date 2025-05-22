@@ -1,6 +1,7 @@
 "use client";
 
 import React from "react";
+import Image from "next/image";
 import Button from "./Button";
 
 interface TutorialStep {
@@ -15,7 +16,6 @@ interface TutorialGuideProps {
   currentStep: number;
   onNext: () => void;
   onPrevious: () => void;
-  onSkip: () => void;
   onComplete: () => void;
   className?: string;
   inModal?: boolean;
@@ -26,7 +26,6 @@ const TutorialGuide: React.FC<TutorialGuideProps> = ({
   currentStep,
   onNext,
   onPrevious,
-  onSkip,
   onComplete,
   className = "",
   inModal = false,
@@ -38,27 +37,21 @@ const TutorialGuide: React.FC<TutorialGuideProps> = ({
   return (
     <div
       className={`
-        ${inModal ? "" : "border border-blue-200 rounded-md bg-blue-50"}
+        ${inModal ? "" : "border border-slate-200 rounded-md bg-slate-50"}
         ${className}
       `}
     >
       {!inModal && (
-        <div className="border-b border-blue-200 bg-blue-100 px-4 py-3">
+        <div className="border-b border-slate-200 bg-slate-100 px-4 py-3">
           <div className="flex justify-between items-center">
-            <h3 className="font-medium text-blue-800">Tutorial Guide</h3>
-            <Button
-              label="Skip Tutorial"
-              variant="secondary"
-              size="sm"
-              onClick={onSkip}
-            />
+            <h3 className="font-medium text-slate-800">Tutorial Guide</h3>
           </div>
         </div>
       )}
 
       <div className="p-5">
         <div className="mb-2 flex items-center">
-          <div className="bg-blue-600 text-white rounded-full h-6 w-6 flex items-center justify-center text-sm mr-2">
+          <div className="bg-slate-600 text-white rounded-full h-6 w-6 flex items-center justify-center text-sm mr-2">
             {currentStep + 1}
           </div>
           <h4 className="font-medium text-lg">{currentStepData.title}</h4>
@@ -68,10 +61,13 @@ const TutorialGuide: React.FC<TutorialGuideProps> = ({
 
         {currentStepData.image && (
           <div className="mb-6">
-            <img
+            <Image
               src={currentStepData.image}
               alt={`Tutorial step ${currentStep + 1}`}
+              width={800}
+              height={600}
               className="max-w-full rounded-md border border-slate-200"
+              style={{ height: "auto" }}
             />
           </div>
         )}
@@ -96,7 +92,7 @@ const TutorialGuide: React.FC<TutorialGuideProps> = ({
         className={`${
           inModal
             ? "border-t border-slate-200"
-            : "bg-blue-100 border-t border-blue-200"
+            : "bg-slate-100 border-t border-slate-200"
         } px-4 py-3`}
       >
         <div className="flex justify-center">
@@ -105,7 +101,7 @@ const TutorialGuide: React.FC<TutorialGuideProps> = ({
               key={`step-${index}`}
               className={`
                 h-2 w-2 rounded-full mx-1
-                ${index === currentStep ? "bg-blue-600" : "bg-blue-300"}
+                ${index === currentStep ? "bg-slate-600" : "bg-slate-300"}
               `}
             />
           ))}

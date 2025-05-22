@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
 import Header from "./Header";
 import Button from "./Button";
 import PathInput from "./PathInput";
@@ -52,11 +52,11 @@ const TUTORIAL_STEPS = [
 const TUTORIAL_SHOWN_KEY = "transferbox_tutorial_shown";
 
 // WebSocket message types
-type WebSocketMessage = {
+interface WebSocketMessage {
   type: string;
-  data: any;
+  data: Record<string, unknown>;
   timestamp: string;
-};
+}
 
 // Transfer progress data structure from backend
 type BackendTransferProgress = {
@@ -96,7 +96,7 @@ const TransferBox: React.FC = () => {
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [showTutorialModal, setShowTutorialModal] = useState(false);
   const [tutorialStep, setTutorialStep] = useState(0);
-  const [hasSeenTutorial, setHasSeenTutorial] = useState(true);
+  const [, setHasSeenTutorial] = useState(true);
   const [logIdCounter, setLogIdCounter] = useState(0);
 
   // Transfer progress state - connected to backend
@@ -104,7 +104,7 @@ const TransferBox: React.FC = () => {
     useState<BackendTransferProgress | null>(null);
   const [isTransferring, setIsTransferring] = useState(false);
   const [transferError, setTransferError] = useState<string | null>(null);
-  const [transferState, setTransferState] = useState<
+  const [, setTransferState] = useState<
     "idle" | "transferring" | "completed" | "failed"
   >("idle");
   const [destinationSet, setDestinationSet] = useState(false);
@@ -204,42 +204,49 @@ const TransferBox: React.FC = () => {
         wsRef.current.close();
       }
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Handle WebSocket messages from backend
-  const handleWebSocketMessage = (message: WebSocketMessage) => {
+  const handleWebSocketMessage = useCallback((message: WebSocketMessage) => {
     console.log("Received WebSocket message:", message);
 
     switch (message.type) {
       case "initial_state":
         // Handle initial state from backend
-        if (message.data.status) {
-          setCurrentStatus(message.data.status);
+        const initialData = message.data as {
+          status?: string;
+          errors?: string[];
+          progress?: BackendTransferProgress;
+        };
+        if (initialData.status) {
+          setCurrentStatus(initialData.status);
           setStatusType("info");
         }
-        if (message.data.errors && message.data.errors.length > 0) {
-          message.data.errors.forEach((error: string) => {
+        if (initialData.errors && initialData.errors.length > 0) {
+          initialData.errors.forEach((error: string) => {
             addLog(error, "error");
           });
         }
-        if (message.data.progress) {
-          setTransferProgress(message.data.progress);
-          setIsTransferring(message.data.progress.status !== "READY");
+        if (initialData.progress) {
+          setTransferProgress(initialData.progress);
+          setIsTransferring(initialData.progress.status !== "READY");
         }
         break;
 
       case "status":
-        setCurrentStatus(message.data.message);
+        const statusData = message.data as { message: string };
+        setCurrentStatus(statusData.message);
 
         // Update card detection based on status message
         if (
-          message.data.message.toLowerCase().includes("card detected") ||
-          message.data.message.toLowerCase().includes("source drive")
+          statusData.message.toLowerCase().includes("card detected") ||
+          statusData.message.toLowerCase().includes("source drive")
         ) {
           setIsCardDetected(true);
           setDeviceName("SD Card");
         } else if (
-          message.data.message.toLowerCase().includes("waiting for source")
+          statusData.message.toLowerCase().includes("waiting for source")
         ) {
           setIsCardDetected(false);
           setDeviceName("");
@@ -247,30 +254,31 @@ const TransferBox: React.FC = () => {
 
         // Set appropriate status type
         if (
-          message.data.message.toLowerCase().includes("error") ||
-          message.data.message.toLowerCase().includes("failed")
+          statusData.message.toLowerCase().includes("error") ||
+          statusData.message.toLowerCase().includes("failed")
         ) {
           setStatusType("error");
         } else if (
-          message.data.message.toLowerCase().includes("complete") ||
-          message.data.message.toLowerCase().includes("success")
+          statusData.message.toLowerCase().includes("complete") ||
+          statusData.message.toLowerCase().includes("success")
         ) {
           setStatusType("success");
-        } else if (message.data.message.toLowerCase().includes("warning")) {
+        } else if (statusData.message.toLowerCase().includes("warning")) {
           setStatusType("warning");
         } else {
           setStatusType("info");
         }
 
-        addLog(message.data.message, "info");
+        addLog(statusData.message, "info");
         break;
 
       case "progress":
-        console.log("Progress data received:", message.data);
-        setTransferProgress(message.data);
+        const progressData = message.data as BackendTransferProgress;
+        console.log("Progress data received:", progressData);
+        setTransferProgress(progressData);
 
         // Update transfer state and UI based on progress status
-        const status = message.data.status;
+        const status = progressData.status;
         console.log("Transfer status:", status);
 
         if (
@@ -288,13 +296,13 @@ const TransferBox: React.FC = () => {
           let statusMessage = "";
           switch (status) {
             case "COPYING":
-              statusMessage = `Copying files... (${message.data.file_number}/${message.data.total_files})`;
+              statusMessage = `Copying files... (${progressData.file_number}/${progressData.total_files})`;
               break;
             case "CHECKSUMMING":
-              statusMessage = `Verifying files... (${message.data.file_number}/${message.data.total_files})`;
+              statusMessage = `Verifying files... (${progressData.file_number}/${progressData.total_files})`;
               break;
             case "GENERATING_PROXY":
-              statusMessage = `Generating proxies... (${message.data.proxy_file_number}/${message.data.proxy_total_files})`;
+              statusMessage = `Generating proxies... (${progressData.proxy_file_number}/${progressData.proxy_total_files})`;
               break;
             case "VERIFYING":
               statusMessage = "Verifying transfer...";
@@ -329,7 +337,8 @@ const TransferBox: React.FC = () => {
         break;
 
       case "error":
-        setTransferError(message.data.message);
+        const errorData = message.data as { message: string };
+        setTransferError(errorData.message);
         setTransferState("failed");
         setStatusType("error");
         setIsTransferring(false);
@@ -338,11 +347,12 @@ const TransferBox: React.FC = () => {
         // Reset destination after error
         setDestinationSet(false);
         setIsPathValid(undefined);
-        addLog(message.data.message, "error");
+        addLog(errorData.message, "error");
         break;
 
       case "clear":
-        if (!message.data.preserve_errors) {
+        const clearData = message.data as { preserve_errors?: boolean };
+        if (!clearData.preserve_errors) {
           setTransferError(null);
           // Clear logs except errors if preserve_errors is false
           setLogs((prev) => prev.filter((log) => log.level !== "error"));
@@ -361,7 +371,8 @@ const TransferBox: React.FC = () => {
       default:
         console.log("Unknown WebSocket message type:", message.type);
     }
-  };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // API functions
   const validatePath = async (path: string) => {
@@ -455,19 +466,22 @@ const TransferBox: React.FC = () => {
     addLog("Transfer reset", "info");
   };
 
-  const addLog = (
-    message: string,
-    level: "info" | "warning" | "error" | "success" = "info"
-  ) => {
-    const newLog: LogEntry = {
-      id: (logIdCounter + 1).toString(),
-      message,
-      timestamp: new Date().toLocaleString(),
-      level,
-    };
-    setLogs((prev) => [...prev, newLog]);
-    setLogIdCounter((prev) => prev + 1);
-  };
+  const addLog = useCallback(
+    (
+      message: string,
+      level: "info" | "warning" | "error" | "success" = "info"
+    ) => {
+      const newLog: LogEntry = {
+        id: (logIdCounter + 1).toString(),
+        message,
+        timestamp: new Date().toLocaleString(),
+        level,
+      };
+      setLogs((prev) => [...prev, newLog]);
+      setLogIdCounter((prev) => prev + 1);
+    },
+    [logIdCounter]
+  );
 
   // Tutorial handlers
   const handleTutorialNext = () => {
@@ -506,28 +520,6 @@ const TransferBox: React.FC = () => {
     } catch (error) {
       console.error("Error resetting tutorial state:", error);
     }
-  };
-
-  // Helper functions for transfer progress
-  const formatBytes = (bytes: number) => {
-    if (bytes === 0) return "0 Bytes";
-    const k = 1024;
-    const sizes = ["Bytes", "KB", "MB", "GB", "TB"];
-    const i = Math.floor(Math.log(bytes) / Math.log(k));
-    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + " " + sizes[i];
-  };
-
-  const formatTime = (seconds: number) => {
-    const h = Math.floor(seconds / 3600);
-    const m = Math.floor((seconds % 3600) / 60);
-    const s = Math.floor(seconds % 60);
-
-    if (h > 0) {
-      return `${h}:${m.toString().padStart(2, "0")}:${s
-        .toString()
-        .padStart(2, "0")}`;
-    }
-    return `${m}:${s.toString().padStart(2, "0")}`;
   };
 
   return (
@@ -764,6 +756,7 @@ const TransferBox: React.FC = () => {
             isOpen={showTutorialModal}
             onClose={handleSkipTutorial}
             title="Tutorial"
+            disableClickOutside={true}
           >
             <TutorialGuide
               steps={TUTORIAL_STEPS}
@@ -771,7 +764,7 @@ const TransferBox: React.FC = () => {
               onNext={handleTutorialNext}
               onPrevious={handleTutorialPrevious}
               onComplete={handleTutorialComplete}
-              onSkip={handleSkipTutorial}
+              inModal={true}
             />
           </Modal>
         )}
