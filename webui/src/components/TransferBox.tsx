@@ -17,8 +17,8 @@ import type { LogEntry } from "./LogContainer";
 // Mock data for initial UI development
 const APP_DATA = {
   appName: "TransferBox",
-  version: "1.0.0",
-  author: "Your Name",
+  version: "1.4.0",
+  author: "Tyler Saari",
 };
 
 const EXAMPLE_LOGS: LogEntry[] = [
@@ -313,13 +313,12 @@ const TransferBox: React.FC = () => {
       "info"
     );
 
-    // Add a small chance of random failure during transfer
-    if (Math.random() < 0.03) {
-      // 3% chance of failure
-      setTimeout(() => {
-        simulateRandomFailure();
-      }, 5000 + Math.random() * 10000); // Fail after 5-15 seconds
-    }
+    // Force a test error after a short delay
+    console.log("Setting up error simulation...");
+    setTimeout(() => {
+      console.log("Triggering simulated failure now");
+      simulateRandomFailure();
+    }, 3000); // Fail after 3 seconds - more predictable for testing
   };
 
   const simulateCardRemoval = () => {
@@ -450,8 +449,9 @@ const TransferBox: React.FC = () => {
 
   // Simulate a random failure
   const simulateRandomFailure = () => {
-    if (!isTransferring) return;
+    console.log("simulateRandomFailure called", { isTransferring });
 
+    // Remove the isTransferring check - always show the error
     const errorTypes = [
       "Transfer Failed: Unexpected I/O error while reading from source",
       "Transfer Failed: File system error on destination drive",
@@ -461,12 +461,20 @@ const TransferBox: React.FC = () => {
 
     const randomError =
       errorTypes[Math.floor(Math.random() * errorTypes.length)];
-    setTransferError(randomError);
-    setTransferState("failed");
-    setIsTransferring(false);
-    setStatusType("error");
-    setCurrentStatus("Transfer failed");
-    addLog(`ERROR: ${randomError}`, "error");
+    console.log("Setting error:", randomError);
+
+    // Force display of error with timeout to ensure state updates properly
+    setTimeout(() => {
+      setTransferError(randomError);
+      setTransferState("failed");
+      setIsTransferring(false);
+      setStatusType("error");
+      setCurrentStatus("Transfer failed");
+      addLog(`ERROR: ${randomError}`, "error");
+
+      // Force a re-render by updating some state
+      setTotalProgress((prev) => (prev > 0 ? prev - 0.1 : 0.1));
+    }, 100);
   };
 
   return (
