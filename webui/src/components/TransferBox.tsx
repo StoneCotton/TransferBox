@@ -25,15 +25,6 @@ interface AppMetadata {
   license: string;
 }
 
-// Default app metadata as fallback
-const DEFAULT_APP_DATA: AppMetadata = {
-  appName: "TransferBox",
-  version: "1.4.0",
-  author: "Tyler Saari",
-  description: "A utility for secure file transfers with verification",
-  license: "MIT",
-};
-
 const TUTORIAL_STEPS = [
   {
     id: "step1",
@@ -114,7 +105,9 @@ const TransferBox: React.FC = () => {
   const [tutorialStep, setTutorialStep] = useState(0);
   const [, setHasSeenTutorial] = useState(true);
   const [showConfigModal, setShowConfigModal] = useState(false);
-  const [appMetadata, setAppMetadata] = useState<AppMetadata>(DEFAULT_APP_DATA);
+  const [appMetadata, setAppMetadata] = useState<AppMetadata>(
+    {} as AppMetadata
+  );
 
   // Transfer progress state - connected to backend
   const [transferProgress, setTransferProgress] =
@@ -248,8 +241,6 @@ const TransferBox: React.FC = () => {
 
   // Handle WebSocket messages from backend
   const handleWebSocketMessage = useCallback((message: WebSocketMessage) => {
-    console.log("Received WebSocket message:", message);
-
     switch (message.type) {
       case "initial_state":
         // Handle initial state from backend
@@ -299,12 +290,10 @@ const TransferBox: React.FC = () => {
 
       case "progress":
         const progressData = message.data as BackendTransferProgress;
-        console.log("Progress data received:", progressData);
         setTransferProgress(progressData);
 
         // Update transfer state and UI based on progress status
         const status = progressData.status;
-        console.log("Transfer status:", status);
 
         if (
           status === "COPYING" ||
