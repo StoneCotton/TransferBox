@@ -43,33 +43,36 @@ class FileTransfer:
     
     def __init__(
         self,
-        state_manager,
+        config_manager,
         display: DisplayInterface,
         storage: StorageInterface,
-        config: Optional[TransferConfig] = None,
-        sound_manager = None
+        state_manager,
+        sound_manager = None,
+        stop_event = None
     ):
         """
-        Initialize the file transfer manager.
+        Initialize file transfer system.
         
         Args:
-            state_manager: State manager for handling transfer state
-            display: Display interface for showing progress and status
-            storage: Storage interface for handling storage operations
-            config: Optional configuration object
-            sound_manager: Optional sound manager for playing sounds
+            config_manager: Configuration manager instance
+            display: Display interface for status messages
+            storage: Storage interface for device operations
+            state_manager: State manager for system state tracking
+            sound_manager: Optional sound manager for playing audio cues
+            stop_event: Optional threading.Event to check for stop conditions
         """
-        self.state_manager = state_manager
+        self.config = config_manager.config
         self.display = display
         self.storage = storage
-        self.config = config or TransferConfig()
+        self.state_manager = state_manager
         self.sound_manager = sound_manager
-        self.no_files_found = False  # Flag to track if no files were found
+        self.stop_event = stop_event
+        self.no_files_found = False
         
-        # Use composition for specialized components
+        # Initialize components
         self.validator = TransferValidator(display, storage, state_manager)
         self.environment = TransferEnvironment(self.config, display, sound_manager)
-        self.processor = FileProcessor(display, storage, self.config, sound_manager)
+        self.processor = FileProcessor(display, storage, self.config, sound_manager, stop_event)
         
         # Initialize utility classes
         self.checksum_calculator = ChecksumCalculator(display)

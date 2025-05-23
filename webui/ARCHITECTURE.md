@@ -104,6 +104,15 @@ Application metadata handling:
 - Fallback to defaults
 - Loading state management
 
+### `useTransferControls`
+
+Transfer control operations:
+
+- Stop active transfers gracefully
+- Application shutdown with confirmation
+- Loading states for both operations
+- Integration with backend API endpoints
+
 ## Services
 
 ### `apiService`
@@ -113,6 +122,7 @@ Centralized API communication:
 - Path validation
 - Destination setting
 - App metadata loading
+- **Transfer control operations (stop/shutdown)**
 - Consistent error handling
 
 ## Handlers
@@ -145,6 +155,17 @@ The application provides clear visual feedback during transfers:
 - **Set/Reset buttons** are disabled to prevent conflicts
 - **Visual indicators** show transfer progress and status
 - **Inputs re-enable** automatically when transfer completes or fails
+
+### Transfer Control Features
+
+Users have full control over transfer operations:
+
+- **Stop Transfer button** appears during active transfers for graceful cancellation
+- **Shutdown button** available in header for application termination
+- **Confirmation dialogs** prevent accidental actions
+- **Real-time feedback** shows operation status (stopping, shutting down)
+- **Automatic cleanup** handles partial transfers and temporary files
+- **Thread-safe shutdown** avoids threading issues during application termination
 
 ## Migration Summary
 

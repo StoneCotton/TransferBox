@@ -144,11 +144,12 @@ class BaseTransferBox:
         
         # Initialize file transfer
         self.file_transfer = FileTransfer(
-            state_manager=self.state_manager,
+            config_manager=self.config_manager,
             display=self.display,
             storage=self.storage,
-            config=self.config,
-            sound_manager=self.sound_manager
+            state_manager=self.state_manager,
+            sound_manager=self.sound_manager,
+            stop_event=self.stop_event
         )
         
         # Initialize transfer operation handler
@@ -482,11 +483,12 @@ class WebUITransferBox(DesktopTransferBox):
         # Update components that use display
         self.state_manager = StateManager(self.display)
         self.file_transfer = FileTransfer(
-            state_manager=self.state_manager,
+            config_manager=self.config_manager,
             display=self.display,
             storage=self.storage,
-            config=self.config,
-            sound_manager=self.sound_manager
+            state_manager=self.state_manager,
+            sound_manager=self.sound_manager,
+            stop_event=self.stop_event
         )
         
         # Update transfer operation handler

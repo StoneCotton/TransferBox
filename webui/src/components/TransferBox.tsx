@@ -21,6 +21,7 @@ import {
   useTransferState,
   useDestinationPath,
   useAppMetadata,
+  useTransferControls,
 } from "../hooks";
 
 // Import constants and handlers
@@ -72,6 +73,10 @@ const TransferBox: React.FC = () => {
   } = tutorial;
 
   const { appMetadata } = useAppMetadata();
+
+  // Transfer controls for stop and shutdown
+  const { isStopping, isShuttingDown, stopTransfer, shutdownApplication } =
+    useTransferControls(addLog, setStatus);
 
   // WebSocket message handlers - memoized to prevent reconnection loops
   const wsHandlers = useMemo(
@@ -156,6 +161,8 @@ const TransferBox: React.FC = () => {
         author={appMetadata.author}
         onShowTutorial={showTutorial}
         onShowConfig={handleShowConfig}
+        onShutdown={shutdownApplication}
+        isShuttingDown={isShuttingDown}
       />
 
       <main className="container mx-auto p-4 md:p-6">
@@ -268,6 +275,38 @@ const TransferBox: React.FC = () => {
                     variant="danger"
                     size="sm"
                   />
+                </div>
+              )}
+
+              {/* Transfer Controls - Show during active transfer */}
+              {isTransferring && (
+                <div className="bg-blue-50 border border-blue-200 p-4 mb-6 rounded-md">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <h3 className="text-lg font-semibold text-blue-800 mb-2">
+                        Transfer Controls
+                      </h3>
+                      <p className="text-blue-700 text-sm">
+                        Stop the current transfer or shutdown the application
+                      </p>
+                    </div>
+                    <div className="flex gap-2">
+                      <Button
+                        label={isStopping ? "Stopping..." : "Stop Transfer"}
+                        onClick={stopTransfer}
+                        variant="secondary"
+                        size="sm"
+                        disabled={isStopping || isShuttingDown}
+                      />
+                      <Button
+                        label={isShuttingDown ? "Shutting Down..." : "Shutdown"}
+                        onClick={shutdownApplication}
+                        variant="danger"
+                        size="sm"
+                        disabled={isStopping || isShuttingDown}
+                      />
+                    </div>
+                  </div>
                 </div>
               )}
 

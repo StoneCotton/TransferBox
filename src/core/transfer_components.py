@@ -318,22 +318,26 @@ class FileProcessor:
     """Processes files for transfer"""
     
     def __init__(self, display: DisplayInterface, storage: StorageInterface, 
-                 config: TransferConfig, sound_manager=None):
+                 config: TransferConfig, sound_manager=None, stop_event=None):
         """
         Initialize file processor.
         
         Args:
             display: Display interface for showing status messages
             storage: Storage interface for interacting with storage devices
-            config: Configuration settings
-            sound_manager: Optional sound manager for playing sounds
+            config: Transfer configuration
+            sound_manager: Optional sound manager for playing status sounds
+            stop_event: Optional threading.Event to check for stop conditions
         """
         self.display = display
         self.storage = storage
         self.config = config
         self.sound_manager = sound_manager
+        self.stop_event = stop_event
+        self.no_files_found = False
+        
+        # Create progress tracker
         self.progress_tracker = ProgressTracker(display)
-        self.no_files_found = False  # Flag to track if no files were found
         
     def process_files(self, source_path: Path, target_dir: Path, log_file: Path = None) -> bool:
         """
@@ -434,6 +438,13 @@ class FileProcessor:
         # Process all files
         try:
             for file_number, file_path in enumerate(files_to_transfer, 1):
+                # Check if stop has been requested
+                if self.stop_event and self.stop_event.is_set():
+                    logger.info(f"Transfer stop requested - processed {successful_files}/{total_files} files")
+                    transfer_logger.log_message(f"Transfer stopped by user - {successful_files} files completed")
+                    self.progress_tracker.complete_transfer(successful=False)
+                    return False
+                
                 # Check if source drive still exists before processing each file
                 if not source_path.exists() or not os.path.ismount(str(source_path)):
                     error_msg = f"Source drive removed during transfer: {source_path}"

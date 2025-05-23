@@ -51,6 +51,12 @@ export const createWebSocketHandlers = (context: WebSocketHandlerContext) => {
       case "clear":
         handleClear(message);
         break;
+      case "transfer_stopped":
+        handleTransferStopped(message);
+        break;
+      case "shutdown_initiated":
+        handleShutdownInitiated(message);
+        break;
       case "pong":
         // Handle ping/pong for connection keepalive
         break;
@@ -133,6 +139,44 @@ export const createWebSocketHandlers = (context: WebSocketHandlerContext) => {
     setStatus("", "info");
     setTransferProgress(null);
     setCardDetected(false);
+  };
+
+  const handleTransferStopped = (message: WebSocketMessage): void => {
+    const stopData = message.data as {
+      message: string;
+      files_transferred?: number;
+      files_not_transferred?: number;
+      cleanup_completed?: boolean;
+    };
+
+    setStatus(stopData.message, "warning");
+    addLog(`Transfer stopped: ${stopData.message}`, "warning");
+
+    if (stopData.files_transferred !== undefined) {
+      addLog(`Files transferred: ${stopData.files_transferred}`, "info");
+    }
+    if (stopData.files_not_transferred !== undefined) {
+      addLog(
+        `Files not transferred: ${stopData.files_not_transferred}`,
+        "warning"
+      );
+    }
+    if (stopData.cleanup_completed) {
+      addLog("Cleanup completed - temporary files removed", "info");
+    }
+
+    // Reset transfer state
+    setTransferProgress(null);
+    setCardDetected(false);
+    resetDestination();
+  };
+
+  const handleShutdownInitiated = (message: WebSocketMessage): void => {
+    const shutdownData = message.data as { message: string };
+    setStatus(shutdownData.message, "warning");
+    addLog("Application shutdown initiated", "warning");
+
+    // The WebSocket connection will likely close after this message
   };
 
   return {

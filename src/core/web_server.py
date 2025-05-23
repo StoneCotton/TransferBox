@@ -400,6 +400,76 @@ class WebServer:
             except Exception as e:
                 logger.error(f"Drive retrieval error: {e}")
                 raise HTTPException(status_code=500, detail=f"Failed to get drives: {str(e)}")
+
+        @self.app.post("/api/stop-transfer")
+        async def stop_transfer():
+            """Stop the current transfer operation"""
+            try:
+                # Access the transfer box app to stop the transfer
+                if hasattr(self.transfer_box_app, 'stop_event') and self.transfer_box_app.stop_event:
+                    # Set the stop event to signal transfer should stop
+                    self.transfer_box_app.stop_event.set()
+                    
+                    # Send WebSocket message to notify frontend
+                    await self.websocket_display.broadcast_message("transfer_stopped", {
+                        "message": "Transfer stop requested",
+                        "cleanup_initiated": True
+                    })
+                    
+                    logger.info("Transfer stop requested via API")
+                    
+                    return {
+                        "success": True,
+                        "message": "Transfer stop initiated"
+                    }
+                else:
+                    logger.warning("No active transfer to stop")
+                    return {
+                        "success": False,
+                        "message": "No active transfer found"
+                    }
+                    
+            except Exception as e:
+                logger.error(f"Stop transfer error: {e}")
+                raise HTTPException(status_code=500, detail=f"Failed to stop transfer: {str(e)}")
+
+        @self.app.post("/api/shutdown")
+        async def shutdown_application():
+            """Shutdown the TransferBox application"""
+            try:
+                # Send WebSocket message to notify frontend before shutdown
+                await self.websocket_display.broadcast_message("shutdown_initiated", {
+                    "message": "Application shutdown initiated"
+                })
+                
+                logger.info("Application shutdown requested via API")
+                
+                # Set the stop event to signal the application should exit
+                if hasattr(self.transfer_box_app, 'stop_event') and self.transfer_box_app.stop_event:
+                    self.transfer_box_app.stop_event.set()
+                
+                # Schedule the actual shutdown after a brief delay to allow response to be sent
+                import asyncio
+                async def delayed_shutdown():
+                    await asyncio.sleep(1)  # Give time for response to be sent
+                    logger.info("Initiating application shutdown")
+                    
+                    # Use os._exit() to avoid threading issues during cleanup
+                    # The main application loop will handle cleanup when stop_event is set
+                    import os
+                    os._exit(0)
+                
+                # Start the delayed shutdown
+                asyncio.create_task(delayed_shutdown())
+                
+                return {
+                    "success": True,
+                    "message": "Shutdown initiated"
+                }
+                
+            except Exception as e:
+                logger.error(f"Shutdown error: {e}")
+                raise HTTPException(status_code=500, detail=f"Failed to shutdown: {str(e)}")
     
     async def _handle_websocket_message(self, websocket: WebSocket, message: str):
         """Handle incoming WebSocket messages from the frontend"""
@@ -472,5 +542,11 @@ class WebServer:
                 asyncio.run_coroutine_threadsafe(self.server.shutdown(), self.loop)
             
         if self.server_thread and self.server_thread.is_alive():
-            self.server_thread.join(timeout=5)
-            logger.info("FastAPI server stopped") 
+            # Check if we're trying to join from within the server thread itself
+            import threading
+            current_thread = threading.current_thread()
+            if current_thread == self.server_thread:
+                logger.debug("Skipping thread join - called from within server thread")
+            else:
+                self.server_thread.join(timeout=5)
+                logger.info("FastAPI server stopped") 

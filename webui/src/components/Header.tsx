@@ -9,6 +9,8 @@ interface HeaderProps {
   author: string;
   onShowTutorial?: () => void;
   onShowConfig?: () => void;
+  onShutdown?: () => void;
+  isShuttingDown?: boolean;
 }
 
 const Header: React.FC<HeaderProps> = ({
@@ -17,6 +19,8 @@ const Header: React.FC<HeaderProps> = ({
   author,
   onShowTutorial,
   onShowConfig,
+  onShutdown,
+  isShuttingDown = false,
 }) => {
   return (
     <header className="bg-slate-800 text-white p-4 shadow-md">
@@ -46,6 +50,16 @@ const Header: React.FC<HeaderProps> = ({
                 size="sm"
                 variant="primary"
                 className="!bg-slate-700 hover:!bg-slate-600 !border-slate-600"
+              />
+            )}
+            {onShutdown && (
+              <Button
+                label={isShuttingDown ? "Shutting Down..." : "Shutdown"}
+                onClick={onShutdown}
+                size="sm"
+                variant="danger"
+                disabled={isShuttingDown}
+                className="!bg-red-700 hover:!bg-red-600 !border-red-600"
               />
             )}
           </div>

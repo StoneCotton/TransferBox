@@ -20,6 +20,10 @@ class DummyStateManager:
     def __init__(self, utility=False): self._utility = utility
     def is_utility(self): return self._utility
 
+class DummyConfigManager:
+    def __init__(self, config):
+        self.config = config
+
 @pytest.fixture
 def dummy_display():
     return DummyDisplay()
@@ -47,12 +51,16 @@ def dummy_config(tmp_path):
     )
 
 @pytest.fixture
-def file_transfer(dummy_state, dummy_display, dummy_storage, dummy_config, dummy_sound):
+def dummy_config_manager(dummy_config):
+    return DummyConfigManager(dummy_config)
+
+@pytest.fixture
+def file_transfer(dummy_state, dummy_display, dummy_storage, dummy_config_manager, dummy_sound):
     return FileTransfer(
-        state_manager=dummy_state,
+        config_manager=dummy_config_manager,
         display=dummy_display,
         storage=dummy_storage,
-        config=dummy_config,
+        state_manager=dummy_state,
         sound_manager=dummy_sound
     )
 
@@ -64,13 +72,13 @@ def test_play_sound_success(file_transfer, dummy_sound):
     assert dummy_sound.played_error
 
 # --- _check_utility_mode ---
-def test_check_utility_mode_false(dummy_display, dummy_storage, dummy_config, dummy_sound):
-    ft = FileTransfer(DummyStateManager(utility=True), dummy_display, dummy_storage, dummy_config, dummy_sound)
+def test_check_utility_mode_false(dummy_display, dummy_storage, dummy_config_manager, dummy_sound):
+    ft = FileTransfer(DummyConfigManager(dummy_config_manager.config), dummy_display, dummy_storage, DummyStateManager(utility=True), dummy_sound)
     assert not ft._check_utility_mode()
     assert "In utility mode" in dummy_display.errors[-1]
 
-def test_check_utility_mode_true(dummy_state, dummy_display, dummy_storage, dummy_config, dummy_sound):
-    ft = FileTransfer(dummy_state, dummy_display, dummy_storage, dummy_config, dummy_sound)
+def test_check_utility_mode_true(dummy_state, dummy_display, dummy_storage, dummy_config_manager, dummy_sound):
+    ft = FileTransfer(dummy_config_manager, dummy_display, dummy_storage, dummy_state, dummy_sound)
     assert ft._check_utility_mode() is True
 
 # --- _validate_transfer_preconditions ---
