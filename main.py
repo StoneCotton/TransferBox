@@ -25,6 +25,7 @@ from src.core.context_managers import operation_context
 import argparse
 import tempfile
 import platform
+import shutil
 
 # Initialize configuration first
 config_manager = ConfigManager()
@@ -199,7 +200,10 @@ class BaseTransferBox:
     def run(self):
         """Main application loop"""
         try:
-            self.setup()
+            setup_success = self.setup()
+            if not setup_success:
+                logger.error("Setup failed. Exiting.")
+                return
             self._run_impl()
         except Exception as e:
             logger.error(f"Critical runtime error: {e}", exc_info=True)
@@ -508,7 +512,12 @@ class WebUITransferBox(DesktopTransferBox):
         super().setup()
         
         # Start the web server
-        self.web_server.start_server()
+        server_started = self.web_server.start_server()
+        
+        if not server_started:
+            logger.error("Failed to start web server. Exiting.")
+            self.display.show_error("Web server failed to start. Please check if port 8000 is available.")
+            return False
         
         # Start NextJS frontend in a separate process
         self._start_nextjs_frontend()
@@ -516,8 +525,217 @@ class WebUITransferBox(DesktopTransferBox):
         # Open the web browser
         self._open_web_browser()
         
+        return True
+    
     def _start_nextjs_frontend(self):
-        """Start the NextJS frontend development server"""
+        """Start the NextJS frontend - either dev server or static serving"""
+        import subprocess
+        import os
+        
+        # Check if we're running from a PyInstaller bundle
+        if getattr(sys, 'frozen', False):
+            # Running from PyInstaller bundle - serve static files through FastAPI
+            logger.info("Running from executable - serving NextJS static files through FastAPI")
+            self._setup_static_file_serving()
+        else:
+            # Running from source - start development server
+            logger.info("Running from source - starting NextJS development server")
+            self._start_nextjs_dev_server()
+    
+    def _setup_static_file_serving(self):
+        """Setup static file serving for built NextJS files in the executable"""
+        try:
+            # First, try to run npm start if we have the NextJS production build
+            webui_path = Path(sys._MEIPASS) / "webui"
+            package_json_path = webui_path / "package.json"
+            
+            # Initialize nextjs_process as None
+            self.nextjs_process = None
+            
+            if package_json_path.exists() and (webui_path / ".next").exists():
+                logger.info("Found NextJS build files, attempting to start production server...")
+                
+                # Try to run npm start for production mode
+                try:
+                    import subprocess
+                    import os
+                    
+                    env = os.environ.copy()
+                    env["NEXT_PUBLIC_API_URL"] = "http://127.0.0.1:8000"
+                    env["PORT"] = "3000"
+                    
+                    # Check if npm is available
+                    if shutil.which("npm"):
+                        self.nextjs_process = subprocess.Popen(
+                            ["npm", "start"],
+                            cwd=webui_path,
+                            env=env,
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE
+                        )
+                        
+                        # Give the server time to start and verify it's still running
+                        time.sleep(8)
+                        
+                        # Check if the process is still alive
+                        if self.nextjs_process.poll() is None:
+                            logger.info("NextJS production server started successfully")
+                            self.nextjs_started = True
+                            return
+                        else:
+                            # Process died, read error output
+                            stdout, stderr = self.nextjs_process.communicate()
+                            logger.warning(f"NextJS process exited. stdout: {stdout.decode()}, stderr: {stderr.decode()}")
+                            self.nextjs_process = None
+                    else:
+                        logger.warning("npm not found, falling back to basic static serving")
+                        
+                except Exception as e:
+                    logger.warning(f"Failed to start NextJS production server: {e}, falling back to static serving")
+                    self.nextjs_process = None
+            
+            # Mark that NextJS was not started
+            self.nextjs_started = False
+            
+            # Fallback: Basic static file serving through FastAPI
+            logger.info("Setting up basic static file serving through FastAPI...")
+            self._setup_basic_static_serving(webui_path)
+            
+        except Exception as e:
+            logger.error(f"Failed to setup any frontend serving: {e}")
+            self.nextjs_started = False
+    
+    def _setup_basic_static_serving(self, webui_path):
+        """Setup basic static file serving as fallback"""
+        try:
+            from fastapi.staticfiles import StaticFiles
+            from fastapi.responses import HTMLResponse
+            
+            # Mount NextJS static assets with correct paths
+            static_dir = webui_path / ".next" / "static"
+            if static_dir.exists():
+                self.web_server.app.mount("/_next/static", StaticFiles(directory=str(static_dir)), name="nextjs_static")
+                logger.info(f"Mounted NextJS static files: /_next/static -> {static_dir}")
+            
+            # Mount public files (favicon, icons, etc.)
+            public_dir = webui_path / "public"
+            if public_dir.exists():
+                self.web_server.app.mount("/public", StaticFiles(directory=str(public_dir)), name="public")
+                logger.info(f"Mounted public files: /public -> {public_dir}")
+            
+            # Serve the main NextJS application HTML
+            main_html_path = webui_path / ".next" / "server" / "app" / "index.html"
+            if main_html_path.exists():
+                @self.web_server.app.get("/")
+                async def serve_nextjs_app():
+                    """Serve the main NextJS application"""
+                    with open(main_html_path, 'r', encoding='utf-8') as f:
+                        content = f.read()
+                    return HTMLResponse(content=content)
+                
+                # Serve specific public files at root level (for favicon.ico, etc.)
+                @self.web_server.app.get("/favicon.ico")
+                async def serve_favicon():
+                    """Serve favicon from public directory"""
+                    from fastapi.responses import FileResponse
+                    from fastapi import HTTPException
+                    
+                    favicon_path = public_dir / "favicon.ico"
+                    if favicon_path.exists():
+                        return FileResponse(str(favicon_path))
+                    raise HTTPException(status_code=404, detail="Favicon not found")
+                
+                @self.web_server.app.get("/{filename}.{ext}")
+                async def serve_public_assets(filename: str, ext: str):
+                    """Serve specific public assets like icon files"""
+                    from fastapi import HTTPException
+                    from fastapi.responses import FileResponse
+                    
+                    # Only serve certain file types for security
+                    allowed_extensions = {'ico', 'png', 'jpg', 'jpeg', 'svg', 'webp'}
+                    if ext.lower() not in allowed_extensions:
+                        raise HTTPException(status_code=404, detail="File type not allowed")
+                    
+                    asset_file = public_dir / f"{filename}.{ext}"
+                    if asset_file.exists() and asset_file.is_file():
+                        return FileResponse(str(asset_file))
+                    raise HTTPException(status_code=404, detail="File not found")
+                
+                logger.info("NextJS application serving configured")
+            else:
+                # Fallback to basic UI if no NextJS HTML found
+                @self.web_server.app.get("/")
+                async def serve_basic_ui():
+                    """Serve a basic UI when NextJS isn't available"""
+                    return HTMLResponse(content="""
+                    <!DOCTYPE html>
+                    <html>
+                    <head>
+                        <title>TransferBox</title>
+                        <meta charset="utf-8">
+                        <meta name="viewport" content="width=device-width, initial-scale=1">
+                        <style>
+                            body { 
+                                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+                                max-width: 800px; 
+                                margin: 0 auto; 
+                                padding: 20px;
+                                background: #f8fafc;
+                            }
+                            .container { 
+                                background: white; 
+                                padding: 30px; 
+                                border-radius: 8px; 
+                                box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+                            }
+                            h1 { color: #1f2937; margin-bottom: 20px; }
+                            .status { 
+                                padding: 15px; 
+                                margin: 15px 0; 
+                                border-radius: 4px; 
+                                background: #dbeafe; 
+                                border-left: 4px solid #3b82f6;
+                            }
+                            .api-link { 
+                                color: #3b82f6; 
+                                text-decoration: none; 
+                                padding: 8px 16px;
+                                border: 1px solid #3b82f6;
+                                border-radius: 4px;
+                                display: inline-block;
+                                margin-top: 10px;
+                            }
+                            .api-link:hover { background: #eff6ff; }
+                        </style>
+                    </head>
+                    <body>
+                        <div class="container">
+                            <h1>TransferBox</h1>
+                            <div class="status">
+                                <strong>Web UI Mode Active</strong><br>
+                                The full NextJS interface is not available in this build.
+                            </div>
+                            <p>You can still access the API endpoints:</p>
+                            <a href="/api/app-metadata" class="api-link">App Metadata</a>
+                            <a href="/api/drives" class="api-link">Available Drives</a>
+                            <a href="/api/status" class="api-link">Status</a>
+                            <p style="margin-top: 30px; color: #6b7280; font-size: 14px;">
+                                For the full web interface, please run TransferBox from source with Node.js installed.
+                            </p>
+                        </div>
+                    </body>
+                    </html>
+                    """)
+                
+                logger.warning("NextJS HTML not found, using basic fallback UI")
+            
+            logger.info("Static file serving configured")
+            
+        except Exception as e:
+            logger.error(f"Failed to setup static serving: {e}")
+    
+    def _start_nextjs_dev_server(self):
+        """Start the NextJS development server (for source runs)"""
         import subprocess
         import os
         
@@ -563,14 +781,33 @@ class WebUITransferBox(DesktopTransferBox):
             # Wait a moment for servers to be ready
             time.sleep(3)
             
-            # Open the browser to the NextJS frontend
-            frontend_url = "http://localhost:3000"
-            logger.info(f"Opening web browser to {frontend_url}")
+            # Choose the correct URL based on execution mode
+            if getattr(sys, 'frozen', False):
+                # Running from PyInstaller bundle
+                # Check if NextJS production server was started successfully
+                if getattr(self, 'nextjs_started', False):
+                    frontend_url = "http://localhost:3000"
+                    logger.info(f"Opening web browser to {frontend_url} (NextJS production server)")
+                else:
+                    # Fall back to FastAPI basic serving
+                    frontend_url = "http://127.0.0.1:8000"
+                    logger.info(f"Opening web browser to {frontend_url} (FastAPI basic serving)")
+            else:
+                # Running from source - use NextJS dev server
+                frontend_url = "http://localhost:3000"
+                logger.info(f"Opening web browser to {frontend_url} (NextJS dev server)")
+            
             webbrowser.open(frontend_url)
             
         except Exception as e:
             logger.error(f"Failed to open web browser: {e}")
-            logger.info("Please manually navigate to http://localhost:3000")
+            if getattr(sys, 'frozen', False):
+                if getattr(self, 'nextjs_started', False):
+                    logger.info("Please manually navigate to http://localhost:3000")
+                else:
+                    logger.info("Please manually navigate to http://127.0.0.1:8000")
+            else:
+                logger.info("Please manually navigate to http://localhost:3000")
     
     def set_destination_path(self, path: Path):
         """Set the destination path for transfers"""

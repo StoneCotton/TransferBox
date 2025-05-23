@@ -502,6 +502,9 @@ class WebServer:
     
     def start_server(self, host: str = "127.0.0.1", port: int = 8000):
         """Start the FastAPI server in a separate thread"""
+        self.server_started = False
+        self.server_error = None
+        
         def run_server():
             # Create new event loop for this thread
             self.loop = asyncio.new_event_loop()
@@ -524,15 +527,25 @@ class WebServer:
             
             try:
                 self.loop.run_until_complete(self.server.serve())
+                self.server_started = True
             except Exception as e:
+                self.server_error = e
                 logger.error(f"Server error: {e}")
         
         self.server_thread = threading.Thread(target=run_server, daemon=True)
         self.server_thread.start()
         
-        # Wait a moment for the server to start
+        # Wait a moment for the server to start and check if it succeeded
         time.sleep(2)
-        logger.info("FastAPI server started successfully")
+        
+        if self.server_error:
+            logger.error(f"FastAPI server failed to start: {self.server_error}")
+            if "address already in use" in str(self.server_error):
+                logger.error("Port 8000 is already in use. Please close any other TransferBox instances.")
+            return False
+        else:
+            logger.info("FastAPI server started successfully")
+            return True
     
     def stop_server(self):
         """Stop the FastAPI server"""
