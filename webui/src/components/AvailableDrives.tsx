@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 
 interface DriveInfo {
   path: string;
@@ -34,7 +34,7 @@ const AvailableDrives: React.FC<AvailableDrivesProps> = ({
   const [error, setError] = useState<string | null>(null);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
 
-  const fetchDrives = async () => {
+  const fetchDrives = useCallback(async () => {
     try {
       setIsLoading(true);
       setError(null);
@@ -59,7 +59,7 @@ const AvailableDrives: React.FC<AvailableDrivesProps> = ({
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [apiBaseUrl]);
 
   useEffect(() => {
     fetchDrives();
@@ -68,7 +68,7 @@ const AvailableDrives: React.FC<AvailableDrivesProps> = ({
     const interval = setInterval(fetchDrives, 5000);
 
     return () => clearInterval(interval);
-  }, [apiBaseUrl]);
+  }, [fetchDrives]);
 
   const formatBytes = (bytes: number): string => {
     if (bytes === 0) return "0 GB";

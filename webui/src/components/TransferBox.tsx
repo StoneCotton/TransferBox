@@ -91,6 +91,8 @@ type BackendTransferProgress = {
   total_elapsed: number;
   file_elapsed: number;
   checksum_elapsed: number;
+  source_drive_name: string;
+  source_drive_path: string;
 };
 
 const TransferBox: React.FC = () => {
@@ -106,6 +108,7 @@ const TransferBox: React.FC = () => {
   >("info");
   const [isCardDetected, setIsCardDetected] = useState(false);
   const [deviceName, setDeviceName] = useState("");
+  const [devicePath, setDevicePath] = useState("");
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [showTutorialModal, setShowTutorialModal] = useState(false);
   const [tutorialStep, setTutorialStep] = useState(0);
@@ -274,19 +277,6 @@ const TransferBox: React.FC = () => {
         const statusData = message.data as { message: string };
         setCurrentStatus(statusData.message);
 
-        // Update card detection based on status message
-        if (statusData.message.toLowerCase().includes("card detected")) {
-          setIsCardDetected(true);
-          setDeviceName("SD Card");
-        } else if (
-          statusData.message.toLowerCase().includes("waiting for source") ||
-          statusData.message.toLowerCase().includes("no source drive") ||
-          statusData.message.toLowerCase().includes("source drive removed")
-        ) {
-          setIsCardDetected(false);
-          setDeviceName("");
-        }
-
         // Set appropriate status type
         if (
           statusData.message.toLowerCase().includes("error") ||
@@ -324,8 +314,16 @@ const TransferBox: React.FC = () => {
         ) {
           setIsTransferring(true);
           setTransferState("transferring");
-          // Don't automatically set card as detected during transfer
-          // Card detection should only be based on actual hardware detection events
+
+          // Use source drive info from the backend progress data
+          if (
+            progressData.source_drive_name &&
+            progressData.source_drive_path
+          ) {
+            setIsCardDetected(true);
+            setDeviceName(progressData.source_drive_name);
+            setDevicePath(progressData.source_drive_path);
+          }
 
           // Update status message based on current operation
           let statusMessage = "";
@@ -352,6 +350,7 @@ const TransferBox: React.FC = () => {
           setCurrentStatus("Transfer completed successfully");
           setIsCardDetected(false);
           setDeviceName("");
+          setDevicePath("");
           // Reset destination after successful transfer
           setDestinationSet(false);
           setIsPathValid(undefined);
@@ -364,6 +363,7 @@ const TransferBox: React.FC = () => {
           setTransferError("Transfer failed");
           setIsCardDetected(false);
           setDeviceName("");
+          setDevicePath("");
           // Reset destination after failed transfer
           setDestinationSet(false);
           setIsPathValid(undefined);
@@ -379,6 +379,7 @@ const TransferBox: React.FC = () => {
         setIsTransferring(false);
         setIsCardDetected(false);
         setDeviceName("");
+        setDevicePath("");
         // Reset destination after error
         setDestinationSet(false);
         setIsPathValid(undefined);
@@ -397,6 +398,7 @@ const TransferBox: React.FC = () => {
         setIsTransferring(false);
         setIsCardDetected(false);
         setDeviceName("");
+        setDevicePath("");
         break;
 
       case "pong":
@@ -498,6 +500,7 @@ const TransferBox: React.FC = () => {
     setIsPathValid(undefined);
     setIsCardDetected(false);
     setDeviceName("");
+    setDevicePath("");
     addLog("Transfer reset", "info");
   };
 
@@ -652,6 +655,7 @@ const TransferBox: React.FC = () => {
               <CardDetectionStatus
                 isDetected={isCardDetected}
                 deviceName={deviceName}
+                devicePath={devicePath}
                 className="mb-6"
               />
 

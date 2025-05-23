@@ -5,16 +5,16 @@ import React from "react";
 interface CardDetectionStatusProps {
   isDetected: boolean;
   deviceName?: string;
+  devicePath?: string;
   waitingMessage?: string;
-  detectedMessage?: string;
   className?: string;
 }
 
 const CardDetectionStatus: React.FC<CardDetectionStatusProps> = ({
   isDetected,
   deviceName,
+  devicePath,
   waitingMessage = "Waiting for source drive...",
-  detectedMessage = "Source drive detected:",
   className = "",
 }) => {
   return (
@@ -31,16 +31,20 @@ const CardDetectionStatus: React.FC<CardDetectionStatusProps> = ({
         `}
         />
 
-        <div>
-          {isDetected ? (
-            <div>
-              <span className="font-medium text-green-700">
-                {detectedMessage}
-              </span>
-              {deviceName && (
-                <span className="ml-2 font-mono bg-slate-100 px-2 py-1 rounded text-sm">
+        <div className="flex-1">
+          {isDetected && deviceName ? (
+            <div className="space-y-1">
+              <div>
+                <span className="font-semibold text-green-700 text-lg">
                   {deviceName}
                 </span>
+              </div>
+              {devicePath && (
+                <div>
+                  <span className="text-sm text-gray-600 font-mono bg-slate-100 px-2 py-1 rounded">
+                    {devicePath}
+                  </span>
+                </div>
               )}
             </div>
           ) : (

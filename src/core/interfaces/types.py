@@ -34,3 +34,5 @@ class TransferProgress:
     total_elapsed: float = 0.0  # Total transfer elapsed time
     file_elapsed: float = 0.0   # Current file copy elapsed time
     checksum_elapsed: float = 0.0  # Current file checksum elapsed time
+    source_drive_name: str = ""  # Name of the source drive (e.g., "CanonA_002")
+    source_drive_path: str = ""  # Full path to the source drive (e.g., "/Volumes/CanonA_002")

@@ -428,6 +428,7 @@ class FileProcessor:
         
         # Only initialize progress tracking if we have files to transfer
         self.progress_tracker.start_transfer(total_files, total_size)
+        self.progress_tracker.set_source_drive(source_path)
         self.progress_tracker.set_status(TransferStatus.COPYING)
         
         # Process all files
