@@ -65,7 +65,15 @@ class WebSocketDisplay(DisplayInterface):
         """Send message asynchronously from a sync context"""
         if self._loop and self._loop.is_running():
             if message_type == "progress":
-                logger.info(f"Sending WebSocket progress message to {len(self.connected_clients)} clients")
+                if len(self.connected_clients) > 0:  # Only log if there are clients
+                    if data.get("overall_progress", 0) % 10 == 0:  # Log every 10% progress
+                        logger.info(f"Transfer progress {data.get('overall_progress')}% complete, "
+                                  f"sending update to {len(self.connected_clients)} clients")
+                    elif data.get("status") != getattr(self, "_last_status", None):  # Log status changes
+                        logger.info(f"Transfer status changed to {data.get('status')}, "
+                                  f"sending update to {len(self.connected_clients)} clients")
+                        self._last_status = data.get("status")
+            
             asyncio.run_coroutine_threadsafe(
                 self.broadcast_message(message_type, data),
                 self._loop
@@ -102,12 +110,12 @@ class WebSocketDisplay(DisplayInterface):
         if "proxy_progress" in progress_data:
             progress_data["proxy_progress"] = progress_data["proxy_progress"] * 100
         
-        # Log more detailed progress information
-        logger.info(f"WebSocket Progress Update - File: {progress.current_file}, "
-                   f"File Progress: {progress.current_file_progress * 100:.2f}%, "
-                   f"Overall Progress: {progress.overall_progress * 100:.2f}%, "
-                   f"Status: {progress.status.name}, "
-                   f"File {progress.file_number}/{progress.total_files}")
+        # # Log more detailed progress information
+        # logger.info(f"WebSocket Progress Update - File: {progress.current_file}, "
+        #            f"File Progress: {progress.current_file_progress * 100:.2f}%, "
+        #            f"Overall Progress: {progress.overall_progress * 100:.2f}%, "
+        #            f"Status: {progress.status.name}, "
+        #            f"File {progress.file_number}/{progress.total_files}")
         
         self._send_async_message("progress", progress_data)
     

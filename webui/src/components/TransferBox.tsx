@@ -690,24 +690,6 @@ const TransferBox: React.FC = () => {
               {/* Transfer Progress Display */}
               {transferProgress && isTransferring && (
                 <div className="space-y-5 mb-6">
-                  {/* Debug info - remove in production */}
-                  {process.env.NODE_ENV === "development" && (
-                    <div className="text-xs text-gray-500 p-2 bg-gray-100 rounded">
-                      <div>Status: {transferProgress.status}</div>
-                      <div>
-                        Overall Progress: {transferProgress.overall_progress}%
-                      </div>
-                      <div>
-                        File Progress: {transferProgress.current_file_progress}%
-                      </div>
-                      <div>Current File: {transferProgress.current_file}</div>
-                      <div>
-                        File {transferProgress.file_number}/
-                        {transferProgress.total_files}
-                      </div>
-                    </div>
-                  )}
-
                   {/* Overall Transfer Progress */}
                   <FileTransferProgress
                     title="Total Transfer Progress"
