@@ -8,10 +8,11 @@ from pathlib import Path
 from typing import Optional, Dict, Any
 
 import uvicorn
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
+from fastapi import FastAPI, WebSocket, HTTPException
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.websockets import WebSocketDisconnect
 from pydantic import BaseModel
 
 from src.core.websocket_display import WebSocketDisplay
@@ -76,11 +77,13 @@ class WebServer:
         
         @self.app.websocket("/ws")
         async def websocket_endpoint(websocket: WebSocket):
-            await websocket.accept()
-            self.websocket_display.add_websocket_client(websocket)
-            logger.info("WebSocket client connected")
+            client_address = f"{websocket.client.host}:{websocket.client.port}" if websocket.client else "unknown"
             
             try:
+                await websocket.accept()
+                self.websocket_display.add_websocket_client(websocket)
+                logger.info(f"WebSocket client connected from {client_address}")
+                
                 # Send current state to newly connected client
                 current_state = self.websocket_display.get_current_state()
                 await websocket.send_text(json.dumps({
@@ -91,15 +94,42 @@ class WebServer:
                 
                 # Keep connection alive and handle incoming messages
                 while True:
-                    message = await websocket.receive_text()
-                    await self._handle_websocket_message(websocket, message)
+                    try:
+                        message = await websocket.receive_text()
+                        await self._handle_websocket_message(websocket, message)
+                    except WebSocketDisconnect as e:
+                        # Re-raise to be caught by outer handler
+                        raise e
                     
-            except WebSocketDisconnect:
-                logger.info("WebSocket client disconnected")
+            except WebSocketDisconnect as e:
+                # Handle different disconnect codes
+                disconnect_code = e.code if hasattr(e, 'code') else None
+                disconnect_reason = e.reason if hasattr(e, 'reason') else None
+                
+                if disconnect_code == 1001:
+                    # Normal "going away" disconnect (browser tab closed, page refreshed, etc.)
+                    logger.debug(f"WebSocket client {client_address} disconnected normally (going away)")
+                elif disconnect_code == 1000:
+                    # Normal closure
+                    logger.debug(f"WebSocket client {client_address} disconnected normally (closed)")
+                elif disconnect_code is None:
+                    # Connection lost without proper close frame
+                    logger.info(f"WebSocket client {client_address} disconnected (connection lost)")
+                else:
+                    # Other disconnect codes
+                    logger.warning(f"WebSocket client {client_address} disconnected with code {disconnect_code}: {disconnect_reason}")
+                    
+            except ConnectionResetError:
+                logger.info(f"WebSocket client {client_address} connection was reset")
             except Exception as e:
-                logger.error(f"WebSocket error: {e}")
+                logger.error(f"WebSocket error for client {client_address}: {e}")
             finally:
-                self.websocket_display.remove_websocket_client(websocket)
+                # Always clean up the client connection
+                try:
+                    self.websocket_display.remove_websocket_client(websocket)
+                    logger.debug(f"WebSocket client {client_address} cleaned up")
+                except Exception as cleanup_error:
+                    logger.error(f"Error cleaning up WebSocket client {client_address}: {cleanup_error}")
         
         @self.app.post("/api/validate-path", response_model=PathValidationResponse)
         async def validate_destination_path(request: PathValidationRequest):
