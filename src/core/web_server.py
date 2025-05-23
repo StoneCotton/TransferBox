@@ -5,7 +5,7 @@ import os
 import threading
 import time
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 
 import uvicorn
 from fastapi import FastAPI, WebSocket, HTTPException
@@ -49,6 +49,24 @@ class AppMetadata(BaseModel):
     author: str
     description: str
     license: str
+
+class DriveInfo(BaseModel):
+    path: str
+    name: str
+    total_space: int
+    free_space: int
+    used_space: int
+    total_space_gb: float
+    free_space_gb: float
+    used_space_gb: float
+    drive_type: Optional[str] = None
+    is_mounted: bool
+    is_removable: Optional[bool] = None
+
+class AvailableDrivesResponse(BaseModel):
+    success: bool
+    drives: List[DriveInfo]
+    message: Optional[str] = None
 
 class WebServer:
     """FastAPI web server for TransferBox web UI"""
@@ -302,6 +320,86 @@ class WebServer:
             except Exception as e:
                 logger.error(f"App metadata retrieval error: {e}")
                 raise HTTPException(status_code=500, detail=f"Failed to get app metadata: {str(e)}")
+
+        @self.app.get("/api/drives", response_model=AvailableDrivesResponse)
+        async def get_available_drives():
+            """Get available drives with detailed information"""
+            try:
+                # Access storage through the transfer box app
+                if hasattr(self.transfer_box_app, 'storage') and self.transfer_box_app.storage:
+                    storage = self.transfer_box_app.storage
+                else:
+                    # Fallback: create a new storage instance
+                    from src.core.platform_manager import PlatformManager
+                    storage = PlatformManager.create_storage()
+                
+                # Get available drives from storage interface
+                available_drives = storage.get_available_drives()
+                drives_info = []
+                
+                for drive_path in available_drives:
+                    try:
+                        # Get drive information
+                        drive_info = storage.get_drive_info(drive_path)
+                        is_mounted = storage.is_drive_mounted(drive_path)
+                        
+                        # Calculate GB values for frontend display
+                        total_gb = drive_info['total'] / (1024 ** 3)
+                        free_gb = drive_info['free'] / (1024 ** 3) 
+                        used_gb = drive_info['used'] / (1024 ** 3)
+                        
+                        # Get drive type if available (Windows specific)
+                        drive_type = None
+                        is_removable = None
+                        if hasattr(storage, 'get_drive_type'):
+                            drive_type = storage.get_drive_type(drive_path)
+                            is_removable = drive_type == "REMOVABLE"
+                        
+                        # Extract drive name (last part of path)
+                        drive_name = drive_path.name if drive_path.name else str(drive_path)
+                        
+                        drives_info.append(DriveInfo(
+                            path=str(drive_path),
+                            name=drive_name,
+                            total_space=drive_info['total'],
+                            free_space=drive_info['free'],
+                            used_space=drive_info['used'],
+                            total_space_gb=round(total_gb, 2),
+                            free_space_gb=round(free_gb, 2),
+                            used_space_gb=round(used_gb, 2),
+                            drive_type=drive_type,
+                            is_mounted=is_mounted,
+                            is_removable=is_removable
+                        ))
+                        
+                    except Exception as drive_error:
+                        logger.warning(f"Error getting info for drive {drive_path}: {drive_error}")
+                        # Add basic info even if detailed info fails
+                        drives_info.append(DriveInfo(
+                            path=str(drive_path),
+                            name=drive_path.name if drive_path.name else str(drive_path),
+                            total_space=0,
+                            free_space=0,
+                            used_space=0,
+                            total_space_gb=0.0,
+                            free_space_gb=0.0,
+                            used_space_gb=0.0,
+                            drive_type="UNKNOWN",
+                            is_mounted=False,
+                            is_removable=None
+                        ))
+                
+                logger.debug(f"Retrieved {len(drives_info)} available drives")
+                
+                return AvailableDrivesResponse(
+                    success=True,
+                    drives=drives_info,
+                    message=f"Found {len(drives_info)} available drives"
+                )
+                
+            except Exception as e:
+                logger.error(f"Drive retrieval error: {e}")
+                raise HTTPException(status_code=500, detail=f"Failed to get drives: {str(e)}")
     
     async def _handle_websocket_message(self, websocket: WebSocket, message: str):
         """Handle incoming WebSocket messages from the frontend"""

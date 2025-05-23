@@ -11,6 +11,7 @@ import TutorialGuide from "./TutorialGuide";
 import Modal from "./Modal";
 import FileTransferProgress from "./FileTransferProgress";
 import ConfigEditor from "./ConfigEditor";
+import AvailableDrives from "./AvailableDrives";
 
 // Import the LogEntry type from LogContainer to ensure consistency
 import type { LogEntry } from "./LogContainer";
@@ -770,6 +771,7 @@ const TransferBox: React.FC = () => {
 
           {/* Right Column - Logs */}
           <div className="space-y-6">
+            <AvailableDrives apiBaseUrl={API_BASE_URL} />
             <LogContainer logs={logs} />
           </div>
         </div>
