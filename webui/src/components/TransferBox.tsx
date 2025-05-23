@@ -275,14 +275,13 @@ const TransferBox: React.FC = () => {
         setCurrentStatus(statusData.message);
 
         // Update card detection based on status message
-        if (
-          statusData.message.toLowerCase().includes("card detected") ||
-          statusData.message.toLowerCase().includes("source drive")
-        ) {
+        if (statusData.message.toLowerCase().includes("card detected")) {
           setIsCardDetected(true);
           setDeviceName("SD Card");
         } else if (
-          statusData.message.toLowerCase().includes("waiting for source")
+          statusData.message.toLowerCase().includes("waiting for source") ||
+          statusData.message.toLowerCase().includes("no source drive") ||
+          statusData.message.toLowerCase().includes("source drive removed")
         ) {
           setIsCardDetected(false);
           setDeviceName("");
@@ -325,8 +324,8 @@ const TransferBox: React.FC = () => {
         ) {
           setIsTransferring(true);
           setTransferState("transferring");
-          setIsCardDetected(true);
-          setDeviceName("SD Card");
+          // Don't automatically set card as detected during transfer
+          // Card detection should only be based on actual hardware detection events
 
           // Update status message based on current operation
           let statusMessage = "";
