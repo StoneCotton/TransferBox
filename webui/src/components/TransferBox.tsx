@@ -10,15 +10,27 @@ import CardDetectionStatus from "./CardDetectionStatus";
 import TutorialGuide from "./TutorialGuide";
 import Modal from "./Modal";
 import FileTransferProgress from "./FileTransferProgress";
+import ConfigEditor from "./ConfigEditor";
 
 // Import the LogEntry type from LogContainer to ensure consistency
 import type { LogEntry } from "./LogContainer";
 
-// App metadata - will be dynamic in future
-const APP_DATA = {
+// App metadata interface
+interface AppMetadata {
+  appName: string;
+  version: string;
+  author: string;
+  description: string;
+  license: string;
+}
+
+// Default app metadata as fallback
+const DEFAULT_APP_DATA: AppMetadata = {
   appName: "TransferBox",
   version: "1.4.0",
   author: "Tyler Saari",
+  description: "A utility for secure file transfers with verification",
+  license: "MIT",
 };
 
 const TUTORIAL_STEPS = [
@@ -98,6 +110,8 @@ const TransferBox: React.FC = () => {
   const [tutorialStep, setTutorialStep] = useState(0);
   const [, setHasSeenTutorial] = useState(true);
   const [logIdCounter, setLogIdCounter] = useState(0);
+  const [showConfigModal, setShowConfigModal] = useState(false);
+  const [appMetadata, setAppMetadata] = useState<AppMetadata>(DEFAULT_APP_DATA);
 
   // Transfer progress state - connected to backend
   const [transferProgress, setTransferProgress] =
@@ -118,6 +132,25 @@ const TransferBox: React.FC = () => {
   const API_BASE_URL =
     process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
 
+  // Load app metadata from backend
+  const loadAppMetadata = useCallback(async () => {
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/app-metadata`);
+      if (response.ok) {
+        const metadata = await response.json();
+        setAppMetadata(metadata);
+        console.log(
+          `Loaded app metadata: ${metadata.appName} v${metadata.version}`
+        );
+      } else {
+        console.warn("Failed to load app metadata, using defaults");
+      }
+    } catch (error) {
+      console.warn("Error loading app metadata:", error);
+      // Keep using default values
+    }
+  }, [API_BASE_URL]);
+
   // Check local storage for tutorial
   useEffect(() => {
     if (typeof window !== "undefined") {
@@ -134,7 +167,10 @@ const TransferBox: React.FC = () => {
         setShowTutorialModal(true);
       }
     }
-  }, []);
+
+    // Load app metadata
+    loadAppMetadata();
+  }, [loadAppMetadata]);
 
   // WebSocket connection and management
   useEffect(() => {
@@ -522,13 +558,22 @@ const TransferBox: React.FC = () => {
     }
   };
 
+  const handleShowConfig = () => {
+    setShowConfigModal(true);
+  };
+
+  const handleCloseConfig = () => {
+    setShowConfigModal(false);
+  };
+
   return (
     <div className="min-h-screen bg-slate-50">
       <Header
-        appName={APP_DATA.appName}
-        version={APP_DATA.version}
-        author={APP_DATA.author}
+        appName={appMetadata.appName}
+        version={appMetadata.version}
+        author={appMetadata.author}
         onShowTutorial={handleShowTutorial}
+        onShowConfig={handleShowConfig}
       />
 
       <main className="container mx-auto p-4 md:p-6">
@@ -768,6 +813,9 @@ const TransferBox: React.FC = () => {
             />
           </Modal>
         )}
+
+        {/* Config Editor Modal */}
+        <ConfigEditor isOpen={showConfigModal} onClose={handleCloseConfig} />
       </main>
     </div>
   );

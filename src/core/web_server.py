@@ -17,6 +17,8 @@ from pydantic import BaseModel
 from src.core.websocket_display import WebSocketDisplay
 from src.core.utils import validate_path
 from src.core.path_utils import sanitize_path, is_plausible_user_path
+from src.core.config_manager import ConfigManager
+from src import __version__, __author__, __project_name__, __description__, __license__
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +33,21 @@ class PathValidationResponse(BaseModel):
 class TutorialStepRequest(BaseModel):
     step: int
     action: str  # 'next', 'previous', 'complete', 'skip'
+
+class ConfigUpdateRequest(BaseModel):
+    config: Dict[str, Any]
+
+class ConfigResponse(BaseModel):
+    success: bool
+    config: Optional[Dict[str, Any]] = None
+    message: Optional[str] = None
+
+class AppMetadata(BaseModel):
+    appName: str
+    version: str
+    author: str
+    description: str
+    license: str
 
 class WebServer:
     """FastAPI web server for TransferBox web UI"""
@@ -189,6 +206,72 @@ class WebServer:
             except Exception as e:
                 logger.error(f"Status retrieval error: {e}")
                 raise HTTPException(status_code=500, detail=f"Failed to get status: {str(e)}")
+
+        @self.app.get("/api/config", response_model=ConfigResponse)
+        async def get_config():
+            """Get current configuration"""
+            try:
+                # Access config through the transfer box app
+                if hasattr(self.transfer_box_app, 'config_manager') and self.transfer_box_app.config_manager:
+                    config = self.transfer_box_app.config_manager.config
+                    config_dict = config.to_dict() if config else {}
+                else:
+                    # Fallback: create a new config manager
+                    config_manager = ConfigManager()
+                    config = config_manager.load_config()
+                    config_dict = config.to_dict()
+                
+                return ConfigResponse(
+                    success=True,
+                    config=config_dict,
+                    message="Configuration retrieved successfully"
+                )
+            except Exception as e:
+                logger.error(f"Config retrieval error: {e}")
+                raise HTTPException(status_code=500, detail=f"Failed to get config: {str(e)}")
+
+        @self.app.post("/api/config", response_model=ConfigResponse)
+        async def update_config(request: ConfigUpdateRequest):
+            """Update configuration"""
+            try:
+                # Access config manager through the transfer box app
+                if hasattr(self.transfer_box_app, 'config_manager') and self.transfer_box_app.config_manager:
+                    config_manager = self.transfer_box_app.config_manager
+                else:
+                    # Fallback: create a new config manager
+                    config_manager = ConfigManager()
+                    config_manager.load_config()
+                
+                # Update the configuration
+                updated_config = config_manager.update_config(request.config)
+                config_dict = updated_config.to_dict()
+                
+                logger.info("Configuration updated successfully")
+                
+                return ConfigResponse(
+                    success=True,
+                    config=config_dict,
+                    message="Configuration updated successfully"
+                )
+                
+            except Exception as e:
+                logger.error(f"Config update error: {e}")
+                raise HTTPException(status_code=500, detail=f"Failed to update config: {str(e)}")
+
+        @self.app.get("/api/app-metadata", response_model=AppMetadata)
+        async def get_app_metadata():
+            """Get application metadata"""
+            try:
+                return AppMetadata(
+                    appName=__project_name__,
+                    version=__version__,
+                    author=__author__,
+                    description=__description__,
+                    license=__license__
+                )
+            except Exception as e:
+                logger.error(f"App metadata retrieval error: {e}")
+                raise HTTPException(status_code=500, detail=f"Failed to get app metadata: {str(e)}")
     
     async def _handle_websocket_message(self, websocket: WebSocket, message: str):
         """Handle incoming WebSocket messages from the frontend"""

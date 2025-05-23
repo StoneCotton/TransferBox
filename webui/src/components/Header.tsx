@@ -8,6 +8,7 @@ interface HeaderProps {
   version: string;
   author: string;
   onShowTutorial?: () => void;
+  onShowConfig?: () => void;
 }
 
 const Header: React.FC<HeaderProps> = ({
@@ -15,6 +16,7 @@ const Header: React.FC<HeaderProps> = ({
   version,
   author,
   onShowTutorial,
+  onShowConfig,
 }) => {
   return (
     <header className="bg-slate-800 text-white p-4 shadow-md">
@@ -27,15 +29,26 @@ const Header: React.FC<HeaderProps> = ({
         </div>
         <div className="flex items-center space-x-4">
           <div className="text-sm text-slate-400">by {author}</div>
-          {onShowTutorial && (
-            <Button
-              label="Tutorial"
-              onClick={onShowTutorial}
-              size="sm"
-              variant="primary"
-              className="!bg-slate-700 hover:!bg-slate-600 !border-slate-600"
-            />
-          )}
+          <div className="flex items-center space-x-2">
+            {onShowConfig && (
+              <Button
+                label="Config"
+                onClick={onShowConfig}
+                size="sm"
+                variant="primary"
+                className="!bg-slate-700 hover:!bg-slate-600 !border-slate-600"
+              />
+            )}
+            {onShowTutorial && (
+              <Button
+                label="Tutorial"
+                onClick={onShowTutorial}
+                size="sm"
+                variant="primary"
+                className="!bg-slate-700 hover:!bg-slate-600 !border-slate-600"
+              />
+            )}
+          </div>
         </div>
       </div>
     </header>
