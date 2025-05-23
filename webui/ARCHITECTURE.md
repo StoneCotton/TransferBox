@@ -133,6 +133,18 @@ Processes WebSocket messages:
 4. **Readability**: Code is organized logically and easy to navigate
 5. **Scalability**: New features can be added as new hooks or services
 6. **Type Safety**: Centralized types ensure consistency across the application
+7. **Better UX**: Transfer state is used to disable inputs during active transfers
+
+## UX Improvements
+
+### Transfer State Management
+
+The application provides clear visual feedback during transfers:
+
+- **Destination path input** becomes disabled during active transfers
+- **Set/Reset buttons** are disabled to prevent conflicts
+- **Visual indicators** show transfer progress and status
+- **Inputs re-enable** automatically when transfer completes or fails
 
 ## Migration Summary
 
