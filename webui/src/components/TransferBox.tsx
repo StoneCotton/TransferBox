@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect, useRef, useCallback } from "react";
+import React, { useState, useCallback, useMemo } from "react";
 import Header from "./Header";
 import Button from "./Button";
 import PathInput from "./PathInput";
@@ -13,548 +13,140 @@ import FileTransferProgress from "./FileTransferProgress";
 import ConfigEditor from "./ConfigEditor";
 import AvailableDrives from "./AvailableDrives";
 
-// Import the LogEntry type from LogContainer to ensure consistency
-import type { LogEntry } from "./LogContainer";
+// Import custom hooks and utilities
+import {
+  useWebSocket,
+  useLogs,
+  useTutorial,
+  useTransferState,
+  useDestinationPath,
+  useAppMetadata,
+} from "../hooks";
 
-// App metadata interface
-interface AppMetadata {
-  appName: string;
-  version: string;
-  author: string;
-  description: string;
-  license: string;
-}
-
-const TUTORIAL_STEPS = [
-  {
-    id: "step1",
-    title: "Welcome to TransferBox",
-    description:
-      "This tutorial will guide you through the process of transferring files from your SD card to your computer.",
-  },
-  {
-    id: "step2",
-    title: "Choose Destination",
-    description:
-      "First, select where you want to save your files. Enter a valid path to a directory on your computer.",
-  },
-  {
-    id: "step3",
-    title: "Insert SD Card",
-    description:
-      "Insert your SD card into your computer. TransferBox will automatically detect it.",
-  },
-  {
-    id: "step4",
-    title: "Transfer Files",
-    description:
-      "Once your SD card is detected, the transfer will begin automatically. You can monitor the progress here.",
-  },
-];
-
-// Store whether the tutorial has been shown
-const TUTORIAL_SHOWN_KEY = "transferbox_tutorial_shown";
-
-// WebSocket message types
-interface WebSocketMessage {
-  type: string;
-  data: Record<string, unknown>;
-  timestamp: string;
-}
-
-// Transfer progress data structure from backend
-type BackendTransferProgress = {
-  current_file: string;
-  file_number: number;
-  total_files: number;
-  bytes_transferred: number;
-  total_bytes: number;
-  total_transferred: number;
-  total_size: number;
-  current_file_progress: number;
-  overall_progress: number;
-  status: string;
-  proxy_progress: number;
-  proxy_file_number: number;
-  proxy_total_files: number;
-  speed_bytes_per_sec: number;
-  eta_seconds: number;
-  total_elapsed: number;
-  file_elapsed: number;
-  checksum_elapsed: number;
-  source_drive_name: string;
-  source_drive_path: string;
-};
+// Import constants and handlers
+import { TUTORIAL_STEPS, API_BASE_URL } from "../constants";
+import { createWebSocketHandlers } from "../handlers/websocketHandlers";
 
 const TransferBox: React.FC = () => {
-  // State
-  const [destinationPath, setDestinationPath] = useState("");
-  const [isPathValid, setIsPathValid] = useState<boolean | undefined>(
-    undefined
-  );
-  const [pathError, setPathError] = useState("");
-  const [currentStatus, setCurrentStatus] = useState("Connecting...");
-  const [statusType, setStatusType] = useState<
-    "info" | "warning" | "error" | "success"
-  >("info");
-  const [isCardDetected, setIsCardDetected] = useState(false);
-  const [deviceName, setDeviceName] = useState("");
-  const [devicePath, setDevicePath] = useState("");
-  const [logs, setLogs] = useState<LogEntry[]>([]);
-  const [showTutorialModal, setShowTutorialModal] = useState(false);
-  const [tutorialStep, setTutorialStep] = useState(0);
-  const [, setHasSeenTutorial] = useState(true);
+  // Config modal state
   const [showConfigModal, setShowConfigModal] = useState(false);
-  const [appMetadata, setAppMetadata] = useState<AppMetadata>(
-    {} as AppMetadata
+
+  // Custom hooks for state management
+  const { logs, addLog, clearLogs } = useLogs();
+
+  const transferState = useTransferState();
+  const {
+    transferProgress,
+    isTransferring,
+    transferError,
+    isCardDetected,
+    deviceName,
+    devicePath,
+    currentStatus,
+    statusType,
+    setStatus,
+    resetTransfer,
+  } = transferState;
+
+  const destinationHook = useDestinationPath(addLog, setStatus);
+  const {
+    destinationPath,
+    isPathValid,
+    pathError,
+    destinationSet,
+    setDestinationPath,
+    validateAndSetDestination,
+    resetDestination,
+  } = destinationHook;
+
+  const tutorial = useTutorial(TUTORIAL_STEPS.length);
+  const {
+    showTutorialModal,
+    tutorialStep,
+    nextStep,
+    previousStep,
+    completeTutorial,
+    showTutorial,
+    skipTutorial,
+    resetTutorialState,
+  } = tutorial;
+
+  const { appMetadata } = useAppMetadata();
+
+  // WebSocket message handlers - memoized to prevent reconnection loops
+  const wsHandlers = useMemo(
+    () =>
+      createWebSocketHandlers({
+        addLog,
+        setStatus: transferState.setStatus,
+        updateFromProgress: transferState.updateFromProgress,
+        setTransferError: transferState.setTransferError,
+        setTransferProgress: transferState.setTransferProgress,
+        setCardDetected: transferState.setCardDetected,
+        resetDestination,
+        clearLogs,
+      }),
+    [
+      addLog,
+      transferState.setStatus,
+      transferState.updateFromProgress,
+      transferState.setTransferError,
+      transferState.setTransferProgress,
+      transferState.setCardDetected,
+      resetDestination,
+      clearLogs,
+    ]
   );
 
-  // Transfer progress state - connected to backend
-  const [transferProgress, setTransferProgress] =
-    useState<BackendTransferProgress | null>(null);
-  const [isTransferring, setIsTransferring] = useState(false);
-  const [transferError, setTransferError] = useState<string | null>(null);
-  const [, setTransferState] = useState<
-    "idle" | "transferring" | "completed" | "failed"
-  >("idle");
-  const [destinationSet, setDestinationSet] = useState(false);
+  // WebSocket connection callbacks - memoized to prevent reconnection loops
+  const handleWebSocketConnect = useCallback(() => {
+    setStatus("Connected to TransferBox", "info");
+    addLog("Connected to TransferBox", "info");
+  }, [setStatus, addLog]);
+
+  const handleWebSocketDisconnect = useCallback(() => {
+    setStatus("Disconnected from TransferBox", "warning");
+  }, [setStatus]);
+
+  const handleWebSocketError = useCallback(() => {
+    setStatus("Connection error", "error");
+  }, [setStatus]);
 
   // WebSocket connection
-  const wsRef = useRef<WebSocket | null>(null);
-  const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-  const [isConnected, setIsConnected] = useState(false);
-
-  // API base URL
-  const API_BASE_URL =
-    process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
-
-  // Load app metadata from backend
-  const loadAppMetadata = useCallback(async () => {
-    try {
-      const response = await fetch(`${API_BASE_URL}/api/app-metadata`);
-      if (response.ok) {
-        const metadata = await response.json();
-        setAppMetadata(metadata);
-        console.log(
-          `Loaded app metadata: ${metadata.appName} v${metadata.version}`
-        );
-      } else {
-        console.warn("Failed to load app metadata, using defaults");
-      }
-    } catch (error) {
-      console.warn("Error loading app metadata:", error);
-      // Keep using default values
-    }
-  }, [API_BASE_URL]);
-
-  // Check local storage for tutorial
-  useEffect(() => {
-    if (typeof window !== "undefined") {
-      try {
-        const tutorialShown = localStorage.getItem(TUTORIAL_SHOWN_KEY);
-        if (tutorialShown === "true") {
-          setHasSeenTutorial(true);
-        } else {
-          setHasSeenTutorial(false);
-          setShowTutorialModal(true);
-        }
-      } catch (error) {
-        console.error("Error accessing localStorage:", error);
-        setShowTutorialModal(true);
-      }
-    }
-
-    // Load app metadata
-    loadAppMetadata();
-  }, [loadAppMetadata]);
-
-  // WebSocket connection and management
-  useEffect(() => {
-    const connectWebSocket = () => {
-      try {
-        const wsUrl = `ws://127.0.0.1:8000/ws`;
-        console.log("Connecting to WebSocket:", wsUrl);
-
-        wsRef.current = new WebSocket(wsUrl);
-
-        wsRef.current.onopen = () => {
-          console.log("WebSocket connected");
-          setIsConnected(true);
-          setCurrentStatus("Connected to TransferBox");
-          setStatusType("info");
-          addLog("Connected to TransferBox", "info");
-
-          // Clear any reconnection timeout
-          if (reconnectTimeoutRef.current) {
-            clearTimeout(reconnectTimeoutRef.current);
-            reconnectTimeoutRef.current = null;
-          }
-        };
-
-        wsRef.current.onmessage = (event) => {
-          try {
-            const message: WebSocketMessage = JSON.parse(event.data);
-            handleWebSocketMessage(message);
-          } catch (error) {
-            console.error("Error parsing WebSocket message:", error);
-          }
-        };
-
-        wsRef.current.onclose = () => {
-          console.log("WebSocket disconnected");
-          setIsConnected(false);
-          setCurrentStatus("Disconnected from TransferBox");
-          setStatusType("warning");
-
-          // Attempt to reconnect after 3 seconds
-          reconnectTimeoutRef.current = setTimeout(() => {
-            console.log("Attempting to reconnect...");
-            connectWebSocket();
-          }, 3000);
-        };
-
-        wsRef.current.onerror = (error) => {
-          console.error("WebSocket error:", error);
-          setCurrentStatus("Connection error");
-          setStatusType("error");
-        };
-      } catch (error) {
-        console.error("Error creating WebSocket:", error);
-        setCurrentStatus("Failed to connect");
-        setStatusType("error");
-      }
-    };
-
-    connectWebSocket();
-
-    // Cleanup on unmount
-    return () => {
-      if (reconnectTimeoutRef.current) {
-        clearTimeout(reconnectTimeoutRef.current);
-      }
-      if (wsRef.current) {
-        wsRef.current.close();
-      }
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  // Handle WebSocket messages from backend
-  const handleWebSocketMessage = useCallback((message: WebSocketMessage) => {
-    switch (message.type) {
-      case "initial_state":
-        // Handle initial state from backend
-        const initialData = message.data as {
-          status?: string;
-          errors?: string[];
-          progress?: BackendTransferProgress;
-        };
-        if (initialData.status) {
-          setCurrentStatus(initialData.status);
-          setStatusType("info");
-        }
-        if (initialData.errors && initialData.errors.length > 0) {
-          initialData.errors.forEach((error: string) => {
-            addLog(error, "error");
-          });
-        }
-        if (initialData.progress) {
-          setTransferProgress(initialData.progress);
-          setIsTransferring(initialData.progress.status !== "READY");
-        }
-        break;
-
-      case "status":
-        const statusData = message.data as { message: string };
-        setCurrentStatus(statusData.message);
-
-        // Set appropriate status type
-        if (
-          statusData.message.toLowerCase().includes("error") ||
-          statusData.message.toLowerCase().includes("failed")
-        ) {
-          setStatusType("error");
-        } else if (
-          statusData.message.toLowerCase().includes("complete") ||
-          statusData.message.toLowerCase().includes("success")
-        ) {
-          setStatusType("success");
-        } else if (statusData.message.toLowerCase().includes("warning")) {
-          setStatusType("warning");
-        } else {
-          setStatusType("info");
-        }
-
-        addLog(statusData.message, "info");
-        break;
-
-      case "progress":
-        const progressData = message.data as BackendTransferProgress;
-        setTransferProgress(progressData);
-
-        // Update transfer state and UI based on progress status
-        const status = progressData.status;
-
-        if (
-          status === "COPYING" ||
-          status === "CHECKSUMMING" ||
-          status === "GENERATING_PROXY" ||
-          status === "VERIFYING"
-        ) {
-          setIsTransferring(true);
-          setTransferState("transferring");
-
-          // Use source drive info from the backend progress data
-          if (
-            progressData.source_drive_name &&
-            progressData.source_drive_path
-          ) {
-            setIsCardDetected(true);
-            setDeviceName(progressData.source_drive_name);
-            setDevicePath(progressData.source_drive_path);
-          }
-
-          // Update status message based on current operation
-          let statusMessage = "";
-          switch (status) {
-            case "COPYING":
-              statusMessage = `Copying files... (${progressData.file_number}/${progressData.total_files})`;
-              break;
-            case "CHECKSUMMING":
-              statusMessage = `Verifying files... (${progressData.file_number}/${progressData.total_files})`;
-              break;
-            case "GENERATING_PROXY":
-              statusMessage = `Generating proxies... (${progressData.proxy_file_number}/${progressData.proxy_total_files})`;
-              break;
-            case "VERIFYING":
-              statusMessage = "Verifying transfer...";
-              break;
-          }
-          setCurrentStatus(statusMessage);
-          setStatusType("info");
-        } else if (status === "SUCCESS") {
-          setIsTransferring(false);
-          setTransferState("completed");
-          setStatusType("success");
-          setCurrentStatus("Transfer completed successfully");
-          setIsCardDetected(false);
-          setDeviceName("");
-          setDevicePath("");
-          // Reset destination after successful transfer
-          setDestinationSet(false);
-          setIsPathValid(undefined);
-          addLog("Transfer completed successfully", "success");
-        } else if (status === "ERROR") {
-          setIsTransferring(false);
-          setTransferState("failed");
-          setStatusType("error");
-          setCurrentStatus("Transfer failed");
-          setTransferError("Transfer failed");
-          setIsCardDetected(false);
-          setDeviceName("");
-          setDevicePath("");
-          // Reset destination after failed transfer
-          setDestinationSet(false);
-          setIsPathValid(undefined);
-          addLog("Transfer failed", "error");
-        }
-        break;
-
-      case "error":
-        const errorData = message.data as { message: string };
-        setTransferError(errorData.message);
-        setTransferState("failed");
-        setStatusType("error");
-        setIsTransferring(false);
-        setIsCardDetected(false);
-        setDeviceName("");
-        setDevicePath("");
-        // Reset destination after error
-        setDestinationSet(false);
-        setIsPathValid(undefined);
-        addLog(errorData.message, "error");
-        break;
-
-      case "clear":
-        const clearData = message.data as { preserve_errors?: boolean };
-        if (!clearData.preserve_errors) {
-          setTransferError(null);
-          // Clear logs except errors if preserve_errors is false
-          setLogs((prev) => prev.filter((log) => log.level !== "error"));
-        }
-        setCurrentStatus("");
-        setTransferProgress(null);
-        setIsTransferring(false);
-        setIsCardDetected(false);
-        setDeviceName("");
-        setDevicePath("");
-        break;
-
-      case "pong":
-        // Handle ping/pong for connection keepalive
-        break;
-
-      default:
-        console.log("Unknown WebSocket message type:", message.type);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  // API functions
-  const validatePath = async (path: string) => {
-    try {
-      const response = await fetch(`${API_BASE_URL}/api/validate-path`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ path }),
-      });
-
-      const result = await response.json();
-      return result;
-    } catch (error) {
-      console.error("Error validating path:", error);
-      return { is_valid: false, error_message: "Network error" };
-    }
-  };
-
-  const setDestinationPathAPI = async (
-    path: string
-  ): Promise<{ success: boolean; message?: string; path?: string }> => {
-    try {
-      const response = await fetch(`${API_BASE_URL}/api/set-destination`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ path }),
-      });
-
-      const result = await response.json();
-      return result;
-    } catch (error) {
-      console.error("Error setting destination path:", error);
-      return { success: false, message: "Network error" };
-    }
-  };
+  const { isConnected } = useWebSocket({
+    onMessage: wsHandlers.handleMessage,
+    onConnect: handleWebSocketConnect,
+    onDisconnect: handleWebSocketDisconnect,
+    onError: handleWebSocketError,
+  });
 
   // Event handlers
-  const handleDestinationSubmit = async () => {
-    if (!destinationPath.trim()) {
-      setPathError("Please enter a destination path");
-      setIsPathValid(false);
-      return;
-    }
-
-    setCurrentStatus("Validating path...");
-    addLog("Validating destination path...", "info");
-
-    const validation = await validatePath(destinationPath);
-
-    if (validation.is_valid) {
-      setIsPathValid(true);
-      setPathError("");
-
-      // Set the destination in the backend
-      const result = await setDestinationPathAPI(validation.sanitized_path);
-
-      if (result.success) {
-        setCurrentStatus("Destination path set successfully");
-        setStatusType("success");
-        setDestinationSet(true);
-        addLog(`Destination set to: ${result.path}`, "success");
-      } else {
-        setPathError(result.message || "Failed to set destination");
-        setIsPathValid(false);
-        setStatusType("error");
-        addLog(`Failed to set destination: ${result.message}`, "error");
-      }
-    } else {
-      setIsPathValid(false);
-      setPathError(validation.error_message || "Invalid path");
-      setStatusType("error");
-      addLog(`Path validation failed: ${validation.error_message}`, "error");
-    }
-  };
-
-  const resetTransfer = () => {
-    setTransferError(null);
-    setTransferState("idle");
-    setIsTransferring(false);
-    setTransferProgress(null);
-    setStatusType("info");
-    setCurrentStatus("Ready for transfer");
-    setDestinationSet(false);
-    setIsPathValid(undefined);
-    setIsCardDetected(false);
-    setDeviceName("");
-    setDevicePath("");
+  const handleResetTransfer = useCallback(() => {
+    resetTransfer();
+    resetDestination();
     addLog("Transfer reset", "info");
-  };
+  }, [resetTransfer, resetDestination, addLog]);
 
-  const addLog = useCallback(
-    (
-      message: string,
-      level: "info" | "warning" | "error" | "success" = "info"
-    ) => {
-      const newLog: LogEntry = {
-        id: `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
-        message,
-        timestamp: new Date().toLocaleString(),
-        level,
-      };
-      setLogs((prev) => [...prev, newLog]);
-    },
-    []
-  );
+  const handleResetDestination = useCallback(() => {
+    resetDestination();
+  }, [resetDestination]);
 
-  // Tutorial handlers
-  const handleTutorialNext = () => {
-    setTutorialStep((prev) => Math.min(prev + 1, TUTORIAL_STEPS.length - 1));
-  };
-
-  const handleTutorialPrevious = () => {
-    setTutorialStep((prev) => Math.max(prev - 1, 0));
-  };
-
-  const handleTutorialComplete = () => {
-    setShowTutorialModal(false);
-    setTutorialStep(0);
-    try {
-      localStorage.setItem(TUTORIAL_SHOWN_KEY, "true");
-      setHasSeenTutorial(true);
-    } catch (error) {
-      console.error("Error saving tutorial state:", error);
-    }
-  };
-
-  const handleShowTutorial = () => {
-    setTutorialStep(0);
-    setShowTutorialModal(true);
-  };
-
-  const handleSkipTutorial = () => {
-    handleTutorialComplete();
-  };
-
-  const resetTutorialState = () => {
-    try {
-      localStorage.removeItem(TUTORIAL_SHOWN_KEY);
-      setHasSeenTutorial(false);
-      addLog("Tutorial state reset - refresh to see tutorial", "info");
-    } catch (error) {
-      console.error("Error resetting tutorial state:", error);
-    }
-  };
-
-  const handleShowConfig = () => {
+  const handleShowConfig = useCallback(() => {
     setShowConfigModal(true);
-  };
+  }, []);
 
-  const handleCloseConfig = () => {
+  const handleCloseConfig = useCallback(() => {
     setShowConfigModal(false);
-  };
+  }, []);
+
+  const handleResetTutorialWithLog = useCallback(() => {
+    const success = resetTutorialState();
+    if (success) {
+      addLog("Tutorial state reset - refresh to see tutorial", "info");
+    } else {
+      addLog("Failed to reset tutorial state", "error");
+    }
+  }, [resetTutorialState, addLog]);
 
   return (
     <div className="min-h-screen bg-slate-50">
@@ -562,7 +154,7 @@ const TransferBox: React.FC = () => {
         appName={appMetadata.appName}
         version={appMetadata.version}
         author={appMetadata.author}
-        onShowTutorial={handleShowTutorial}
+        onShowTutorial={showTutorial}
         onShowConfig={handleShowConfig}
       />
 
@@ -572,7 +164,7 @@ const TransferBox: React.FC = () => {
           <div className="mb-4 flex gap-2">
             <Button
               label="Reset Tutorial State"
-              onClick={resetTutorialState}
+              onClick={handleResetTutorialWithLog}
               size="sm"
               variant="secondary"
             />
@@ -606,13 +198,13 @@ const TransferBox: React.FC = () => {
                       isValid={isPathValid}
                       errorMessage={pathError}
                       examplePath="/Volumes/External/Media"
-                      onSubmit={handleDestinationSubmit}
+                      onSubmit={validateAndSetDestination}
                     />
                   </div>
                   <div className="ml-2 flex-shrink-0 self-start flex gap-2">
                     <Button
                       label={destinationSet ? "Set ✓" : "Set"}
-                      onClick={handleDestinationSubmit}
+                      onClick={validateAndSetDestination}
                       size="md"
                       disabled={
                         !isConnected || destinationSet || isTransferring
@@ -622,11 +214,7 @@ const TransferBox: React.FC = () => {
                     {destinationSet && !isTransferring && (
                       <Button
                         label="Reset"
-                        onClick={() => {
-                          setDestinationSet(false);
-                          setIsPathValid(undefined);
-                          addLog("Destination reset", "info");
-                        }}
+                        onClick={handleResetDestination}
                         size="md"
                         variant="secondary"
                       />
@@ -674,7 +262,7 @@ const TransferBox: React.FC = () => {
                   </p>
                   <Button
                     label="Dismiss & Reset"
-                    onClick={resetTransfer}
+                    onClick={handleResetTransfer}
                     variant="danger"
                     size="sm"
                   />
@@ -773,16 +361,16 @@ const TransferBox: React.FC = () => {
         {showTutorialModal && (
           <Modal
             isOpen={showTutorialModal}
-            onClose={handleSkipTutorial}
+            onClose={skipTutorial}
             title="Tutorial"
             disableClickOutside={true}
           >
             <TutorialGuide
               steps={TUTORIAL_STEPS}
               currentStep={tutorialStep}
-              onNext={handleTutorialNext}
-              onPrevious={handleTutorialPrevious}
-              onComplete={handleTutorialComplete}
+              onNext={nextStep}
+              onPrevious={previousStep}
+              onComplete={completeTutorial}
               inModal={true}
             />
           </Modal>

@@ -1,13 +1,7 @@
 "use client";
 
 import React, { useRef, useEffect } from "react";
-
-export interface LogEntry {
-  id: string;
-  message: string;
-  timestamp: string;
-  level?: "info" | "warning" | "error" | "success";
-}
+import type { LogEntry } from "../types";
 
 interface LogContainerProps {
   logs: LogEntry[];
