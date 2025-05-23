@@ -764,8 +764,8 @@ const TransferBox: React.FC = () => {
 
           {/* Right Column - Logs */}
           <div className="space-y-6">
-            <AvailableDrives apiBaseUrl={API_BASE_URL} />
             <LogContainer logs={logs} />
+            <AvailableDrives apiBaseUrl={API_BASE_URL} />
           </div>
         </div>
 
