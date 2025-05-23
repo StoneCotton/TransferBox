@@ -199,6 +199,7 @@ const TransferBox: React.FC = () => {
                       errorMessage={pathError}
                       examplePath="/Volumes/External/Media"
                       onSubmit={validateAndSetDestination}
+                      disabled={isTransferring}
                     />
                   </div>
                   <div className="ml-2 flex-shrink-0 self-start flex gap-2">
@@ -217,6 +218,7 @@ const TransferBox: React.FC = () => {
                         onClick={handleResetDestination}
                         size="md"
                         variant="secondary"
+                        disabled={isTransferring}
                       />
                     )}
                   </div>
