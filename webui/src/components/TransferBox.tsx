@@ -109,7 +109,6 @@ const TransferBox: React.FC = () => {
   const [showTutorialModal, setShowTutorialModal] = useState(false);
   const [tutorialStep, setTutorialStep] = useState(0);
   const [, setHasSeenTutorial] = useState(true);
-  const [logIdCounter, setLogIdCounter] = useState(0);
   const [showConfigModal, setShowConfigModal] = useState(false);
   const [appMetadata, setAppMetadata] = useState<AppMetadata>(DEFAULT_APP_DATA);
 
@@ -507,15 +506,14 @@ const TransferBox: React.FC = () => {
       level: "info" | "warning" | "error" | "success" = "info"
     ) => {
       const newLog: LogEntry = {
-        id: (logIdCounter + 1).toString(),
+        id: `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
         message,
         timestamp: new Date().toLocaleString(),
         level,
       };
       setLogs((prev) => [...prev, newLog]);
-      setLogIdCounter((prev) => prev + 1);
     },
-    [logIdCounter]
+    []
   );
 
   // Tutorial handlers
