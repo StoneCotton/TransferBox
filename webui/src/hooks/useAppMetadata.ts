@@ -15,6 +15,7 @@ const DEFAULT_METADATA: AppMetadata = {
   author: "Unknown",
   description: "File Transfer Application",
   license: "MIT",
+  platform: "unknown",
 };
 
 /**

@@ -25,7 +25,7 @@ import {
 } from "../hooks";
 
 // Import constants and handlers
-import { TUTORIAL_STEPS, API_BASE_URL } from "../constants";
+import { getTutorialSteps, API_BASE_URL } from "../constants";
 import { createWebSocketHandlers } from "../handlers/websocketHandlers";
 
 const TransferBox: React.FC = () => {
@@ -60,7 +60,11 @@ const TransferBox: React.FC = () => {
     resetDestination,
   } = destinationHook;
 
-  const tutorial = useTutorial(TUTORIAL_STEPS.length);
+  const { appMetadata } = useAppMetadata();
+
+  // Get platform-specific tutorial steps
+  const tutorialSteps = getTutorialSteps(appMetadata.platform);
+  const tutorial = useTutorial(tutorialSteps.length);
   const {
     showTutorialModal,
     tutorialStep,
@@ -71,8 +75,6 @@ const TransferBox: React.FC = () => {
     skipTutorial,
     resetTutorialState,
   } = tutorial;
-
-  const { appMetadata } = useAppMetadata();
 
   // Transfer controls for stop and shutdown
   const { isStopping, isShuttingDown, stopTransfer, shutdownApplication } =
@@ -265,10 +267,34 @@ const TransferBox: React.FC = () => {
                     <h3 className="text-lg font-semibold">Transfer Error</h3>
                   </div>
                   <p className="mb-3">{transferError}</p>
-                  <p className="text-sm mb-3">
-                    The transfer was interrupted and file data may be incomplete
-                    or corrupted. Please reconnect the card and try again.
-                  </p>
+                  {transferError.includes("No valid media files found") ? (
+                    <div className="text-sm mb-3">
+                      <p className="mb-2">
+                        This usually means one of the following:
+                      </p>
+                      <ul className="list-disc list-inside space-y-1 ml-2">
+                        <li>The card/drive is empty</li>
+                        <li>
+                          The files don&apos;t match the configured media
+                          extensions
+                        </li>
+                        <li>
+                          The files are in a format not recognized by
+                          TransferBox
+                        </li>
+                      </ul>
+                      <p className="mt-2">
+                        Check your files in Explorer/Finder and verify the
+                        configuration if needed.
+                      </p>
+                    </div>
+                  ) : (
+                    <p className="text-sm mb-3">
+                      The transfer was interrupted and file data may be
+                      incomplete or corrupted. Please reconnect the card and try
+                      again.
+                    </p>
+                  )}
                   <Button
                     label="Dismiss & Reset"
                     onClick={handleResetTransfer}
@@ -407,12 +433,25 @@ const TransferBox: React.FC = () => {
             disableClickOutside={true}
           >
             <TutorialGuide
-              steps={TUTORIAL_STEPS}
+              steps={tutorialSteps}
               currentStep={tutorialStep}
               onNext={nextStep}
               onPrevious={previousStep}
               onComplete={completeTutorial}
               inModal={true}
+              // Destination path props
+              destinationPath={destinationPath}
+              setDestinationPath={setDestinationPath}
+              isPathValid={isPathValid}
+              pathError={pathError}
+              destinationSet={destinationSet}
+              validateAndSetDestination={validateAndSetDestination}
+              resetDestination={resetDestination}
+              isConnected={isConnected}
+              // Card detection props
+              isCardDetected={isCardDetected}
+              deviceName={deviceName}
+              devicePath={devicePath}
             />
           </Modal>
         )}

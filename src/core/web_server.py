@@ -49,6 +49,7 @@ class AppMetadata(BaseModel):
     author: str
     description: str
     license: str
+    platform: str
 
 class DriveInfo(BaseModel):
     path: str
@@ -310,12 +311,16 @@ class WebServer:
         async def get_app_metadata():
             """Get application metadata"""
             try:
+                from src.core.utils import get_platform
+                platform = get_platform()
+                
                 return AppMetadata(
                     appName=__project_name__,
                     version=__version__,
                     author=__author__,
                     description=__description__,
-                    license=__license__
+                    license=__license__,
+                    platform=platform
                 )
             except Exception as e:
                 logger.error(f"App metadata retrieval error: {e}")

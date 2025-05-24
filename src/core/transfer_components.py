@@ -402,6 +402,8 @@ class FileProcessor:
         # Handle empty source directory before initializing any transfer state
         if total_files == 0:
             logger.warning(f"No files to transfer from {source_path}")
+            # Send error message to trigger web UI error alerts
+            self.display.show_error("No valid media files found")
             self.display.show_status("No valid media files found")
             if self.sound_manager:
                 self.sound_manager.play_error()

@@ -119,7 +119,15 @@ export const createWebSocketHandlers = (context: WebSocketHandlerContext) => {
 
   const handleError = (message: WebSocketMessage): void => {
     const errorData = message.data as { message: string };
-    setTransferError(errorData.message);
+
+    // Enhance error message for specific cases
+    let displayError = errorData.message;
+    if (errorData.message === "No valid media files found") {
+      displayError =
+        "No valid media files found on the source drive. Please check that the drive contains supported media files and try again.";
+    }
+
+    setTransferError(displayError);
     setStatus(errorData.message, "error");
     setCardDetected(false);
     resetDestination();

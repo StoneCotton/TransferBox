@@ -13,6 +13,7 @@ export interface AppMetadata {
   author: string;
   description: string;
   license: string;
+  platform: string;
 }
 
 export interface WebSocketMessage {
@@ -48,6 +49,9 @@ export interface TutorialStep {
   id: string;
   title: string;
   description: string;
+  stepType?: "info" | "destination" | "card_detection" | "monitoring";
+  requiresCompletion?: boolean; // Whether the step must be completed before proceeding
+  image?: string; // Optional image for the tutorial step
 }
 
 export interface PathValidationResult {
