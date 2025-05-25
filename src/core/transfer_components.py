@@ -23,6 +23,7 @@ from .file_context import file_operation
 from .mhl_handler import initialize_mhl_file, add_file_to_mhl
 from .transfer_logger import TransferLogger, create_transfer_log
 from .progress_tracker import ProgressTracker
+from .validation import PathValidator, ErrorMessages
 
 logger = logging.getLogger(__name__)
 
@@ -152,7 +153,7 @@ class TransferValidator:
         
     def _validate_source(self, source_path: Path) -> bool:
         """
-        Validate source path exists and is readable.
+        Validate source path using centralized validation.
         
         Args:
             source_path: Source path to validate
@@ -160,14 +161,18 @@ class TransferValidator:
         Returns:
             True if validation passes, False otherwise
         """
-        if not validate_source_path(source_path):
-            self.display.show_error("Invalid source")
+        result = PathValidator.validate_source(source_path, check_mounted=True)
+        
+        if not result.is_valid:
+            logger.error(f"Source validation failed: {result.error_message}")
+            self.display.show_error(result.error_message)
             return False
+            
         return True
         
     def _validate_destination(self, destination_path: Path) -> bool:
         """
-        Validate destination path is writable.
+        Validate destination path using centralized validation.
         
         Args:
             destination_path: Destination path to validate
@@ -176,58 +181,15 @@ class TransferValidator:
             True if validation passes, False otherwise
         """
         with file_operation(self.display, None, "Validate Destination"):
-            # Validate path type
-            if destination_path is None:
-                logger.error("No destination path provided")
-                self.display.show_error("No destination")
-                return False
-                
-            try:
-                dest_path = Path(destination_path)
-            except TypeError:
-                logger.error(f"Invalid destination path type: {type(destination_path).__name__}")
-                self.display.show_error("Invalid path type")
-                return False
-                
-            # Handle existing vs non-existing destination
-            if dest_path.exists():
-                # Check if it's a directory
-                if not dest_path.is_dir():
-                    logger.error(f"Destination exists but is not a directory: {dest_path}")
-                    self.display.show_error("Not a directory")
-                    return False
-                    
-                # Check write permissions
-                if not os.access(dest_path, os.W_OK):
-                    logger.error(f"No write permission for destination: {dest_path}")
-                    self.display.show_error("Write permission denied")
-                    return False
-                    
-                logger.info(f"Using existing directory: {dest_path}")
-                return True
-                
-            # For non-existing destination, validate parent and create
-            parent = dest_path.parent
+            result = PathValidator.validate_destination(destination_path, auto_create=True)
             
-            if not parent.exists():
-                logger.error(f"Parent directory doesn't exist: {parent}")
-                self.display.show_error("Parent dir missing")
+            if not result.is_valid:
+                logger.error(f"Destination validation failed: {result.error_message}")
+                self.display.show_error(result.error_message)
                 return False
                 
-            if not os.access(parent, os.W_OK):
-                logger.error(f"No write permission for parent directory: {parent}")
-                self.display.show_error("Parent write denied")
-                return False
-                
-            # Create the destination directory
-            try:
-                dest_path.mkdir(parents=True, exist_ok=True)
-                logger.info(f"Created directory: {dest_path}")
-                return True
-            except Exception as e:
-                logger.error(f"Failed to create directory {dest_path}: {e}")
-                self.display.show_error("Create dir failed")
-                return False
+            logger.info(f"Using validated directory: {result.sanitized_path}")
+            return True
 
 
 class TransferEnvironment:
@@ -381,7 +343,7 @@ class FileProcessor:
         if not source_path.exists() or not os.path.ismount(str(source_path)):
             error_msg = f"Source drive removed before transfer could start: {source_path}"
             logger.error(error_msg)
-            self.display.show_error("Source removed")
+            self.display.show_error(ErrorMessages.SOURCE_REMOVED)
             if self.sound_manager:
                 self.sound_manager.play_error()
             return False
@@ -392,7 +354,7 @@ class FileProcessor:
         except (FileNotFoundError, PermissionError, OSError) as e:
             # These specific errors are likely caused by drive removal
             logger.error(f"Error getting files - drive may have been removed: {e}")
-            self.display.show_error("Source removed")
+            self.display.show_error(ErrorMessages.SOURCE_REMOVED)
             if self.sound_manager:
                 self.sound_manager.play_error()
             return False
@@ -424,7 +386,7 @@ class FileProcessor:
                 # Check if source drive was removed
                 if not source_path.exists() or not os.path.ismount(str(source_path)):
                     logger.error(f"Source drive removed during size calculation: {source_path}")
-                    self.display.show_error("Source removed")
+                    self.display.show_error(ErrorMessages.SOURCE_REMOVED)
                     if self.sound_manager:
                         self.sound_manager.play_error()
                     return False
@@ -451,7 +413,7 @@ class FileProcessor:
                 if not source_path.exists() or not os.path.ismount(str(source_path)):
                     error_msg = f"Source drive removed during transfer: {source_path}"
                     logger.error(error_msg)
-                    self.display.show_error("Source removed")
+                    self.display.show_error(ErrorMessages.SOURCE_REMOVED)
                     if self.sound_manager:
                         self.sound_manager.play_error()
                     # Mark transfer as incomplete
@@ -469,7 +431,7 @@ class FileProcessor:
                         error_msg = f"Source drive removed while getting file size: {file_path} - {e}"
                         logger.error(error_msg)
                         transfer_logger.log_message(error_msg)
-                        self.display.show_error("Source removed")
+                        self.display.show_error(ErrorMessages.SOURCE_REMOVED)
                         if self.sound_manager:
                             self.sound_manager.play_error()
                         return False
@@ -509,7 +471,7 @@ class FileProcessor:
                 except (FileNotFoundError, PermissionError, OSError) as e:
                     # These specific errors are likely caused by drive removal
                     logger.error(f"Error processing file - drive may have been removed: {e}")
-                    self.display.show_error("Source removed")
+                    self.display.show_error(ErrorMessages.SOURCE_REMOVED)
                     if self.sound_manager:
                         self.sound_manager.play_error()
                     # Mark transfer as incomplete
@@ -564,9 +526,9 @@ class FileProcessor:
             # Check if it could be a drive removal error
             if not source_path.exists() or not os.path.ismount(str(source_path)):
                 logger.error(f"Source drive seems to have been removed during transfer: {source_path}")
-                self.display.show_error("Source removed")
+                self.display.show_error(ErrorMessages.SOURCE_REMOVED)
             else:
-                self.display.show_error("Transfer error")
+                self.display.show_error(ErrorMessages.TRANSFER_ERROR)
                 
             if self.sound_manager:
                 self.sound_manager.play_error()
@@ -595,7 +557,7 @@ class FileProcessor:
                 error_msg = f"Source drive removed before processing file: {file_path}"
                 logger.error(error_msg)
                 transfer_logger.log_message(error_msg)
-                self.display.show_error("Source removed")
+                self.display.show_error(ErrorMessages.SOURCE_REMOVED)
                 if self.sound_manager:
                     self.sound_manager.play_error()
                 return False
@@ -607,7 +569,7 @@ class FileProcessor:
                     error_msg = f"Source drive removed before processing file: {file_path}"
                     logger.error(error_msg)
                     transfer_logger.log_message(error_msg)
-                    self.display.show_error("Source removed")
+                    self.display.show_error(ErrorMessages.SOURCE_REMOVED)
                     if self.sound_manager:
                         self.sound_manager.play_error()
                     return False
@@ -645,7 +607,7 @@ class FileProcessor:
                     error_msg = f"Source drive removed while getting file size: {file_path} - {e}"
                     logger.error(error_msg)
                     transfer_logger.log_message(error_msg)
-                    self.display.show_error("Source removed")
+                    self.display.show_error(ErrorMessages.SOURCE_REMOVED)
                     if self.sound_manager:
                         self.sound_manager.play_error()
                     return False
@@ -703,14 +665,14 @@ class FileProcessor:
                     error_msg = f"Source drive removed during file transfer: {e}"
                     logger.error(error_msg)
                     transfer_logger.log_message(error_msg)
-                    self.display.show_error("Source removed")
+                    self.display.show_error(ErrorMessages.SOURCE_REMOVED)
                     if self.sound_manager:
                         self.sound_manager.play_error()
                 else:
                     error_msg = f"Error during file transfer: {e}"
                     logger.error(error_msg)
                     transfer_logger.log_message(error_msg)
-                    self.display.show_error("Transfer error")
+                    self.display.show_error(ErrorMessages.TRANSFER_ERROR)
                 
                 success = False
             
@@ -803,14 +765,14 @@ class FileProcessor:
                 error_msg = f"Source drive removed during file processing: {e}"
                 logger.error(error_msg)
                 transfer_logger.log_message(error_msg)
-                self.display.show_error("Source removed")
+                self.display.show_error(ErrorMessages.SOURCE_REMOVED)
                 if self.sound_manager:
                     self.sound_manager.play_error()
             else:
                 error_msg = f"Error processing file {file_path}: {e}"
                 logger.error(error_msg)
                 transfer_logger.log_message(error_msg)
-                self.display.show_error("File error")
+                self.display.show_error(ErrorMessages.TRANSFER_ERROR)
                 
             self.progress_tracker.set_status(TransferStatus.ERROR)
             return False 

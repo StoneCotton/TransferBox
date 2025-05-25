@@ -8,6 +8,19 @@ class TransferBoxError(Exception):
         self.recovery_steps = recovery_steps or []
         super().__init__(message, *args)
 
+class ValidationError(TransferBoxError):
+    """Validation related errors"""
+    
+    def __init__(self, message, path=None, validation_type=None, *args):
+        self.path = path
+        self.validation_type = validation_type
+        recovery_steps = [
+            "Check path validity",
+            "Verify permissions",
+            "Ensure path exists if required"
+        ]
+        super().__init__(message, recoverable=True, recovery_steps=recovery_steps, *args)
+
 class ConfigError(TransferBoxError):
     """Configuration related errors"""
     

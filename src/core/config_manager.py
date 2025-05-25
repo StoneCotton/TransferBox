@@ -3,7 +3,7 @@
 import logging
 import yaml
 from pathlib import Path
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, ClassVar
 from pydantic import BaseModel, Field, field_validator
 import sys
 import os
@@ -15,6 +15,39 @@ logger = logging.getLogger(__name__)
 
 class TransferConfig(BaseModel):
     """Configuration settings for TransferBox using Pydantic for validation"""
+    
+    # Configuration sections for organized YAML output
+    CONFIG_SECTIONS: ClassVar[Dict[str, List[str]]] = {
+        "# File handling - Control how files are renamed and processed": [
+            "version", "rename_with_timestamp", "preserve_original_filename", 
+            "filename_template", "timestamp_format", "create_mhl_files"
+        ],
+        "# Media transfer settings": [
+            "media_only_transfer", "preserve_folder_structure", 
+            "transfer_destination", "media_extensions"
+        ],
+        "# Directory structure settings": [
+            "create_date_folders", "date_folder_format", 
+            "create_device_folders", "device_folder_template"
+        ],
+        "# Proxy generation settings": [
+            "generate_proxies", "proxy_subfolder", 
+            "include_proxy_watermark", "proxy_watermark_path"
+        ],
+        "# Sound settings": [
+            "enable_sounds", "sound_volume", 
+            "success_sound_path", "error_sound_path"
+        ],
+        "# Advanced settings": [
+            "buffer_size", "verify_transfers", "max_transfer_threads"
+        ],
+        "# Logging settings": [
+            "log_level", "log_file_rotation", "log_file_max_size"
+        ],
+        "# User Experience settings": [
+            "tutorial_mode"
+        ]
+    }
     
     version: str = __version__  # 2) Add version field
     # File handling
@@ -97,59 +130,32 @@ class TransferConfig(BaseModel):
     
     def to_dict(self) -> dict:
         """
-        Convert config to dictionary for YAML saving.
+        Convert config to dictionary for YAML saving using Pydantic's built-in serialization.
         
         Returns:
-            Dictionary representation of config with comments
+            Dictionary representation of config
         """
-        config_dict = {}
-        config_dict["version"] = self.version  # 3) Include version
+        return self.model_dump()
+    
+    def save_to_yaml_with_sections(self, file_handle):
+        """
+        Save configuration to YAML file with organized sections.
+        This method eliminates DRY violations by automatically using the CONFIG_SECTIONS.
         
-        # File handling
-        config_dict["rename_with_timestamp"] = self.rename_with_timestamp
-        config_dict["preserve_original_filename"] = self.preserve_original_filename
-        config_dict["filename_template"] = self.filename_template
-        config_dict["timestamp_format"] = self.timestamp_format
-        config_dict["create_mhl_files"] = self.create_mhl_files
+        Args:
+            file_handle: Open file handle to write to
+        """
+        config_dict = self.to_dict()
         
-        # Media transfer settings
-        config_dict["media_only_transfer"] = self.media_only_transfer
-        config_dict["preserve_folder_structure"] = self.preserve_folder_structure
-        config_dict["transfer_destination"] = self.transfer_destination
-        config_dict["media_extensions"] = self.media_extensions
-        
-        # Directory structure
-        config_dict["create_date_folders"] = self.create_date_folders
-        config_dict["date_folder_format"] = self.date_folder_format
-        config_dict["create_device_folders"] = self.create_device_folders
-        config_dict["device_folder_template"] = self.device_folder_template
-        
-        # Proxy generation
-        config_dict["generate_proxies"] = self.generate_proxies
-        config_dict["proxy_subfolder"] = self.proxy_subfolder
-        config_dict["include_proxy_watermark"] = self.include_proxy_watermark
-        config_dict["proxy_watermark_path"] = self.proxy_watermark_path
-        
-        # Sound settings
-        config_dict["enable_sounds"] = self.enable_sounds
-        config_dict["sound_volume"] = self.sound_volume
-        config_dict["success_sound_path"] = self.success_sound_path
-        config_dict["error_sound_path"] = self.error_sound_path
-        
-        # Advanced settings
-        config_dict["buffer_size"] = self.buffer_size
-        config_dict["verify_transfers"] = self.verify_transfers
-        config_dict["max_transfer_threads"] = self.max_transfer_threads
-        
-        # Logging settings
-        config_dict["log_level"] = self.log_level
-        config_dict["log_file_rotation"] = self.log_file_rotation
-        config_dict["log_file_max_size"] = self.log_file_max_size
-        
-        # User Experience settings
-        config_dict["tutorial_mode"] = self.tutorial_mode
-        
-        return config_dict
+        for section_comment, field_names in self.CONFIG_SECTIONS.items():
+            # Write section header
+            file_handle.write(f"\n{section_comment}\n")
+            
+            # Create section dictionary with only the fields for this section
+            section_dict = {k: config_dict[k] for k in field_names if k in config_dict}
+            
+            # Write section fields
+            yaml.dump(section_dict, file_handle, default_flow_style=False, sort_keys=False)
     
     def get(self, key, default=None):
         """
@@ -302,33 +308,9 @@ class ConfigManager:
             # Create parent directory if it doesn't exist
             config_file.parent.mkdir(parents=True, exist_ok=True)
             
-            config_dict = self.config.to_dict()
-            
             with open(config_file, 'w') as f:
-                # Add section headers as comments
-                f.write("# File handling - Control how files are renamed and processed\n")
-                yaml.dump({k: config_dict[k] for k in ["version", "rename_with_timestamp", "preserve_original_filename", "filename_template", "timestamp_format", "create_mhl_files"]}, f, default_flow_style=False, sort_keys=False)
-                
-                f.write("\n# Media transfer settings\n")
-                yaml.dump({k: config_dict[k] for k in ["media_only_transfer", "preserve_folder_structure", "transfer_destination", "media_extensions"]}, f, default_flow_style=False, sort_keys=False)
-                
-                f.write("\n# Directory structure settings\n")
-                yaml.dump({k: config_dict[k] for k in ["create_date_folders", "date_folder_format", "create_device_folders", "device_folder_template"]}, f, default_flow_style=False, sort_keys=False)
-                
-                f.write("\n# Proxy generation settings\n")
-                yaml.dump({k: config_dict[k] for k in ["generate_proxies", "proxy_subfolder", "include_proxy_watermark", "proxy_watermark_path"]}, f, default_flow_style=False, sort_keys=False)
-                
-                f.write("\n# Sound settings\n")
-                yaml.dump({k: config_dict[k] for k in ["enable_sounds", "sound_volume", "success_sound_path", "error_sound_path"]}, f, default_flow_style=False, sort_keys=False)
-                
-                f.write("\n# Advanced settings\n")
-                yaml.dump({k: config_dict[k] for k in ["buffer_size", "verify_transfers", "max_transfer_threads"]}, f, default_flow_style=False, sort_keys=False)
-                
-                f.write("\n# Logging settings\n")
-                yaml.dump({k: config_dict[k] for k in ["log_level", "log_file_rotation", "log_file_max_size"]}, f, default_flow_style=False, sort_keys=False)
-                
-                f.write("\n# User Experience settings\n")
-                yaml.dump({k: config_dict[k] for k in ["tutorial_mode"]}, f, default_flow_style=False, sort_keys=False)
+                # Use the centralized method to save with sections
+                self.config.save_to_yaml_with_sections(f)
                 
             logger.info(f"Created default configuration at {config_file}")
             
@@ -355,33 +337,9 @@ class ConfigManager:
             # Create parent directory if it doesn't exist
             config_file.parent.mkdir(parents=True, exist_ok=True)
             
-            config_dict = self.config.to_dict()
-            
             with open(config_file, 'w') as f:
-                # Add section headers as comments
-                f.write("# File handling - Control how files are renamed and processed\n")
-                yaml.dump({k: config_dict[k] for k in ["version", "rename_with_timestamp", "preserve_original_filename", "filename_template", "timestamp_format", "create_mhl_files"]}, f, default_flow_style=False, sort_keys=False)
-                
-                f.write("\n# Media transfer settings\n")
-                yaml.dump({k: config_dict[k] for k in ["media_only_transfer", "preserve_folder_structure", "transfer_destination", "media_extensions"]}, f, default_flow_style=False, sort_keys=False)
-                
-                f.write("\n# Directory structure settings\n")
-                yaml.dump({k: config_dict[k] for k in ["create_date_folders", "date_folder_format", "create_device_folders", "device_folder_template"]}, f, default_flow_style=False, sort_keys=False)
-                
-                f.write("\n# Proxy generation settings\n")
-                yaml.dump({k: config_dict[k] for k in ["generate_proxies", "proxy_subfolder", "include_proxy_watermark", "proxy_watermark_path"]}, f, default_flow_style=False, sort_keys=False)
-                
-                f.write("\n# Sound settings\n")
-                yaml.dump({k: config_dict[k] for k in ["enable_sounds", "sound_volume", "success_sound_path", "error_sound_path"]}, f, default_flow_style=False, sort_keys=False)
-                
-                f.write("\n# Advanced settings\n")
-                yaml.dump({k: config_dict[k] for k in ["buffer_size", "verify_transfers", "max_transfer_threads"]}, f, default_flow_style=False, sort_keys=False)
-                
-                f.write("\n# Logging settings\n")
-                yaml.dump({k: config_dict[k] for k in ["log_level", "log_file_rotation", "log_file_max_size"]}, f, default_flow_style=False, sort_keys=False)
-                
-                f.write("\n# User Experience settings\n")
-                yaml.dump({k: config_dict[k] for k in ["tutorial_mode"]}, f, default_flow_style=False, sort_keys=False)
+                # Use the centralized method to save with sections
+                self.config.save_to_yaml_with_sections(f)
                 
             logger.info(f"Saved configuration to {config_file}")
             
