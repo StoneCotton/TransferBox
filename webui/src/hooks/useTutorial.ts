@@ -1,6 +1,11 @@
 import { useState, useEffect, useCallback } from "react";
 import { TUTORIAL_SHOWN_KEY } from "../constants";
 
+interface ConfigData {
+  tutorial_mode?: boolean;
+  [key: string]: string | number | boolean | string[] | undefined;
+}
+
 interface UseTutorialReturn {
   showTutorialModal: boolean;
   tutorialStep: number;
@@ -17,29 +22,37 @@ interface UseTutorialReturn {
 /**
  * Custom hook for managing tutorial state and localStorage persistence
  * Handles tutorial navigation and user preference storage
+ * Now considers the config's tutorial_mode setting
  */
-export const useTutorial = (totalSteps: number): UseTutorialReturn => {
+export const useTutorial = (
+  totalSteps: number,
+  config?: ConfigData | null
+): UseTutorialReturn => {
   const [showTutorialModal, setShowTutorialModal] = useState(false);
   const [tutorialStep, setTutorialStep] = useState(0);
   const [hasSeenTutorial, setHasSeenTutorial] = useState(true);
 
-  // Check local storage for tutorial preference on mount
+  // Check local storage for tutorial preference and config on mount
   useEffect(() => {
     if (typeof window !== "undefined") {
       try {
         const tutorialShown = localStorage.getItem(TUTORIAL_SHOWN_KEY);
-        if (tutorialShown === "true") {
-          setHasSeenTutorial(true);
-        } else {
-          setHasSeenTutorial(false);
-          setShowTutorialModal(true);
-        }
+        const hasSeenBefore = tutorialShown === "true";
+
+        // If tutorial_mode is enabled in config, show tutorial regardless of localStorage
+        // This allows "Enable Tutorial Mode" to override the "tutorial shown" flag
+        const shouldShowTutorial =
+          config?.tutorial_mode === true || !hasSeenBefore;
+
+        setHasSeenTutorial(hasSeenBefore);
+        setShowTutorialModal(shouldShowTutorial);
       } catch (error) {
         console.error("Error accessing localStorage:", error);
+        // If there's an error, default to showing tutorial
         setShowTutorialModal(true);
       }
     }
-  }, []);
+  }, [config]);
 
   const nextStep = useCallback(() => {
     setTutorialStep((prev) => Math.min(prev + 1, totalSteps - 1));
