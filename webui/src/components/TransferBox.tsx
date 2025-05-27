@@ -22,6 +22,7 @@ import {
   useDestinationPath,
   useAppMetadata,
   useTransferControls,
+  useConfig,
 } from "../hooks";
 
 // Import constants and handlers
@@ -62,9 +63,12 @@ const TransferBox: React.FC = () => {
 
   const { appMetadata } = useAppMetadata();
 
+  // Fetch config to check tutorial_mode setting
+  const { config, refetchConfig } = useConfig();
+
   // Get platform-specific tutorial steps
   const tutorialSteps = getTutorialSteps(appMetadata.platform);
-  const tutorial = useTutorial(tutorialSteps.length);
+  const tutorial = useTutorial(tutorialSteps.length, config);
   const {
     showTutorialModal,
     tutorialStep,
@@ -142,9 +146,11 @@ const TransferBox: React.FC = () => {
     setShowConfigModal(true);
   }, []);
 
-  const handleCloseConfig = useCallback(() => {
+  const handleCloseConfig = useCallback(async () => {
     setShowConfigModal(false);
-  }, []);
+    // Refetch config to pick up any changes, especially tutorial_mode
+    await refetchConfig();
+  }, [refetchConfig]);
 
   const handleResetTutorialWithLog = useCallback(() => {
     const success = resetTutorialState();

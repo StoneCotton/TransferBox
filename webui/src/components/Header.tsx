@@ -1,6 +1,7 @@
 "use client";
 
 import React from "react";
+import Image from "next/image";
 import Button from "./Button";
 
 interface HeaderProps {
@@ -26,7 +27,16 @@ const Header: React.FC<HeaderProps> = ({
     <header className="bg-slate-800 text-white p-4 shadow-md">
       <div className="container mx-auto flex justify-between items-center">
         <div className="flex items-center">
-          <h1 className="text-xl font-bold mr-2">{appName}</h1>
+          <div className="flex items-center mr-3">
+            <Image
+              src="/transferbox-logo.png"
+              alt="TransferBox Logo"
+              width={32}
+              height={32}
+              className="mr-2"
+            />
+            <h1 className="text-xl font-bold">{appName}</h1>
+          </div>
           <span className="text-sm bg-slate-700 px-2 py-1 rounded">
             v{version}
           </span>
