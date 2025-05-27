@@ -415,19 +415,47 @@ class WebUITransferBox(BaseTransferBox):
     
     def cleanup(self):
         """Web UI specific cleanup"""
-        super().cleanup()
+        logger.info("Starting Web UI cleanup")
         
-        # Stop the web server
-        if hasattr(self, 'web_server'):
-            self.web_server.stop_server()
-        
-        # Stop the NextJS process
-        if hasattr(self, 'nextjs_process'):
+        # Stop the NextJS process first (more gracefully)
+        if hasattr(self, 'nextjs_process') and self.nextjs_process:
             try:
+                logger.info("Stopping NextJS process gracefully")
+                
+                # First try SIGTERM (graceful shutdown)
                 self.nextjs_process.terminate()
-                self.nextjs_process.wait(timeout=5)
+                
+                # Wait for graceful shutdown
+                try:
+                    self.nextjs_process.wait(timeout=3)
+                    logger.info("NextJS process stopped gracefully")
+                except subprocess.TimeoutExpired:
+                    # If graceful shutdown didn't work, force kill
+                    logger.warning("NextJS process didn't stop gracefully, forcing shutdown")
+                    self.nextjs_process.kill()
+                    try:
+                        self.nextjs_process.wait(timeout=2)
+                        logger.info("NextJS process forcefully stopped")
+                    except subprocess.TimeoutExpired:
+                        logger.error("NextJS process failed to stop even with force")
+                        
             except Exception as e:
                 logger.error(f"Error stopping NextJS process: {e}")
+        
+        # Stop the web server
+        if hasattr(self, 'web_server') and self.web_server:
+            try:
+                logger.info("Stopping Web Server")
+                self.web_server.stop_server()
+                logger.info("Web Server stopped")
+            except Exception as e:
+                logger.error(f"Error stopping web server: {e}")
+        
+        # Call parent cleanup
+        try:
+            super().cleanup()
+        except Exception as e:
+            logger.error(f"Error in parent cleanup: {e}")
 
     def _run_impl(self):
         """Web UI specific run implementation"""
