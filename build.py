@@ -3,6 +3,11 @@
 Cross-platform build script for creating standalone executables for TransferBox
 using PyInstaller. Supports macOS, Windows, and Linux.
 Includes NextJS web UI frontend and defaults to web UI mode.
+
+Usage:
+  python3 build.py              # Build for current platform
+  python3 build.py --clean      # Clean previous builds and then build
+  python3 build.py --clean-build # Clean previous builds only (no build)
 """
 import os
 import re
@@ -634,11 +639,18 @@ def main():
     print("TransferBox Build Script with Web UI Support")
     print("=" * 50)
     
-    # Check for clean flag
-    if "--clean" in sys.argv:
+    # Check for clean-build flag (clean only, no build)
+    if "--clean-build" in sys.argv:
         clean_build_directories()
         print("Clean completed.")
         return 0
+    
+    # Check for clean flag (clean and then build)
+    clean_before_build = "--clean" in sys.argv
+    if clean_before_build:
+        print("Cleaning previous builds before building...")
+        clean_build_directories()
+        print("Clean completed. Starting build...")
     
     # Extract metadata from __init__.py
     try:
@@ -680,6 +692,8 @@ def main():
         print("\nFor advanced users:")
         print("- To use terminal mode: run the executable with appropriate flags")
         print("- To run benchmarks: use the --benchmark flag")
+        print("- To clean previous builds: use --clean-build")
+        print("- To clean and rebuild: use --clean")
         print("\nEnjoy using TransferBox!")
     else:
         print("\n" + "=" * 50)
