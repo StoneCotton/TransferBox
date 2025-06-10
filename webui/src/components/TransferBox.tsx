@@ -47,6 +47,7 @@ const TransferBox: React.FC = () => {
     currentStatus,
     statusType,
     setStatus,
+    setStoppingState,
     resetTransfer,
   } = transferState;
 
@@ -81,8 +82,12 @@ const TransferBox: React.FC = () => {
   } = tutorial;
 
   // Transfer controls for stop and shutdown
-  const { isStopping, isShuttingDown, stopTransfer, shutdownApplication } =
-    useTransferControls(addLog, setStatus);
+  const {
+    isStopping: isStoppingControls,
+    isShuttingDown,
+    stopTransfer,
+    shutdownApplication,
+  } = useTransferControls(addLog, setStatus, setStoppingState);
 
   // WebSocket message handlers - memoized to prevent reconnection loops
   const wsHandlers = useMemo(
@@ -324,18 +329,20 @@ const TransferBox: React.FC = () => {
                     </div>
                     <div className="flex gap-2">
                       <Button
-                        label={isStopping ? "Stopping..." : "Stop Transfer"}
+                        label={
+                          isStoppingControls ? "Stopping..." : "Stop Transfer"
+                        }
                         onClick={stopTransfer}
                         variant="secondary"
                         size="sm"
-                        disabled={isStopping || isShuttingDown}
+                        disabled={isStoppingControls || isShuttingDown}
                       />
                       <Button
                         label={isShuttingDown ? "Shutting Down..." : "Shutdown"}
                         onClick={shutdownApplication}
                         variant="danger"
                         size="sm"
-                        disabled={isStopping || isShuttingDown}
+                        disabled={isStoppingControls || isShuttingDown}
                       />
                     </div>
                   </div>

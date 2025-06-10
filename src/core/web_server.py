@@ -411,17 +411,18 @@ class WebServer:
             """Stop the current transfer operation"""
             try:
                 # Access the transfer box app to stop the transfer
-                if hasattr(self.transfer_box_app, 'stop_event') and self.transfer_box_app.stop_event:
-                    # Set the stop event to signal transfer should stop
-                    self.transfer_box_app.stop_event.set()
+                if hasattr(self.transfer_box_app, 'transfer_stop_event') and self.transfer_box_app.transfer_stop_event:
+                    # Set the transfer stop event to signal transfer should stop
+                    self.transfer_box_app.transfer_stop_event.set()
+                    
+                    logger.info("Transfer stop requested via API")
                     
                     # Send WebSocket message to notify frontend
                     await self.websocket_display.broadcast_message("transfer_stopped", {
-                        "message": "Transfer stop requested",
-                        "cleanup_initiated": True
+                        "message": "Transfer stopped by user request",
+                        "cleanup_initiated": True,
+                        "user_requested": True
                     })
-                    
-                    logger.info("Transfer stop requested via API")
                     
                     return {
                         "success": True,

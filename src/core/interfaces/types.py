@@ -12,6 +12,7 @@ class TransferStatus(Enum):
     GENERATING_PROXY = auto()
     VERIFYING = auto()
     SUCCESS = auto()
+    STOPPED = auto()
     ERROR = auto()
 
 @dataclass

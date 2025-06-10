@@ -9,6 +9,7 @@ interface UseTransferStateReturn {
   // Transfer state
   transferProgress: BackendTransferProgress | null;
   isTransferring: boolean;
+  isStopping: boolean;
   transferError: string | null;
   transferState: TransferState;
 
@@ -26,6 +27,7 @@ interface UseTransferStateReturn {
   setTransferError: (error: string | null) => void;
   setCardDetected: (detected: boolean, name?: string, path?: string) => void;
   setStatus: (status: string, type?: StatusType) => void;
+  setStoppingState: (stopping: boolean) => void;
   resetTransfer: () => void;
   updateFromProgress: (progress: BackendTransferProgress) => void;
 }
@@ -39,6 +41,7 @@ export const useTransferState = (): UseTransferStateReturn => {
   const [transferProgress, setTransferProgress] =
     useState<BackendTransferProgress | null>(null);
   const [isTransferring, setIsTransferring] = useState(false);
+  const [isStopping, setIsStopping] = useState(false);
   const [transferError, setTransferError] = useState<string | null>(null);
   const [transferState, setTransferState] = useState<TransferState>("idle");
 
@@ -65,10 +68,15 @@ export const useTransferState = (): UseTransferStateReturn => {
     setStatusType(type);
   }, []);
 
+  const setStoppingState = useCallback((stopping: boolean) => {
+    setIsStopping(stopping);
+  }, []);
+
   const resetTransfer = useCallback(() => {
     setTransferError(null);
     setTransferState("idle");
     setIsTransferring(false);
+    setIsStopping(false);
     setTransferProgress(null);
     setStatusType("info");
     setCurrentStatus("Ready for transfer");
@@ -103,39 +111,56 @@ export const useTransferState = (): UseTransferStateReturn => {
         let statusMessage = "";
         switch (status) {
           case "COPYING":
-            statusMessage = `Copying files... (${progress.file_number}/${progress.total_files})`;
+            statusMessage = isStopping
+              ? `Stopping after current file... (${progress.file_number}/${progress.total_files})`
+              : `Copying files... (${progress.file_number}/${progress.total_files})`;
             break;
           case "CHECKSUMMING":
-            statusMessage = `Verifying files... (${progress.file_number}/${progress.total_files})`;
+            statusMessage = isStopping
+              ? `Stopping after current file verification... (${progress.file_number}/${progress.total_files})`
+              : `Verifying files... (${progress.file_number}/${progress.total_files})`;
             break;
           case "GENERATING_PROXY":
-            statusMessage = `Generating proxies... (${progress.proxy_file_number}/${progress.proxy_total_files})`;
+            statusMessage = isStopping
+              ? `Stopping after current proxy... (${progress.proxy_file_number}/${progress.proxy_total_files})`
+              : `Generating proxies... (${progress.proxy_file_number}/${progress.proxy_total_files})`;
             break;
           case "VERIFYING":
-            statusMessage = "Verifying transfer...";
+            statusMessage = isStopping
+              ? "Stopping after verification..."
+              : "Verifying transfer...";
             break;
         }
-        setStatus(statusMessage, "info");
+        setStatus(statusMessage, isStopping ? "warning" : "info");
       } else if (status === "SUCCESS") {
         setIsTransferring(false);
+        setIsStopping(false);
         setTransferState("completed");
         setStatus("Transfer completed successfully", "success");
         setCardDetected(false);
+      } else if (status === "STOPPED") {
+        setIsTransferring(false);
+        setIsStopping(false);
+        setTransferState("completed");
+        setStatus("Transfer stopped successfully", "success");
+        setCardDetected(false);
       } else if (status === "ERROR") {
         setIsTransferring(false);
+        setIsStopping(false);
         setTransferState("failed");
         setStatus("Transfer failed", "error");
         setTransferError("Transfer failed");
         setCardDetected(false);
       }
     },
-    [setCardDetected, setStatus]
+    [setCardDetected, setStatus, isStopping]
   );
 
   return {
     // State
     transferProgress,
     isTransferring,
+    isStopping,
     transferError,
     transferState,
     isCardDetected,
@@ -149,6 +174,7 @@ export const useTransferState = (): UseTransferStateReturn => {
     setTransferError,
     setCardDetected,
     setStatus,
+    setStoppingState,
     resetTransfer,
     updateFromProgress,
   };

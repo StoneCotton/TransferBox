@@ -194,18 +194,23 @@ class ProgressTracker:
         
         self._update_display()
     
-    def complete_transfer(self, successful: bool = True) -> None:
+    def complete_transfer(self, successful: bool = True, stopped: bool = False) -> None:
         """
         Mark the entire transfer as complete.
         
         Args:
             successful: Whether the transfer was successful
+            stopped: Whether the transfer was stopped gracefully by user
         """
-        self.status = TransferStatus.SUCCESS if successful else TransferStatus.ERROR
+        if stopped:
+            self.status = TransferStatus.STOPPED
+        else:
+            self.status = TransferStatus.SUCCESS if successful else TransferStatus.ERROR
+            
         self.overall_progress = 1.0
         
-        # For display consistency, make sure total_transferred matches total_size 
-        if successful and self.total_transferred < self.total_size:
+        # For display consistency, make sure total_transferred matches total_size for successful transfers
+        if (successful or stopped) and self.total_transferred < self.total_size:
             self.total_transferred = self.total_size
             
         self._update_display()

@@ -142,6 +142,14 @@ class WebSocketDisplay(DisplayInterface):
             "preserve_errors": preserve_errors
         })
     
+    def send_destination_reset(self) -> None:
+        """Send destination reset message to frontend"""
+        logger.info("Sending destination reset to frontend")
+        
+        self._send_async_message("destination_reset", {
+            "message": "Destination path has been cleared after transfer completion"
+        })
+    
     def get_current_state(self) -> Dict[str, Any]:
         """Get current display state for new WebSocket connections"""
         state = {

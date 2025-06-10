@@ -20,7 +20,8 @@ export const useTransferControls = (
   onStatusUpdate: (
     status: string,
     type?: "info" | "warning" | "error" | "success"
-  ) => void
+  ) => void,
+  setStoppingState?: (stopping: boolean) => void
 ): UseTransferControlsReturn => {
   const [isStopping, setIsStopping] = useState(false);
   const [isShuttingDown, setIsShuttingDown] = useState(false);
@@ -29,26 +30,44 @@ export const useTransferControls = (
     if (isStopping) return; // Prevent multiple clicks
 
     setIsStopping(true);
-    onStatusUpdate("Stopping transfer...", "warning");
-    onLog("Stopping transfer and cleaning up...", "warning");
+
+    // Set the stopping state in the transfer state
+    if (setStoppingState) {
+      setStoppingState(true);
+    }
+
+    onStatusUpdate("Stop requested - finishing current file...", "warning");
+    onLog(
+      "Transfer stop requested - will finish current file before stopping",
+      "warning"
+    );
 
     try {
       const result = await apiService.stopTransfer();
 
       if (result.success) {
         onLog("Stop transfer request sent successfully", "info");
+        // Keep the stopping state until transfer actually stops via WebSocket
       } else {
         onLog(`Failed to stop transfer: ${result.message}`, "error");
         onStatusUpdate("Failed to stop transfer", "error");
+        // Reset stopping state on failure
+        if (setStoppingState) {
+          setStoppingState(false);
+        }
       }
     } catch (error) {
       console.error("Error stopping transfer:", error);
       onLog("Error communicating with server to stop transfer", "error");
       onStatusUpdate("Error stopping transfer", "error");
+      // Reset stopping state on error
+      if (setStoppingState) {
+        setStoppingState(false);
+      }
     } finally {
       setIsStopping(false);
     }
-  }, [isStopping, onLog, onStatusUpdate]);
+  }, [isStopping, onLog, onStatusUpdate, setStoppingState]);
 
   const shutdownApplication = useCallback(async () => {
     if (isShuttingDown) return; // Prevent multiple clicks

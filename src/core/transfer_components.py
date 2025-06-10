@@ -297,6 +297,7 @@ class FileProcessor:
         self.sound_manager = sound_manager
         self.stop_event = stop_event
         self.no_files_found = False
+        self.stop_requested = False  # Track if stop was requested
         
         # Create progress tracker
         self.progress_tracker = ProgressTracker(display)
@@ -402,12 +403,26 @@ class FileProcessor:
         # Process all files
         try:
             for file_number, file_path in enumerate(files_to_transfer, 1):
-                # Check if stop has been requested
+                # Check if stop has been requested before starting a new file
                 if self.stop_event and self.stop_event.is_set():
-                    logger.info(f"Transfer stop requested - processed {successful_files}/{total_files} files")
-                    transfer_logger.log_message(f"Transfer stopped by user - {successful_files} files completed")
-                    self.progress_tracker.complete_transfer(successful=False)
-                    return False
+                    if not self.stop_requested:
+                        # First time we detect stop request
+                        self.stop_requested = True
+                        logger.info(f"Transfer stop requested - will finish current file and stop gracefully")
+                        self.display.show_status("Stop requested - finishing current file...")
+                        
+                    # If we haven't started processing this file yet, stop here
+                    if file_number > 1:  # We've already processed at least one file
+                        logger.info(f"Transfer stopped gracefully - processed {successful_files}/{total_files} files")
+                        transfer_logger.log_message(f"Transfer stopped by user - {successful_files} files completed successfully")
+                        
+                        # Complete transfer with stopped=True for graceful stop
+                        self.progress_tracker.complete_transfer(successful=True, stopped=True)
+                        
+                        # Send stop status message
+                        self.display.show_status(f"Transfer stopped - {successful_files} files completed successfully")
+                        
+                        return True  # Return True for graceful stop
                 
                 # Check if source drive still exists before processing each file
                 if not source_path.exists() or not os.path.ismount(str(source_path)):
@@ -486,6 +501,19 @@ class FileProcessor:
                         pass
                 else:
                     failures.append(file_path)
+                
+                # Check if stop was requested after completing this file
+                if self.stop_event and self.stop_event.is_set():
+                    logger.info(f"Transfer stopped gracefully after completing file - processed {successful_files}/{total_files} files")
+                    transfer_logger.log_message(f"Transfer stopped by user - {successful_files} files completed successfully")
+                    
+                    # Complete transfer with stopped=True for graceful stop
+                    self.progress_tracker.complete_transfer(successful=True, stopped=True)
+                    
+                    # Send stop status message
+                    self.display.show_status(f"Transfer stopped - {successful_files} files completed successfully")
+                    
+                    return True  # Return True for graceful stop
                     
                 # No need to update progress here as complete_file is called in _process_single_file
             

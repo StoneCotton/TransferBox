@@ -57,6 +57,9 @@ class WebUITransferBox(BaseTransferBox):
         self.destination_path = None
         self.tutorial_manager = TutorialManager(self.display)
         
+        # Separate event for stopping transfers without shutting down the app
+        self.transfer_stop_event = None
+        
     def setup(self):
         """Web UI specific setup"""
         super().setup()
@@ -166,6 +169,42 @@ class WebUITransferBox(BaseTransferBox):
             if public_dir.exists():
                 self.web_server.app.mount("/public", StaticFiles(directory=str(public_dir)), name="public")
                 logger.info(f"Mounted public files: /public -> {public_dir}")
+                
+                # Handle Next.js Image optimization requests by serving images directly
+                @self.web_server.app.get("/_next/image")
+                async def serve_nextjs_image(url: str, w: int = 32, q: int = 75):
+                    """Handle Next.js Image optimization requests"""
+                    from fastapi import HTTPException, Query
+                    from fastapi.responses import FileResponse
+                    from urllib.parse import unquote
+                    
+                    # Decode the URL parameter (e.g., %2Ftransferbox-logo.png -> /transferbox-logo.png)
+                    decoded_url = unquote(url)
+                    
+                    # Remove leading slash if present
+                    if decoded_url.startswith('/'):
+                        decoded_url = decoded_url[1:]
+                    
+                    # Construct the file path
+                    image_path = public_dir / decoded_url
+                    
+                    # Security check: ensure the path is within public directory
+                    try:
+                        resolved_path = image_path.resolve()
+                        public_resolved = public_dir.resolve()
+                        if not str(resolved_path).startswith(str(public_resolved)):
+                            raise HTTPException(status_code=404, detail="File not found")
+                    except Exception:
+                        raise HTTPException(status_code=404, detail="File not found")
+                    
+                    # Check if file exists and is a valid image
+                    if image_path.exists() and image_path.is_file():
+                        # Check file extension
+                        allowed_extensions = {'.ico', '.png', '.jpg', '.jpeg', '.svg', '.webp', '.gif'}
+                        if image_path.suffix.lower() in allowed_extensions:
+                            return FileResponse(str(image_path))
+                    
+                    raise HTTPException(status_code=404, detail="Image not found")
             
             # Serve the main NextJS application HTML
             main_html_path = webui_path / ".next" / "server" / "app" / "index.html"
@@ -494,8 +533,40 @@ class WebUITransferBox(BaseTransferBox):
                         if not source_drive or self.stop_event.is_set():
                             continue
                         
+                        # Create a new transfer stop event for this transfer session
+                        from threading import Event
+                        self.transfer_stop_event = Event()
+                        
+                        # Create a new file transfer instance with the transfer stop event
+                        transfer_file_transfer = FileTransfer(
+                            config_manager=self.config_manager,
+                            display=self.display,
+                            storage=self.storage,
+                            state_manager=self.state_manager,
+                            sound_manager=self.sound_manager,
+                            stop_event=self.transfer_stop_event  # Use transfer-specific stop event
+                        )
+                        
+                        # Create a new transfer operation with the transfer-specific file transfer
+                        transfer_op = TransferOperation(
+                            self.display,
+                            self.storage,
+                            transfer_file_transfer,
+                            self.sound_manager
+                        )
+                        
                         # Execute transfer
-                        error_occurred = self.transfer_op.execute_transfer(source_drive, destination_path)
+                        error_occurred = transfer_op.execute_transfer(source_drive, destination_path)
+                        
+                        # Check if transfer was stopped
+                        if self.transfer_stop_event and self.transfer_stop_event.is_set():
+                            logger.info("Transfer was stopped by user request")
+                            self.display.show_status("Transfer stopped - returning to standby mode")
+                            # Clear any error state and return to standby
+                            error_occurred = False
+                        
+                        # Reset the transfer stop event after completion
+                        self.transfer_stop_event = None
                         
                         # Handle completion
                         self._handle_completion(source_drive, error_occurred)
@@ -504,6 +575,8 @@ class WebUITransferBox(BaseTransferBox):
                     logger.error(f"Transfer loop error: {e}")
                     if self.display:
                         self.display.show_error(f"Transfer error: {str(e)}")
+                    # Reset transfer stop event on error
+                    self.transfer_stop_event = None
                     time.sleep(5)  # Wait before retrying
         
         def server_monitoring_thread():
@@ -552,6 +625,14 @@ class WebUITransferBox(BaseTransferBox):
             self.storage.wait_for_drive_removal(source_drive)
         else:
             time.sleep(2)
+        
+        # Clear destination path after transfer completion to prevent automatic transfers
+        self.destination_path = None
+        logger.info("Destination path cleared after transfer completion")
+        
+        # Notify frontend that destination has been reset
+        if hasattr(self.display, 'send_destination_reset'):
+            self.display.send_destination_reset()
         
         if error_occurred:
             logger.warning("Transfer failed. Waiting 5 seconds before continuing...")

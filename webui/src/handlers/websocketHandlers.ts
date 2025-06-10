@@ -54,6 +54,9 @@ export const createWebSocketHandlers = (context: WebSocketHandlerContext) => {
       case "transfer_stopped":
         handleTransferStopped(message);
         break;
+      case "destination_reset":
+        handleDestinationReset(message);
+        break;
       case "shutdown_initiated":
         handleShutdownInitiated(message);
         break;
@@ -111,10 +114,8 @@ export const createWebSocketHandlers = (context: WebSocketHandlerContext) => {
     const progressData = message.data as unknown as BackendTransferProgress;
     updateFromProgress(progressData);
 
-    // Reset destination after successful or failed transfer
-    if (progressData.status === "SUCCESS" || progressData.status === "ERROR") {
-      resetDestination();
-    }
+    // Note: Don't reset destination here - let the backend handle destination clearing
+    // The backend will clear the destination path after transfer completion
   };
 
   const handleError = (message: WebSocketMessage): void => {
@@ -130,7 +131,7 @@ export const createWebSocketHandlers = (context: WebSocketHandlerContext) => {
     setTransferError(displayError);
     setStatus(errorData.message, "error");
     setCardDetected(false);
-    resetDestination();
+    // Note: Don't reset destination here - let the backend handle destination clearing
     addLog(errorData.message, "error");
   };
 
@@ -155,7 +156,13 @@ export const createWebSocketHandlers = (context: WebSocketHandlerContext) => {
       files_transferred?: number;
       files_not_transferred?: number;
       cleanup_completed?: boolean;
+      user_requested?: boolean;
     };
+
+    // Reset stopping state when transfer is actually stopped
+    if (typeof resetDestination === "function") {
+      // Note: resetDestination will be called by backend destination_reset message
+    }
 
     setStatus(stopData.message, "warning");
     addLog(`Transfer stopped: ${stopData.message}`, "warning");
@@ -173,10 +180,23 @@ export const createWebSocketHandlers = (context: WebSocketHandlerContext) => {
       addLog("Cleanup completed - temporary files removed", "info");
     }
 
-    // Reset transfer state
-    setTransferProgress(null);
+    // If this was a user-requested stop, show success message instead of warning
+    if (stopData.user_requested) {
+      setStatus("Transfer stopped successfully", "success");
+      addLog("Transfer stopped successfully at user request", "success");
+    }
+
     setCardDetected(false);
+  };
+
+  const handleDestinationReset = (message: WebSocketMessage): void => {
+    const resetData = message.data as { message: string };
+
+    // Reset the destination in the frontend
     resetDestination();
+
+    // Log the reset event
+    addLog(resetData.message || "Destination path reset", "info");
   };
 
   const handleShutdownInitiated = (message: WebSocketMessage): void => {
