@@ -87,7 +87,11 @@ class FileOperations:
                             if progress_callback:
                                 progress_callback(bytes_transferred, file_size)
                 
-                # If we got here, the file was successfully copied to the temporary location
+                # If any error occurred inside the context, abort without renaming
+                if context.error_occurred:
+                    logger.error(f"Aborting rename due to prior error copying {src_path} -> {dst_path}")
+                    return False, None
+
                 # Now rename it to the final destination
                 if dst_path.exists():
                     dst_path.unlink()
@@ -304,7 +308,11 @@ class FileOperations:
                         self.sound_manager.play_error()
                     raise FileTransferError(error_msg, source=src_path, error_type="access")
                 
-                # If we got here, the file was successfully copied to the temporary location
+                # If any error occurred inside the context, abort without renaming
+                if context.error_occurred:
+                    logger.error(f"Aborting rename due to prior error copying {src_path} -> {dst_path}")
+                    return False
+
                 # Now rename it to the final destination
                 if dst_path.exists():
                     dst_path.unlink()
