@@ -425,6 +425,7 @@ def build_macos(metadata):
         '--hidden-import', 'fastapi',
         '--hidden-import', 'uvicorn',
         '--hidden-import', 'websockets',
+        '--hidden-import', 'xattr',
         '--icon', icon_path,
         str(launcher_path)
     ]
@@ -571,6 +572,7 @@ def build_linux(metadata):
         '--hidden-import', 'fastapi',
         '--hidden-import', 'uvicorn',
         '--hidden-import', 'websockets',
+        '--hidden-import', 'xattr',
         '--icon', icon_path,
         str(launcher_path)
     ]
