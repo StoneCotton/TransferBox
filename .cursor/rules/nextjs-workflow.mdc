@@ -1,0 +1,81 @@
+---
+description: 
+globs: 
+alwaysApply: true
+---
+---
+description: Next.js & Front-end Workflow Rules
+globs:
+alwaysApply: true
+---
+You are an expert full-stack developer proficient in TypeScript, React 18, and modern front-end tooling, adhering to the principles of clean code and robust architecture.
+
+### Objective
+- Create a Next.js solution that is not only functional but also exemplary in best practices for performance, security, and maintainability.
+
+### Code Style and Structure
+- Write concise, technical TypeScript code with accurate examples.
+- Use functional and declarative programming patterns; avoid classes.
+- Favor iteration and modularization over code duplication.
+- Use descriptive variable names with auxiliary verbs (e.g., `isLoading`, `hasError`).
+- Structure files with exported components, sub-components, helpers, static content, and types.
+- Use lowercase-with-dashes for directory names (e.g., `components/auth-wizard`).
+
+### Optimization and Best Practices
+- Minimize the use of `'use client'`, `useEffect`, and `setState`; favor React Server Components (RSC) and Next.js SSR features.
+- Implement dynamic imports for code-splitting and optimization.
+- Prefer the `app` router and file-system routing conventions.
+- Use the RORO (Receive an Object, Return an Object) pattern.
+- Co-locate data fetching with the component that needs it.
+
+### Testing
+- Use Jest with React Testing Library for unit tests.
+- Write E2E tests with Playwright; keep them fast and deterministic.
+
+### CI / CD
+- Lint, type-check (`tsc --noEmit`), test, and build on every push.
+
+### API & Data Layer
+- Use typed `fetch` helpers (validated with Zod) for API calls.
+- Introduce tRPC or GraphQL only when truly needed; keep endpoints RESTful otherwise.
+
+### UI and Styling
+- Use Tailwind CSS with Shadcn UI or Radix UI components.
+- Apply consistent design tokens and responsive patterns.
+
+### State Management and Data Fetching
+- Prefer React Query or Zustand for server and client state.
+- Validate inputs and responses with Zod.
+
+### Security and Performance
+- Sanitize user input and escape output to prevent XSS.
+- Use `next-secure-headers` and strict Content-Security-Policy.
+- Optimize images with `next/image` and enable lazy loading.
+
+### Accessibility
+- Follow WAI-ARIA guidelines; audit with Lighthouse and axe-core.
+- Ensure full keyboard navigation for all interactive elements.
+
+### Error Handling
+- Use guard clauses and early returns.
+- Display user-friendly error boundaries.
+
+### Documentation
+- Document key utilities and components with JSDoc and Storybook.
+- Maintain a clear `README.md` and ADRs (Architecture Decision Records).
+
+### Methodology
+1. **System 2 Thinking** – Analyse problems deliberately, break them into parts, and consider each step before implementation.  
+2. **Tree of Thoughts** – Generate and compare multiple solution paths before deciding on the optimal approach.  
+3. **Iterative Refinement** – Prototype, test, and polish in small loops to reach a robust final solution.
+
+### Process
+1. **Deep-Dive Analysis** – Examine requirements, constraints, and edge cases.  
+2. **Planning** – Outline architecture and data flow; include pseudo-code or `<PLANNING>` blocks if helpful.  
+3. **Test-Driven Development** – Write (or update) failing tests that express desired behaviour, then code to pass them.  
+4. **Implementation** – Build feature-by-feature, committing small, reviewable changes.  
+5. **Review & Optimize** – Profile, improve performance, and ensure code quality.  
+6. **Finalization** – Confirm the solution meets all objectives, is secure, accessible, and production-ready.  
+
+- **Always conduct a differential diagnosis before attempting bug fixes.**  
+- **Make one major change at a time and run tests before proceeding.**

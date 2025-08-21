@@ -8,6 +8,7 @@ from typing import Optional, Tuple, Dict, Any, Union, BinaryIO
 
 from .exceptions import FileTransferError, ChecksumError
 from .file_context import error_handler, file_operation, FileOperationContext
+from .validation import ErrorMessages
 
 logger = logging.getLogger(__name__)
 
@@ -86,7 +87,11 @@ class FileOperations:
                             if progress_callback:
                                 progress_callback(bytes_transferred, file_size)
                 
-                # If we got here, the file was successfully copied to the temporary location
+                # If any error occurred inside the context, abort without renaming
+                if context.error_occurred:
+                    logger.error(f"Aborting rename due to prior error copying {src_path} -> {dst_path}")
+                    return False, None
+
                 # Now rename it to the final destination
                 if dst_path.exists():
                     dst_path.unlink()
@@ -242,7 +247,7 @@ class FileOperations:
                 error_msg = f"Source file no longer exists: {src_path}"
                 logger.error(error_msg)
                 if self.display:
-                    self.display.show_error("Source removed")
+                    self.display.show_error(ErrorMessages.SOURCE_REMOVED)
                 if self.sound_manager:
                     self.sound_manager.play_error()
                 raise FileTransferError(error_msg, source=src_path, error_type="access")
@@ -263,7 +268,7 @@ class FileOperations:
                     error_msg = f"Source drive may have been removed: {e}"
                     logger.error(error_msg)
                     if self.display:
-                        self.display.show_error("Source removed")
+                        self.display.show_error(ErrorMessages.SOURCE_REMOVED)
                     if self.sound_manager:
                         self.sound_manager.play_error()
                     raise FileTransferError(error_msg, source=src_path, error_type="access")
@@ -290,7 +295,7 @@ class FileOperations:
                                     error_msg = f"I/O error during file transfer (drive may have been removed): {io_error}"
                                     logger.error(error_msg)
                                     if self.display:
-                                        self.display.show_error("Source removed")
+                                        self.display.show_error(ErrorMessages.SOURCE_REMOVED)
                                     if self.sound_manager:
                                         self.sound_manager.play_error()
                                     raise FileTransferError(error_msg, source=src_path, error_type="io")
@@ -298,12 +303,16 @@ class FileOperations:
                     error_msg = f"Source drive was removed during transfer: {access_error}"
                     logger.error(error_msg)
                     if self.display:
-                        self.display.show_error("Source removed")
+                        self.display.show_error(ErrorMessages.SOURCE_REMOVED)
                     if self.sound_manager:
                         self.sound_manager.play_error()
                     raise FileTransferError(error_msg, source=src_path, error_type="access")
                 
-                # If we got here, the file was successfully copied to the temporary location
+                # If any error occurred inside the context, abort without renaming
+                if context.error_occurred:
+                    logger.error(f"Aborting rename due to prior error copying {src_path} -> {dst_path}")
+                    return False
+
                 # Now rename it to the final destination
                 if dst_path.exists():
                     dst_path.unlink()

@@ -77,7 +77,12 @@ def test_clean_build_directories(monkeypatch, tmp_path):
     assert not buildd.exists()
 
 def test_main_platforms(monkeypatch):
-    monkeypatch.setattr(build, 'extract_metadata', lambda: {'project_name': 'Test', 'version': '1.0', 'author': 'A'})
+    monkeypatch.setattr(build, 'extract_metadata', lambda: {
+        'project_name': 'Test', 
+        'version': '1.0', 
+        'author': 'A',
+        'description': 'Test description'
+    })
     monkeypatch.setattr(build, 'ensure_pyinstaller_installed', lambda: None)
     monkeypatch.setattr(build, 'get_platform_icon', lambda: 'icon')
     monkeypatch.setattr(build, 'build_macos', lambda meta: True)

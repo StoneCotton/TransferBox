@@ -30,6 +30,7 @@ from .transfer_logger import TransferLogger, create_transfer_log
 from .progress_tracker import ProgressTracker, TransferStatus
 from .exceptions import FileTransferError as CoreFileTransferError
 from .transfer_components import TransferValidator, TransferEnvironment, FileProcessor
+from .validation import PathValidator, ErrorMessages
 
 logger = logging.getLogger(__name__)
 
@@ -43,33 +44,36 @@ class FileTransfer:
     
     def __init__(
         self,
-        state_manager,
+        config_manager,
         display: DisplayInterface,
         storage: StorageInterface,
-        config: Optional[TransferConfig] = None,
-        sound_manager = None
+        state_manager,
+        sound_manager = None,
+        stop_event = None
     ):
         """
-        Initialize the file transfer manager.
+        Initialize file transfer system.
         
         Args:
-            state_manager: State manager for handling transfer state
-            display: Display interface for showing progress and status
-            storage: Storage interface for handling storage operations
-            config: Optional configuration object
-            sound_manager: Optional sound manager for playing sounds
+            config_manager: Configuration manager instance
+            display: Display interface for status messages
+            storage: Storage interface for device operations
+            state_manager: State manager for system state tracking
+            sound_manager: Optional sound manager for playing audio cues
+            stop_event: Optional threading.Event to check for stop conditions
         """
-        self.state_manager = state_manager
+        self.config = config_manager.config
         self.display = display
         self.storage = storage
-        self.config = config or TransferConfig()
+        self.state_manager = state_manager
         self.sound_manager = sound_manager
-        self.no_files_found = False  # Flag to track if no files were found
+        self.stop_event = stop_event
+        self.no_files_found = False
         
-        # Use composition for specialized components
+        # Initialize components
         self.validator = TransferValidator(display, storage, state_manager)
         self.environment = TransferEnvironment(self.config, display, sound_manager)
-        self.processor = FileProcessor(display, storage, self.config, sound_manager)
+        self.processor = FileProcessor(display, storage, self.config, sound_manager, stop_event)
         
         # Initialize utility classes
         self.checksum_calculator = ChecksumCalculator(display)
@@ -115,7 +119,7 @@ class FileTransfer:
     
     def _validate_transfer_preconditions(self, destination_path: Path) -> bool:
         """
-        Validate preconditions before starting transfer.
+        Validate preconditions before starting transfer using centralized validation.
         
         Args:
             destination_path: Target path for file transfer
@@ -127,59 +131,17 @@ class FileTransfer:
             # Check utility mode first
             if not self._check_utility_mode():
                 return False
-            # Validate path type
-            if destination_path is None:
-                logger.error("No destination path provided")
-                self.display.show_error("No destination")
+                
+            # Use centralized validation
+            result = PathValidator.validate_destination(destination_path, auto_create=True)
+            
+            if not result.is_valid:
+                logger.error(f"Destination validation failed: {result.error_message}")
+                self.display.show_error(result.error_message)
                 return False
-            # Strict type and conversion check
-            if not isinstance(destination_path, (str, Path)):
-                logger.error(f"Invalid destination path type: {type(destination_path).__name__}")
-                self.display.show_error("Invalid path type")
-                return False
-            try:
-                dest_path = Path(destination_path)
-            except Exception:
-                logger.error(f"Invalid destination path value: {destination_path}")
-                self.display.show_error("Invalid path value")
-                return False
-            if not str(dest_path).strip():
-                logger.error("Destination path is empty or invalid")
-                self.display.show_error("Invalid path value")
-                return False
-            # Handle existing vs non-existing destination
-            if dest_path.exists():
-                # Check if it's a directory
-                if not dest_path.is_dir():
-                    logger.error(f"Destination exists but is not a directory: {dest_path}")
-                    self.display.show_error("Not a directory")
-                    return False
-                # Check write permissions
-                if not os.access(dest_path, os.W_OK):
-                    logger.error(f"No write permission for destination: {dest_path}")
-                    self.display.show_error("Write permission denied")
-                    return False
-                logger.info(f"Using existing directory: {dest_path}")
-                return True
-            # For non-existing destination, validate parent and create
-            parent = dest_path.parent
-            if not parent.exists():
-                logger.error(f"Parent directory doesn't exist: {parent}")
-                self.display.show_error("Parent dir missing")
-                return False
-            if not os.access(parent, os.W_OK):
-                logger.error(f"No write permission for parent directory: {parent}")
-                self.display.show_error("Parent write denied")
-                return False
-            # Create the destination directory
-            try:
-                dest_path.mkdir(parents=True, exist_ok=True)
-                logger.info(f"Created directory: {dest_path}")
-                return True
-            except Exception as e:
-                logger.error(f"Failed to create directory {dest_path}: {e}")
-                self.display.show_error("Create dir failed")
-                return False
+                
+            logger.info(f"Using validated directory: {result.sanitized_path}")
+            return True
     
     def _prepare_for_transfer(self, source_path: Path, destination_path: Path) -> bool:
         """
@@ -557,7 +519,7 @@ class FileTransfer:
             # Check if the source path still exists before starting file processing
             if not source_path.exists() or not os.path.ismount(str(source_path)):
                 logger.error(f"Source drive removed before transfer could start: {source_path}")
-                self.display.show_error("Source removed")
+                self.display.show_error(ErrorMessages.SOURCE_REMOVED)
                 if self.sound_manager:
                     self.sound_manager.play_error()
                 return False
@@ -576,9 +538,9 @@ class FileTransfer:
             # Check if it could be a drive removal error
             if not source_path.exists() or not os.path.ismount(str(source_path)):
                 logger.error(f"Source drive seems to have been removed during transfer: {source_path}")
-                self.display.show_error("Source removed")
+                self.display.show_error(ErrorMessages.SOURCE_REMOVED)
             else:
-                self.display.show_error("Transfer Error")
+                self.display.show_error(ErrorMessages.TRANSFER_ERROR)
                 
             if self.sound_manager:
                 self.sound_manager.play_error()

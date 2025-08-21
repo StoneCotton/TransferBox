@@ -1,6 +1,6 @@
 # src/platform/raspberry_pi/lcd_display.py
 
-from core.exceptions import DisplayError, HardwareError
+from src.core.exceptions import DisplayError, HardwareError
 import smbus
 import time
 import subprocess
@@ -34,6 +34,7 @@ class LCDDisplay:
         self.BLEN = 1
         self.LCD_ADDR = address
         self.line_content = ["", ""]  # Track current content of each line
+        self.i2c_bus_number = i2c_bus
 
     def write_word(self, addr: int, data: int) -> None:
         """Write a word to the LCD controller."""
@@ -84,12 +85,15 @@ class LCDDisplay:
     def i2c_scan(self) -> list[str]:
         """Scan I2C bus for devices."""
         try:
-            cmd = "i2cdetect -y 1"
-            result = subprocess.check_output(cmd, shell=True).decode()
+            # Avoid shell=True; run i2cdetect directly and honor configured bus
+            result = subprocess.check_output(["i2cdetect", "-y", str(self.i2c_bus_number)], shell=False).decode()
             result = result.replace("\n", "").replace(" --", "")
             return result.split(' ')
         except subprocess.CalledProcessError as e:
             logger.error(f"Failed to scan I2C bus: {e}")
+            return []
+        except FileNotFoundError as e:
+            logger.error(f"i2cdetect not found: {e}")
             return []
 
     def init_lcd(self, addr: Optional[int] = None, bl: int = 1) -> None:
@@ -180,16 +184,15 @@ class LCDDisplay:
             addr = 0x80 + 0x40 * y + x
             self.send_command(addr)
             
-            # Update line content tracking
-            line_start = 0 if x == 0 else len(self.line_content[y])
-            new_content = string[:16-x]  # Limit to available space
-            self.line_content[y] = (
-                self.line_content[y][:line_start] + 
-                new_content + 
-                self.line_content[y][line_start+len(new_content):]
-            )[:16]
-            
-            for char in string:
+            # Update line content tracking: overwrite from x onward up to width
+            new_content = string[: max(0, 16 - x)]
+            line = list((self.line_content[y] + " " * 16)[:16])
+            for idx, ch in enumerate(new_content):
+                if x + idx < 16:
+                    line[x + idx] = ch
+            self.line_content[y] = "".join(line)
+
+            for char in new_content:
                 self.send_data(ord(char))
                 
         except Exception as e:

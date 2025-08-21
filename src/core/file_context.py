@@ -23,6 +23,8 @@ class FileOperationContext:
         self.display = display
         self.sound_manager = sound_manager
         self.temp_files = []
+        # Track whether an exception occurred inside the context block
+        self.error_occurred = False
         
     def __enter__(self):
         return self
@@ -30,6 +32,7 @@ class FileOperationContext:
     def __exit__(self, exc_type, exc_val, exc_tb):
         """Clean up any temporary files if an exception occurred."""
         if exc_type:
+            self.error_occurred = True
             self._handle_exception(exc_type, exc_val)
             self._clean_up_temp_files()
             if self.sound_manager:
@@ -37,7 +40,7 @@ class FileOperationContext:
                     self.sound_manager.play_error()
                 except Exception as e:
                     logger.warning(f"Failed to play error sound: {e}")
-            return True  # Suppress the exception
+            return True  # Suppress the exception to avoid crashing callers; use error_occurred flag for flow control
         return False
     
     def _handle_exception(self, exc_type, exc_val):

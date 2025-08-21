@@ -64,10 +64,10 @@ class MacOSStorage(StorageInterface):
                     free = int(fields[3]) * 1024
                     
                     # Log the space information in a human-readable format
-                    logger.info(f"Space check for {path}:")
-                    logger.info(f"Total: {total / (1024**3):.2f} GB")
-                    logger.info(f"Used: {used / (1024**3):.2f} GB")
-                    logger.info(f"Free: {free / (1024**3):.2f} GB")
+                    logger.debug(f"Space check for {path}:")
+                    logger.debug(f"Total: {total / (1024**3):.2f} GB")
+                    logger.debug(f"Used: {used / (1024**3):.2f} GB")
+                    logger.debug(f"Free: {free / (1024**3):.2f} GB")
                     
                     return {
                         'total': total,
@@ -258,9 +258,9 @@ class MacOSStorage(StorageInterface):
             free_space = drive_info['free']
             
             # Log space requirements
-            logger.info(f"Space check results for {path}:")
-            logger.info(f"Required: {required_size / (1024**3):.2f} GB")
-            logger.info(f"Available: {free_space / (1024**3):.2f} GB")
+            logger.debug(f"Space check results for {path}:")
+            logger.debug(f"Required: {required_size / (1024**3):.2f} GB")
+            logger.debug(f"Available: {free_space / (1024**3):.2f} GB")
             
             # Add 5% safety margin for filesystem overhead
             required_with_margin = int(required_size * 1.05)

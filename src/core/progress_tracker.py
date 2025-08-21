@@ -4,6 +4,8 @@ import logging
 from typing import Optional, Callable, Dict, Any
 import time
 from .interfaces.types import TransferStatus, TransferProgress
+from pathlib import Path
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +30,8 @@ class ProgressTracker:
         self.current_file_progress = 0.0
         self.overall_progress = 0.0
         self.status = TransferStatus.READY
+        self.source_drive_name = ""
+        self.source_drive_path = ""
         
         # Time tracking for speed and ETA calculation
         self.start_time = time.time()
@@ -190,18 +194,23 @@ class ProgressTracker:
         
         self._update_display()
     
-    def complete_transfer(self, successful: bool = True) -> None:
+    def complete_transfer(self, successful: bool = True, stopped: bool = False) -> None:
         """
         Mark the entire transfer as complete.
         
         Args:
             successful: Whether the transfer was successful
+            stopped: Whether the transfer was stopped gracefully by user
         """
-        self.status = TransferStatus.SUCCESS if successful else TransferStatus.ERROR
+        if stopped:
+            self.status = TransferStatus.STOPPED
+        else:
+            self.status = TransferStatus.SUCCESS if successful else TransferStatus.ERROR
+            
         self.overall_progress = 1.0
         
-        # For display consistency, make sure total_transferred matches total_size 
-        if successful and self.total_transferred < self.total_size:
+        # For display consistency, make sure total_transferred matches total_size for successful transfers
+        if (successful or stopped) and self.total_transferred < self.total_size:
             self.total_transferred = self.total_size
             
         self._update_display()
@@ -229,7 +238,9 @@ class ProgressTracker:
                     eta_seconds=getattr(self, 'eta_seconds', 0),
                     total_elapsed=total_elapsed,
                     file_elapsed=file_elapsed,
-                    checksum_elapsed=checksum_elapsed
+                    checksum_elapsed=checksum_elapsed,
+                    source_drive_name=self.source_drive_name,
+                    source_drive_path=self.source_drive_path
                 )
                 self.display.show_progress(progress)
             except Exception as e:
@@ -249,4 +260,37 @@ class ProgressTracker:
             
             # Update the progress with only bytes_transferred parameter
             self.update_progress(bytes_transferred=bytes_transferred)
-        return callback 
+        return callback
+
+    def set_source_drive(self, source_path: Path) -> None:
+        """
+        Set the source drive information from the source path.
+        
+        Args:
+            source_path: Path to the source drive (e.g., /Volumes/CanonA_002)
+        """
+        try:
+            source_str = str(source_path)
+            
+            if source_str.startswith("/Volumes/"):
+                # macOS path - extract drive name after /Volumes/
+                path_parts = source_str.split("/")
+                if len(path_parts) >= 3:
+                    self.source_drive_name = path_parts[2]
+                    self.source_drive_path = f"/Volumes/{self.source_drive_name}"
+                else:
+                    self.source_drive_name = source_path.name or "Unknown Drive"
+                    self.source_drive_path = source_str
+            elif re.match(r'^[A-Za-z]:[\\\/]?$', source_str):
+                # Windows drive path (C:\, D:\, etc.)
+                self.source_drive_name = source_str[:2] if len(source_str) >= 2 else source_str
+                self.source_drive_path = self.source_drive_name + "\\"
+            else:
+                # Fallback - use the name or full path
+                self.source_drive_name = source_path.name or "Unknown Drive"
+                self.source_drive_path = source_str
+                
+        except Exception as e:
+            logger.warning(f"Error setting source drive info: {e}")
+            self.source_drive_name = "Unknown Drive"
+            self.source_drive_path = str(source_path) 
